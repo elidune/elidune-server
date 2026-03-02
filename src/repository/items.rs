@@ -285,7 +285,7 @@ impl Repository {
                    ), 0::smallint)::smallint as nb_available,
                    (
                        SELECT jsonb_build_object(
-                           'id', a.id,
+                           'id', a.id::text,
                            'lastname', a.lastname,
                            'firstname', a.firstname,
                            'bio', a.bio,
@@ -331,7 +331,7 @@ impl Repository {
                    ), 0::smallint)::smallint as nb_available,
                    (
                        SELECT jsonb_build_object(
-                           'id', a.id,
+                           'id', a.id::text,
                            'lastname', a.lastname,
                            'firstname', a.firstname,
                            'bio', a.bio,
