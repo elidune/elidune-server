@@ -539,7 +539,7 @@ impl From<MarcRecord> for Item {
                 .iter()
                 .map(marc_specimen_to_specimen)
                 .collect(),
-            marc_record: None,
+            marc_record: Some(serde_json::to_value(&record).unwrap()),
         }
     }
 }
@@ -553,7 +553,7 @@ fn marc_specimen_to_specimen(s: &z3950_rs::marc_rs::fields::Specimen) -> Specime
         (None, None) => None,
     };
     Specimen {
-        id: 0,
+        id: None,
         item_id: None,
         source_id: None,
         barcode: s.barcode.clone(),

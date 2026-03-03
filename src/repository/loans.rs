@@ -9,6 +9,7 @@ use crate::{
     models::{
         item::ItemShort,
         loan::{CreateLoan, Loan, LoanDetails, LoanSettings},
+        specimen::SpecimenShort,
         user::{UserShort, UserShortRow},
     },
 };
@@ -44,27 +45,14 @@ impl Repository {
         let loans = sqlx::query(
             r#"
             SELECT l.*, s.barcode as specimen_identification,
+                   s.id as specimen_id, s.barcode as specimen_barcode,
+                   s.call_number as specimen_call_number, s.borrow_status as specimen_borrow_status,
+                   so.name as specimen_source_name,
                    i.id as item_id, i.media_type, i.isbn as item_isbn,
-                   i.title, i.publication_date,
-                   COALESCE((
-                       SELECT CAST(COUNT(*) AS SMALLINT)
-                       FROM specimens s2
-                       WHERE s2.item_id = i.id
-                         AND s2.archived_at IS NULL
-                   ), 0::smallint)::smallint as nb_specimens,
-                   COALESCE((
-                       SELECT CAST(COUNT(*) AS SMALLINT)
-                       FROM specimens s2
-                       WHERE s2.item_id = i.id
-                         AND s2.archived_at IS NULL
-                         AND NOT EXISTS (
-                             SELECT 1 FROM loans l2
-                             WHERE l2.specimen_id = s2.id
-                               AND l2.returned_date IS NULL
-                         )
-                   ), 0::smallint)::smallint as nb_available
+                   i.title, i.publication_date
             FROM loans l
             JOIN specimens s ON l.specimen_id = s.id
+            LEFT JOIN sources so ON s.source_id = so.id
             JOIN items i ON s.item_id = i.id
             WHERE l.user_id = $1 AND l.returned_date IS NULL
             ORDER BY l.issue_date
@@ -81,7 +69,16 @@ impl Repository {
             let start_date: DateTime<Utc> = row.get("date");
             let issue_date: Option<DateTime<Utc>> = row.get("issue_date");
             let renew_date: Option<DateTime<Utc>> = row.get("renew_date");
-            
+
+            let borrowed_specimen = SpecimenShort {
+                id: row.get("specimen_id"),
+                barcode: row.get("specimen_barcode"),
+                call_number: row.get("specimen_call_number"),
+                borrow_status: row.get("specimen_borrow_status"),
+                source_name: row.get("specimen_source_name"),
+                availability: Some(0), // borrowed = not available
+            };
+
             result.push(LoanDetails {
                 id: row.get("id"),
                 start_date,
@@ -98,6 +95,7 @@ impl Repository {
                     is_valid: Some(1),
                     archived_at: None,
                     author: None,
+                    specimens: vec![borrowed_specimen],
                 },
                 user: None,
                 specimen_identification: row.get("specimen_identification"),
@@ -263,29 +261,17 @@ impl Repository {
             .execute(&self.pool)
             .await?;
 
-        // Get item details 
+        // Get item details with the returned specimen
         let item_row = sqlx::query(
             r#"
-            SELECT i.*, s.barcode as specimen_identification,
-                   COALESCE((
-                       SELECT CAST(COUNT(*) AS SMALLINT)
-                       FROM specimens s2
-                       WHERE s2.item_id = i.id
-                         AND s2.archived_at IS NULL
-                   ), 0::smallint)::smallint as nb_specimens,
-                   COALESCE((
-                       SELECT CAST(COUNT(*) AS SMALLINT)
-                       FROM specimens s2
-                       WHERE s2.item_id = i.id
-                         AND s2.archived_at IS NULL
-                         AND NOT EXISTS (
-                             SELECT 1 FROM loans l2
-                             WHERE l2.specimen_id = s2.id
-                               AND l2.returned_date IS NULL
-                         )
-                   ), 0::smallint)::smallint as nb_available
+            SELECT i.id, i.media_type, i.isbn, i.title, i.publication_date,
+                   s.barcode as specimen_identification,
+                   s.id as specimen_id, s.barcode as specimen_barcode,
+                   s.call_number as specimen_call_number, s.borrow_status as specimen_borrow_status,
+                   so.name as specimen_source_name
             FROM items i
             JOIN specimens s ON s.item_id = i.id
+            LEFT JOIN sources so ON s.source_id = so.id
             WHERE s.id = $1
             "#
         )
@@ -307,6 +293,15 @@ impl Repository {
 
         let user: Option<UserShort> = user_row.map(|r| r.into());
 
+        let specimen_short = SpecimenShort {
+            id: item_row.get("specimen_id"),
+            barcode: item_row.get("specimen_barcode"),
+            call_number: item_row.get("specimen_call_number"),
+            borrow_status: item_row.get("specimen_borrow_status"),
+            source_name: item_row.get("specimen_source_name"),
+            availability: Some(1), // returned = available
+        };
+
         Ok(LoanDetails {
             id: loan.id,
             start_date: loan.date,
@@ -323,7 +318,7 @@ impl Repository {
                 is_valid: Some(1),
                 archived_at: None,
                 author: None,
-                
+                specimens: vec![specimen_short],
             },
             user,
             specimen_identification: item_row.get("specimen_identification"),

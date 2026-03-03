@@ -7,16 +7,17 @@ use axum::{
 };
 use axum_extra::extract::Multipart;
 use serde::{Deserialize, Serialize};
+use serde_with::{serde_as, DisplayFromStr};
 use utoipa::ToSchema;
 
 use crate::{
     error::{AppError, AppResult},
-    marc::parse_unimarc_to_items,
     models::{
         import_report::ImportReport,
         item::{Item, ItemQuery, ItemShort},
-        specimen::{CreateSpecimen, Specimen, UpdateSpecimen},
+        specimen::Specimen,
     },
+    services::marc::{EnqueueResult, MarcBatchImportReport},
 };
 
 use super::AuthenticatedUser;
@@ -110,8 +111,13 @@ pub async fn get_item(
 }
 
 /// Query params for create item
-#[derive(Debug, Deserialize, Default)]
+#[serde_as]
+#[derive(Debug, Deserialize, Default, ToSchema)]
 pub struct CreateItemQuery {
+    /// Source ID
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    pub source_id: Option<i64>,
     /// If true, allow creating an item even when another item has the same ISBN
     #[serde(default)]
     pub allow_duplicate_isbn: bool,
@@ -124,6 +130,25 @@ pub struct CreateItemQuery {
 pub struct CreateItemResponse {
     pub item: Item,
     pub import_report: ImportReport,
+}
+
+/// Query params for UNIMARC upload
+#[derive(Debug, Deserialize)]
+pub struct UploadUnimarcQuery {
+    /// Source ID to associate to all records in this batch
+    pub source_id: i64,
+}
+
+/// Query params for MARC batch import
+#[serde_as]
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ImportMarcBatchQuery {
+    /// Batch identifier returned by upload_unimarc
+    #[serde_as(as = "DisplayFromStr")]
+    #[schema(value_type = String)]
+    pub batch_id: i64,
+    /// Optional record id inside the batch (e.g. \"1\", \"2\", ...)
+    pub record_id: Option<usize>,
 }
 
 /// Create a new item (with ISBN deduplication)
@@ -154,7 +179,7 @@ pub async fn create_item(
     let (item, import_report) = state
         .services
         .catalog
-        .create_item(item, query.allow_duplicate_isbn, query.confirm_replace_existing_id)
+        .create_item(item, query.source_id, query.allow_duplicate_isbn, query.confirm_replace_existing_id)
         .await?;
     Ok((StatusCode::CREATED, Json(CreateItemResponse { item, import_report })))
 }
@@ -165,16 +190,21 @@ pub async fn create_item(
     path = "/items/upload-unimarc",
     tag = "items",
     security(("bearer_auth" = [])),
+    params(
+        ("source_id" = i64, Query, description = "Source ID associated to this MARC batch")
+    ),
     responses(
-        (status = 200, description = "Parsed items with specimens", body = Vec<Item>),
+        (status = 200, description = "Parsed items with specimens", body = EnqueueResult),
         (status = 400, description = "Missing file or invalid UNIMARC"),
         (status = 401, description = "Not authenticated")
     )
 )]
 pub async fn upload_unimarc(
+    State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    Query(params): Query<UploadUnimarcQuery>,
     mut multipart: Multipart,
-) -> AppResult<Json<Vec<Item>>> {
+) -> AppResult<Json<EnqueueResult>> {
     claims.require_read_items()?;
 
     let mut data = Vec::new();
@@ -198,9 +228,45 @@ pub async fn upload_unimarc(
         ));
     }
 
-    let items = parse_unimarc_to_items(&data)
-        .map_err(|e| AppError::Validation(format!("UNIMARC parse error: {}", e)))?;
-    Ok(Json(items))
+    let enqueue_result = state
+        .services
+        .marc
+        .enqueue_unimarc_batch(&data, params.source_id)
+        .await?;
+
+    // store 
+    Ok(Json(enqueue_result))
+}
+
+/// Import cached MARC records from a batch into the catalog.
+#[utoipa::path(
+    post,
+    path = "/items/import-marc-batch",
+    tag = "items",
+    security(("bearer_auth" = [])),
+    params(
+        ("batch_id" = String, Query, description = "MARC batch identifier returned by upload_unimarc"),
+        ("record_id" = Option<String>, Query, description = "Optional record id inside batch; if omitted, import all records")
+    ),
+    responses(
+        (status = 200, description = "MARC batch import report", body = MarcBatchImportReport),
+        (status = 401, description = "Not authenticated")
+    )
+)]
+pub async fn import_marc_batch(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    Query(params): Query<ImportMarcBatchQuery>,
+) -> AppResult<Json<MarcBatchImportReport>> {
+    claims.require_write_items()?;
+
+    let report = state
+        .services
+        .marc
+        .import_from_batch(params.batch_id, params.record_id)
+        .await?;
+
+    Ok(Json(report))
 }
 
 /// Update an existing item
@@ -301,7 +367,7 @@ pub async fn list_specimens(
     params(
         ("id" = i32, Path, description = "Item ID")
     ),
-    request_body = CreateSpecimen,
+    request_body = Specimen,
     responses(
         (status = 201, description = "Specimen created", body = Specimen),
         (status = 404, description = "Item not found"),
@@ -312,7 +378,7 @@ pub async fn create_specimen(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     Path(item_id): Path<i64>,
-    Json(specimen): Json<CreateSpecimen>,
+    Json(specimen): Json<Specimen>,
 ) -> AppResult<(StatusCode, Json<Specimen>)> {
     claims.require_write_items()?;
 
@@ -334,7 +400,7 @@ pub async fn create_specimen(
         ("item_id" = i32, Path, description = "Item ID"),
         ("specimen_id" = i32, Path, description = "Specimen ID")
     ),
-    request_body = UpdateSpecimen,
+    request_body = Specimen,
     responses(
         (status = 200, description = "Specimen updated", body = Specimen),
         (status = 404, description = "Item or specimen not found"),
@@ -345,7 +411,7 @@ pub async fn update_specimen(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     Path((item_id, specimen_id)): Path<(i64, i64)>,
-    Json(specimen): Json<UpdateSpecimen>,
+    Json(specimen): Json<Specimen>,
 ) -> AppResult<Json<Specimen>> {
     claims.require_write_items()?;
 

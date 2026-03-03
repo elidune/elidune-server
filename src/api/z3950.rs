@@ -14,7 +14,7 @@ use crate::{
     models::{
         import_report::ImportReport,
         item::{Item, ItemShort},
-        specimen::CreateSpecimen,
+        specimen::Specimen,
     },
 };
 
@@ -49,6 +49,10 @@ pub struct Z3950ImportRequest {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub item_id: i64,
+    /// Source ID
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    pub source_id: Option<i64>,
     /// Specimens to create for the imported item
     pub specimens: Option<Vec<ImportSpecimen>>,
     /// Set to the existing item ID to confirm replacement of a duplicate
@@ -78,22 +82,29 @@ pub struct ImportSpecimen {
     pub source_id: Option<i64>,
 }
 
-impl From<ImportSpecimen> for CreateSpecimen {
+impl From<ImportSpecimen> for Specimen {
     fn from(s: ImportSpecimen) -> Self {
         let borrow_status = s
             .status
             .as_ref()
             .and_then(|st| st.parse::<i16>().ok());
-        CreateSpecimen {
+        Specimen {
+            id: None,
+            item_id: None,
+            source_id: s.source_id,
             barcode: s.barcode,
             call_number: s.call_number,
             volume_designation: None,
             place: s.place,
             borrow_status,
+            circulation_status: None,
             notes: s.notes,
             price: s.price,
-            source_id: s.source_id,
+            created_at: None,
+            updated_at: None,
+            archived_at: None,
             source_name: None,
+            availability: None,
         }
     }
 }
@@ -167,6 +178,7 @@ pub async fn import_record(
         .z3950
         .import_record(
             request.item_id,
+            request.source_id,
             request.specimens,
             request.confirm_replace_existing_id,
         )

@@ -16,7 +16,7 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         import_report::{ImportAction, ImportReport},
-        Item, ItemShort
+        Item, ItemShort, specimen::Specimen
     },
     repository::Repository,
     services::catalog::CatalogService,
@@ -126,7 +126,7 @@ impl Z3950Service {
                         for (rec_idx, record) in records.into_iter().enumerate() {
                             tracing::debug!("Processing record {}/{}", rec_idx + 1, len);
                             
-                            match self.upsert_cache_record(&record, &server.name).await {
+                            match self.upsert_cache_record(&record).await {
                                 Ok(id) => {
                                     tracing::debug!("Cached record as remote_item id={:?}", id);
                                     let mut item = Item::from(record);
@@ -253,7 +253,6 @@ impl Z3950Service {
     async fn upsert_cache_record(
         &self,
         record: &MarcRecord,
-        source_name: &str,
     ) -> AppResult<String> {
 
         
@@ -266,8 +265,6 @@ impl Z3950Service {
         
 
         let id: i64 = snowflaked::Generator::new(1).generate::<i64>();
-
-// get redis autoincrement id
 
         // Store record
         redis::cmd("SETEX")
@@ -296,6 +293,7 @@ impl Z3950Service {
     pub async fn import_record(
         &self,
         item_id: i64,
+        source_id: Option<i64>,
         specimens: Option<Vec<ImportSpecimen>>,
         confirm_replace_existing_id: Option<i64>,
     ) -> AppResult<(Item, ImportReport)> {
@@ -303,7 +301,6 @@ impl Z3950Service {
 
       
         let redis_key = Self::get_redis_key(&item_id);
-        println!("Redis key: {}", redis_key);
         let json_str: Option<String> = conn
             .get(&redis_key)
             .await
@@ -317,13 +314,14 @@ impl Z3950Service {
         let item: Item = marc_record.into();
         let (mut item, report) = self
             .catalog
-            .create_item(item, false, confirm_replace_existing_id)
+            .create_item(item, source_id, false, confirm_replace_existing_id)
             .await?;
 
         if report.action == ImportAction::Created {
             if let (Some(specimens_list), Some(item_id)) = (specimens, item.id) {
                 for s in specimens_list {
-                    let _ = self.catalog.create_specimen(item_id, s.into()).await?;
+                    let specimen: Specimen = s.into();
+                    let _ = self.catalog.create_specimen(item_id, specimen).await?;
                 }
                 item = self.repository.items_get_by_id_or_isbn(&item_id.to_string()).await?;
             }

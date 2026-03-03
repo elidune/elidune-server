@@ -3,6 +3,7 @@
 //! Uses marc-rs types (Leader, MarcFormat, etc.) where applicable; DB serialization
 //! uses the associated char or int (e.g. media_type string from Leader record_type).
 
+use std::collections::HashMap;
 use chrono::Utc;
 use sqlx::{FromRow, Row};
 use sqlx::types::Json;
@@ -10,6 +11,7 @@ use sqlx::types::Json;
 use z3950_rs::marc_rs::Record;
 
 use super::Repository;
+use crate::models::specimen::SpecimenShort;
 use crate::{
     error::{AppError, AppResult},
     marc::MarcRecord,
@@ -17,11 +19,11 @@ use crate::{
         author::Author,
         import_report::DuplicateCandidate,
         item::{Collection, Edition, Item, ItemQuery, ItemShort, Serie},
-        specimen::{CreateSpecimen, Specimen},
+        specimen::Specimen,
     },
 };
 
-/// Internal row type for decoding ItemShort with JSONB author in a single query.
+/// Internal row type for decoding ItemShort with JSONB author (specimens loaded separately).
 #[derive(FromRow)]
 struct ItemShortRow {
     id: i64,
@@ -34,11 +36,32 @@ struct ItemShortRow {
     is_local: i16,
     is_valid: Option<i16>,
     archived_at: Option<chrono::DateTime<Utc>>,
-    #[allow(dead_code)]
-    nb_specimens: i16,
-    #[allow(dead_code)]
-    nb_available: i16,
     author: Option<Json<Author>>,
+}
+
+/// Row type for specimen short data from SQL (build SpecimenShort in Rust).
+#[derive(FromRow)]
+struct SpecimenShortRow {
+    item_id: i64,
+    id: i64,
+    barcode: Option<String>,
+    call_number: Option<String>,
+    borrow_status: Option<i16>,
+    source_name: Option<String>,
+    availability: Option<i64>,
+}
+
+impl From<SpecimenShortRow> for SpecimenShort {
+    fn from(r: SpecimenShortRow) -> Self {
+        Self {
+            id: r.id,
+            barcode: r.barcode,
+            call_number: r.call_number,
+            borrow_status: r.borrow_status,
+            source_name: r.source_name,
+            availability: r.availability,
+        }
+    }
 }
 
 impl From<ItemShortRow> for ItemShort {
@@ -53,6 +76,7 @@ impl From<ItemShortRow> for ItemShort {
             is_valid: r.is_valid,
             archived_at: r.archived_at,
             author: r.author.map(|j| j.0),
+            specimens: Vec::new(),
         }
     }
 }
@@ -266,23 +290,6 @@ impl Repository {
             SELECT i.id, i.media_type, i.isbn, i.title,
                    i.publication_date as date, 0::smallint as status,
                    1::smallint as is_local, i.is_valid, i.archived_at,
-                   COALESCE((
-                       SELECT CAST(COUNT(*) AS SMALLINT)
-                       FROM specimens s
-                       WHERE s.item_id = i.id
-                         AND s.archived_at IS NULL
-                   ), 0::smallint)::smallint as nb_specimens,
-                   COALESCE((
-                       SELECT CAST(COUNT(*) AS SMALLINT)
-                       FROM specimens s
-                       WHERE s.item_id = i.id
-                         AND s.archived_at IS NULL
-                         AND NOT EXISTS (
-                             SELECT 1 FROM loans l
-                             WHERE l.specimen_id = s.id
-                               AND l.returned_date IS NULL
-                         )
-                   ), 0::smallint)::smallint as nb_available,
                    (
                        SELECT jsonb_build_object(
                            'id', a.id::text,
@@ -308,7 +315,16 @@ impl Repository {
         let rows: Vec<ItemShortRow> = sqlx::query_as(&select_query)
             .fetch_all(&self.pool)
             .await?;
-        let items: Vec<ItemShort> = rows.into_iter().map(ItemShort::from).collect();
+        let item_ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        let specimens_map = self.items_get_specimens_short_by_item_ids(&item_ids).await?;
+        let items: Vec<ItemShort> = rows
+            .into_iter()
+            .map(|r| {
+                let mut short = ItemShort::from(r);
+                short.specimens = specimens_map.get(&short.id).cloned().unwrap_or_default();
+                short
+            })
+            .collect();
 
         Ok((items, total))
     }
@@ -320,15 +336,6 @@ impl Repository {
             SELECT i.id, i.media_type, i.isbn, i.title,
                    i.publication_date as date, 0::smallint as status,
                    1::smallint as is_local, i.is_valid, i.archived_at,
-                   COALESCE((
-                       SELECT CAST(COUNT(*) AS SMALLINT) FROM specimens s
-                       WHERE s.item_id = i.id AND s.archived_at IS NULL
-                   ), 0::smallint)::smallint as nb_specimens,
-                   COALESCE((
-                       SELECT CAST(COUNT(*) AS SMALLINT) FROM specimens s
-                       WHERE s.item_id = i.id AND s.archived_at IS NULL
-                         AND NOT EXISTS (SELECT 1 FROM loans l WHERE l.specimen_id = s.id AND l.returned_date IS NULL)
-                   ), 0::smallint)::smallint as nb_available,
                    (
                        SELECT jsonb_build_object(
                            'id', a.id::text,
@@ -352,7 +359,18 @@ impl Repository {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(ItemShort::from).collect())
+        let item_ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        let specimens_map = self.items_get_specimens_short_by_item_ids(&item_ids).await?;
+        let items: Vec<ItemShort> = rows
+            .into_iter()
+            .map(|r| {
+                let mut short = ItemShort::from(r);
+                short.specimens = specimens_map.get(&short.id).cloned().unwrap_or_default();
+                short
+            })
+            .collect();
+
+        Ok(items)
     }
 
     // =========================================================================
@@ -360,12 +378,17 @@ impl Repository {
     // =========================================================================
 
     /// Create a new item
-    pub async fn items_create(&self, item: &Item) -> AppResult<Item> {
+    pub async fn items_create<'a>(&self, source_id: Option<i64>, item: &'a mut Item) -> AppResult<&'a mut Item> {
         let now = Utc::now();
 
-        let series_id = self.process_serie(&item.series).await?;
-        let collection_id = self.process_collection(&item.collection).await?;
-        let edition_id = self.process_edition(&item.edition).await?;
+        item.updated_at = Some(now);
+        item.created_at = Some(now);
+        if item.marc_record.is_none() {
+            item.marc_record = serde_json::to_value(&MarcRecord::from(&*item)).ok();
+        }
+        item.series_id = self.process_serie(&item.series).await?;
+        item.collection_id = self.process_collection(&item.collection).await?;
+        item.edition_id = self.process_edition(&item.edition).await?;
 
         let id = sqlx::query_scalar::<_, i64>(
             r#"
@@ -376,11 +399,11 @@ impl Repository {
                 abstract, notes, keywords, is_valid,
                 series_id, series_volume_number,
                 collection_id, collection_sequence_number, collection_volume_number,
-                edition_id, created_at, updated_at
+                edition_id, created_at, updated_at, marc_record
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                 $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                $22, $23, $24, $25, $26, $27, $28
+                $22, $23, $24, $25, $26, $27, $28, $29
             ) RETURNING id
             "#,
         )
@@ -404,24 +427,26 @@ impl Repository {
         .bind(&item.notes)
         .bind(&item.keywords)
         .bind(&item.is_valid)
-        .bind(series_id)
+        .bind(&item.series_id)
         .bind(&item.series_volume_number)
-        .bind(collection_id)
+        .bind(&item.collection_id)
         .bind(&item.collection_sequence_number)
         .bind(&item.collection_volume_number)
-        .bind(edition_id)
-        .bind(now)
-        .bind(now)
+        .bind(&item.edition_id)
+        .bind(&item.created_at)
+        .bind(&item.updated_at)
+        .bind(&item.marc_record)
         .fetch_one(&self.pool)
         .await?;
 
         self.sync_item_authors(id, &item.authors).await?;
 
-        // Always persist marc_record derived from item (create if not provided)
-        let record = MarcRecord::from(item);
-        self.items_save_marc_record(id, &record).await?;
+        // create any attached specimens
+        for specimen in &mut item.specimens {
+            self.upsert_specimen(id, source_id, specimen).await?;
+        }
 
-        self.items_get_by_id_or_isbn(&id.to_string()).await
+        Ok(item)
     }
 
     // =========================================================================
@@ -429,39 +454,44 @@ impl Repository {
     // =========================================================================
 
     /// Update an existing item
-    pub async fn items_update(&self, id: i64, item: &Item) -> AppResult<Item> {
-        let now = Utc::now();
+    pub async fn items_update<'a>(&self, id: i64, source_id: Option<i64>, item: &'a mut Item) -> AppResult<&'a mut Item> {
 
-        let series_id = self.process_serie(&item.series).await?;
-        let collection_id = self.process_collection(&item.collection).await?;
-        let edition_id = self.process_edition(&item.edition).await?;
+        item.updated_at = Some(Utc::now());
+        if item.marc_record.is_none() {
+            item.marc_record = serde_json::to_value(&MarcRecord::from(&*item)).ok();
+        }
+        item.series_id = self.process_serie(&item.series).await?;
+        item.collection_id = self.process_collection(&item.collection).await?;
+        item.edition_id = self.process_edition(&item.edition).await?;
 
         sqlx::query(
             r#"
             UPDATE items SET
-                media_type = COALESCE($2, media_type),
-                isbn = COALESCE($3, isbn),
-                title = COALESCE($4, title),
-                series_id = $5,
-                series_volume_number = $6,
-                collection_id = $7,
-                collection_sequence_number = $8,
-                collection_volume_number = $9,
-                edition_id = $10,
-                updated_at = $11
+                media_type = COALESCE($1::text, media_type),    
+                isbn = COALESCE($2::text, isbn),
+                title = COALESCE($3::text, title),
+                series_id = $4,
+                series_volume_number = $5,
+                collection_id = $6,
+                collection_sequence_number = $7,
+                collection_volume_number = $8,
+                edition_id = $9,
+                updated_at = $10,
+                marc_record = $11
             WHERE id = $12
             "#,
         )
-        .bind(item.media_type.as_deref())
-        .bind(item.isbn.as_ref().map(|s| sanitize_isbn(s)))
-        .bind(item.title.as_deref())
-        .bind(series_id)
-        .bind(item.series_volume_number)
-        .bind(collection_id)
-        .bind(item.collection_sequence_number)
-        .bind(item.collection_volume_number)
-        .bind(edition_id)
-        .bind(now)
+        .bind(&item.media_type)
+        .bind(&item.isbn.as_ref().map(|s| sanitize_isbn(s)))
+        .bind(&item.title)
+        .bind(&item.series_id)
+        .bind(&item.series_volume_number)
+        .bind(&item.collection_id)
+        .bind(&item.collection_sequence_number)
+        .bind(&item.collection_volume_number)
+        .bind(&item.edition_id)
+        .bind(&item.updated_at)
+        .bind(&item.marc_record)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -470,13 +500,12 @@ impl Repository {
             self.sync_item_authors(id, &item.authors).await?;
         }
 
-        // Always update marc_record from item data
-        // reload the item from the database
-        let item = self.items_get_by_id_or_isbn(&id.to_string()).await?;
-        let record = MarcRecord::from(&item);
-        self.items_save_marc_record(id, &record).await?;
+        // Optionally create or update attached specimens
+        for specimen in &mut item.specimens {
+            self.upsert_specimen(id, source_id, specimen).await?;
+        }
 
-        self.items_get_by_id_or_isbn(&id.to_string()).await
+        Ok(item)
     }
 
     /// Save marc_record JSONB for an item
@@ -745,10 +774,42 @@ impl Repository {
         Ok(specimens)
     }
 
-    /// Create a specimen
-    pub async fn items_create_specimen(&self, item_id: i64, specimen: &CreateSpecimen) -> AppResult<Specimen> {
-        let now = Utc::now();
+    /// Get SpecimenShort for many items (excludes archived). Used to attach specimens to ItemShort lists.
+    pub async fn items_get_specimens_short_by_item_ids(
+        &self,
+        item_ids: &[i64],
+    ) -> AppResult<HashMap<i64, Vec<SpecimenShort>>> {
+        if item_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows: Vec<SpecimenShortRow> = sqlx::query_as(
+            r#"
+            SELECT s.item_id, s.id, s.barcode, s.call_number, s.borrow_status,
+                   so.name as source_name,
+                   (SELECT COUNT(*) FROM loans l WHERE l.specimen_id = s.id AND l.returned_date IS NULL) as availability
+            FROM specimens s
+            LEFT JOIN sources so ON s.source_id = so.id
+            WHERE s.item_id = ANY($1) AND s.archived_at IS NULL
+            ORDER BY s.item_id, s.barcode
+            "#,
+        )
+        .bind(item_ids)
+        .fetch_all(&self.pool)
+        .await?;
 
+        let mut map: HashMap<i64, Vec<SpecimenShort>> = HashMap::new();
+        for row in rows {
+            map.entry(row.item_id)
+                .or_default()
+                .push(SpecimenShort::from(row));
+        }
+        Ok(map)
+    }
+
+    /// Create a specimen
+    pub async fn items_create_specimen(&self, item_id: i64, specimen: &Specimen) -> AppResult<Specimen> {
+        let now = Utc::now();
+        let mut new_specimen = specimen.clone();
         let source_id = if let Some(id) = specimen.source_id {
             Some(id)
         } else if let Some(ref name) = specimen.source_name {
@@ -756,6 +817,7 @@ impl Repository {
         } else {
             None
         };
+        new_specimen.source_id = source_id;
 
         let id = sqlx::query_scalar::<_, i64>(
             r#"
@@ -778,28 +840,62 @@ impl Repository {
         .fetch_one(&self.pool)
         .await?;
 
-        sqlx::query_as::<_, Specimen>(
+        new_specimen.id = Some(id);
+        Ok(new_specimen)
+    }
+
+
+    /// Upsert a specimen
+    pub async fn upsert_specimen<'a>(&self, item_id: i64, source_id: Option<i64>, specimen: &'a mut Specimen) -> AppResult<&'a mut Specimen> {
+        let now = Utc::now();
+        specimen.updated_at = Some(now);
+        specimen.item_id = Some(item_id);
+        if source_id.is_some() {
+            specimen.source_id = source_id;
+        } else if let Some(ref name) = specimen.source_name {
+            specimen.source_id = Some(self.sources_find_or_create_by_name(name).await?);
+        }
+
+        let id = sqlx::query_scalar::<_, i64>(
             r#"
-            SELECT s.id, s.item_id, s.source_id, s.barcode, s.call_number, s.volume_designation,
-                   s.place, s.borrow_status, s.circulation_status, s.notes, s.price,
-                   s.created_at, s.updated_at, s.archived_at,
-                   so.name as source_name,
-                   (SELECT COUNT(*) FROM loans l WHERE l.specimen_id = s.id AND l.returned_date IS NULL) as availability
-            FROM specimens s
-            LEFT JOIN sources so ON s.source_id = so.id
-            WHERE s.id = $1
+            INSERT INTO specimens (item_id, barcode, call_number, volume_designation, place, borrow_status, notes, price, source_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+            ON CONFLICT (barcode) WHERE (barcode IS NOT NULL) DO UPDATE SET
+            item_id = EXCLUDED.item_id,
+            call_number = COALESCE(EXCLUDED.call_number, specimens.call_number),
+            volume_designation = COALESCE(EXCLUDED.volume_designation, specimens.volume_designation),
+            place = COALESCE(EXCLUDED.place, specimens.place),
+            borrow_status = COALESCE(EXCLUDED.borrow_status, specimens.borrow_status),
+            notes = COALESCE(EXCLUDED.notes, specimens.notes),
+            price = COALESCE(EXCLUDED.price, specimens.price),
+            source_id = COALESCE(EXCLUDED.source_id, specimens.source_id),
+            updated_at = EXCLUDED.updated_at,
+            archived_at = NULL
+            RETURNING id
             "#
         )
-        .bind(id)
+        .bind(&specimen.item_id)
+        .bind(&specimen.barcode)
+        .bind(&specimen.call_number)
+        .bind(&specimen.volume_designation)
+        .bind(&specimen.place)
+        .bind(&specimen.borrow_status)
+        .bind(&specimen.notes)
+        .bind(&specimen.price)
+        .bind(&specimen.source_id)
+        .bind(&specimen.updated_at)
         .fetch_one(&self.pool)
-        .await
-        .map_err(Into::into)
+        .await?;
+
+        specimen.id = Some(id);
+        Ok(specimen)
     }
 
     /// Update a specimen
-    pub async fn items_update_specimen(&self, id: i64, specimen: &crate::models::specimen::UpdateSpecimen) -> AppResult<Specimen> {
+    pub async fn items_update_specimen(&self, id: i64, specimen: &Specimen) -> AppResult<Specimen> {
         let now = Utc::now();
-
+        let mut new_specimen = specimen.clone();
+       new_specimen.updated_at = Some(now);
         sqlx::query(
             r#"
             UPDATE specimens SET
@@ -815,35 +911,20 @@ impl Repository {
             WHERE id = $10
             "#
         )
-        .bind(&specimen.barcode)
-        .bind(&specimen.call_number)
-        .bind(&specimen.volume_designation)
-        .bind(&specimen.place)
-        .bind(&specimen.borrow_status)
-        .bind(&specimen.notes)
-        .bind(&specimen.price)
-        .bind(&specimen.source_id)
-        .bind(now)
+        .bind(&new_specimen.barcode)
+        .bind(&new_specimen.call_number)
+        .bind(&new_specimen.volume_designation)
+        .bind(&new_specimen.place)
+        .bind(&new_specimen.borrow_status)
+        .bind(&new_specimen.notes)
+        .bind(&new_specimen.price)
+        .bind(&new_specimen.source_id)
+        .bind(&new_specimen.updated_at)
         .bind(id)
         .execute(&self.pool)
         .await?;
 
-        sqlx::query_as::<_, Specimen>(
-            r#"
-            SELECT s.id, s.item_id, s.source_id, s.barcode, s.call_number, s.volume_designation,
-                   s.place, s.borrow_status, s.circulation_status, s.notes, s.price,
-                   s.created_at, s.updated_at, s.archived_at,
-                   so.name as source_name,
-                   (SELECT COUNT(*) FROM loans l WHERE l.specimen_id = s.id AND l.returned_date IS NULL) as availability
-            FROM specimens s
-            LEFT JOIN sources so ON s.source_id = so.id
-            WHERE s.id = $1
-            "#
-        )
-        .bind(id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(Into::into)
+        Ok(new_specimen)
     }
 
     /// Delete a specimen (soft delete — sets archived_at)
@@ -913,7 +994,7 @@ impl Repository {
         &self,
         specimen_id: i64,
         item_id: i64,
-        specimen: &CreateSpecimen,
+        specimen: &Specimen,
     ) -> AppResult<Specimen> {
         let now = Utc::now();
         let source_id = if let Some(id) = specimen.source_id {

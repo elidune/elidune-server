@@ -36,6 +36,7 @@ use crate::api::{auth, equipment, events, health, items, loans, schedules, setti
         items::get_item,
         items::create_item,
         items::upload_unimarc,
+        items::import_marc_batch,
         items::update_item,
         items::delete_item,
         items::list_specimens,
@@ -120,8 +121,6 @@ use crate::api::{auth, equipment, events, health, items, loans, schedules, setti
             crate::models::item::Collection,
             crate::models::item::Edition,
             crate::models::specimen::Specimen,
-            crate::models::specimen::CreateSpecimen,
-            crate::models::specimen::UpdateSpecimen,
             // Pagination
             items::PaginatedResponse<crate::models::item::ItemShort>,
             items::PaginatedResponse<crate::models::user::UserShort>,

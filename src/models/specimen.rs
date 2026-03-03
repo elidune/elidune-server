@@ -28,9 +28,10 @@ impl From<i16> for SpecimenBorrowStatus {
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct Specimen {
-    #[serde_as(as = "DisplayFromStr")]
-    #[schema(value_type = String)]
-    pub id: i64,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    #[serde(default)]
+    pub id: Option<i64>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub item_id: Option<i64>,
@@ -48,44 +49,45 @@ pub struct Specimen {
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub archived_at: Option<DateTime<Utc>>,
-    #[sqlx(default)]
     #[serde(default)]
     pub source_name: Option<String>,
-    #[sqlx(default)]
     #[serde(default)]
     pub availability: Option<i64>,
 }
 
-/// Create specimen request
+impl Specimen {
+    pub fn is_available(&self) -> bool {
+        self.archived_at.is_none() && self.availability.unwrap_or(0) > 0
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
+    }
+}
+
 #[serde_as]
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct CreateSpecimen {
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+pub struct SpecimenShort {
+    #[serde_as(as = "DisplayFromStr")]
+    #[schema(value_type = String)]
+    pub id: i64,
     pub barcode: Option<String>,
     pub call_number: Option<String>,
-    pub volume_designation: Option<String>,
-    pub place: Option<i16>,
     pub borrow_status: Option<i16>,
-    pub notes: Option<String>,
-    pub price: Option<String>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub source_id: Option<i64>,
     pub source_name: Option<String>,
+    pub availability: Option<i64>,
 }
 
-/// Update specimen request
-#[serde_as]
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct UpdateSpecimen {
-    pub barcode: Option<String>,
-    pub call_number: Option<String>,
-    pub volume_designation: Option<String>,
-    pub place: Option<i16>,
-    pub borrow_status: Option<i16>,
-    pub notes: Option<String>,
-    pub price: Option<String>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub source_id: Option<i64>,
-}
 
+impl From<Specimen> for SpecimenShort {
+    fn from(specimen: Specimen) -> Self {
+        Self {
+            id: specimen.id.unwrap_or(0),
+            barcode: specimen.barcode,
+            call_number: specimen.call_number,
+            borrow_status: specimen.borrow_status,
+            source_name: specimen.source_name,
+            availability: specimen.availability,
+        }
+    }
+}

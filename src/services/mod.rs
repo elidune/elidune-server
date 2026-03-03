@@ -5,6 +5,7 @@ pub mod email;
 pub mod equipment;
 pub mod events;
 pub mod loans;
+pub mod marc;
 pub mod redis;
 pub mod schedules;
 pub mod settings;
@@ -32,6 +33,7 @@ pub struct Services {
     pub sources: sources::SourcesService,
     pub equipment: equipment::EquipmentService,
     pub events: events::EventsService,
+    pub marc: marc::MarcService,
 }
 
 impl Services {
@@ -44,6 +46,7 @@ impl Services {
         redis_service: redis::RedisService,
     ) -> AppResult<Self> {
         let catalog = catalog::CatalogService::new(repository.clone());
+        let marc_service = marc::MarcService::new(catalog.clone(), redis_service.clone());
         Ok(Self {
             catalog: catalog.clone(),
             users: users::UsersService::new(repository.clone(), auth_config.clone(), redis_service.clone()),
@@ -58,6 +61,7 @@ impl Services {
             equipment: equipment::EquipmentService::new(repository.clone()),
             events: events::EventsService::new(repository),
             redis: redis_service,
+            marc: marc_service,
         })
     }
 }

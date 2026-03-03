@@ -6,7 +6,7 @@ use crate::{
     models::{
         import_report::{ImportAction, ImportReport},
         item::{Item, ItemQuery, ItemShort},
-        specimen::{CreateSpecimen, Specimen, UpdateSpecimen},
+        specimen::Specimen,
     },
     repository::Repository,
 };
@@ -39,6 +39,7 @@ impl CatalogService {
     pub async fn create_item(
         &self,
         mut item: Item,
+        source_id: Option<i64>,
         allow_duplicate_isbn: bool,
         confirm_replace_existing_id: Option<i64>,
     ) -> AppResult<(Item, ImportReport)> {
@@ -50,7 +51,7 @@ impl CatalogService {
                             "Catalog create: merging bibliographic data into existing item id={} ({} specimens)",
                             dup.item_id, dup.specimen_count
                         );
-                        let updated = self.repository.items_update(dup.item_id, &item).await?;
+                        self.repository.items_update(dup.item_id, source_id, &mut item).await?;
                         let report = ImportReport {
                             action: ImportAction::MergedBibliographic,
                             existing_id: Some(dup.item_id),
@@ -60,31 +61,31 @@ impl CatalogService {
                                 dup.item_id, dup.specimen_count
                             )),
                         };
-                        return Ok((updated, report));
+                        return Ok((item, report));
                     }
 
                     if dup.archived_at.is_some() {
                         tracing::info!("Catalog create: replacing archived item id={}", dup.item_id);
-                        let updated = self.repository.items_update(dup.item_id, &item).await?;
+                        self.repository.items_update(dup.item_id, source_id, &mut item).await?;
                         let report = ImportReport {
                             action: ImportAction::ReplacedArchived,
                             existing_id: Some(dup.item_id),
                             warnings: vec![],
                             message: Some(format!("Replaced archived item id={}.", dup.item_id)),
                         };
-                        return Ok((updated, report));
+                        return Ok((item, report));
                     }
 
                     if confirm_replace_existing_id == Some(dup.item_id) {
                         tracing::info!("Catalog create: confirmed replacement of item id={}", dup.item_id);
-                        let updated = self.repository.items_update(dup.item_id, &item).await?;
+                        self.repository.items_update(dup.item_id,  source_id, &mut item).await?;
                         let report = ImportReport {
                             action: ImportAction::ReplacedConfirmed,
                             existing_id: Some(dup.item_id),
                             warnings: vec![],
                             message: Some(format!("Replaced item id={} after confirmation.", dup.item_id)),
                         };
-                        return Ok((updated, report));
+                        return Ok((item, report));
                     }
 
                     return Err(AppError::DuplicateNeedsConfirmation {
@@ -106,14 +107,14 @@ impl CatalogService {
 
         let record = MarcRecord::from(&item);
         item.marc_record = serde_json::to_value(&record).ok();
-        let created = self.repository.items_create(&item).await?;
+        self.repository.items_create(source_id, &mut item).await?;
         let report = ImportReport {
             action: ImportAction::Created,
             existing_id: None,
             warnings,
             message: None,
         };
-        Ok((created, report))
+        Ok((item, report))
     }
 
     /// Update an existing item
@@ -136,7 +137,8 @@ impl CatalogService {
 
         let record = MarcRecord::from(&item);
         item.marc_record = serde_json::to_value(&record).ok();
-        self.repository.items_update(id, &item).await
+        self.repository.items_update(id, None, &mut item).await?;
+        Ok(item)
     }
 
     /// Delete an item
@@ -154,7 +156,7 @@ impl CatalogService {
     /// Create a specimen for an item.
     /// Barcode must be unique among active specimens.
     /// If barcode exists on an archived specimen, it is reactivated and updated.
-    pub async fn create_specimen(&self, item_id: i64, specimen: CreateSpecimen) -> AppResult<Specimen> {
+    pub async fn create_specimen(&self, item_id: i64, specimen: Specimen) -> AppResult<Specimen> {
         self.repository.items_get_by_id_or_isbn(&item_id.to_string()).await?;
         if let Some(ref barcode) = specimen.barcode {
             if let Some((existing_id, is_archived)) = self
@@ -177,12 +179,12 @@ impl CatalogService {
     }
 
     /// Update a specimen
-    pub async fn update_specimen(&self, item_id: i64, specimen_id: i64, specimen: UpdateSpecimen) -> AppResult<Specimen> {
+    pub async fn update_specimen(&self, item_id: i64, specimen_id: i64, specimen: Specimen) -> AppResult<Specimen> {
         // Verify item exists
         self.repository.items_get_by_id_or_isbn(&item_id.to_string()).await?;
         // Verify specimen belongs to item
         let specimens = self.repository.items_get_specimens(item_id).await?;
-        if !specimens.iter().any(|s| s.id == specimen_id) {
+        if !specimens.iter().any(|s| s.id == Some(specimen_id)) {
             return Err(crate::error::AppError::NotFound(
                 format!("Specimen {} not found for item {}", specimen_id, item_id)
             ));

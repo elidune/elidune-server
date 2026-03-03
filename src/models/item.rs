@@ -10,6 +10,7 @@ use serde_with::{serde_as, DisplayFromStr};
 use sqlx::FromRow;
 use utoipa::{IntoParams, ToSchema};
 use crate::models::Author;
+use crate::models::specimen::SpecimenShort;
 
 use super::specimen::Specimen;
 
@@ -252,6 +253,7 @@ pub struct ItemShort {
     pub is_valid: Option<i16>,
     pub archived_at: Option<DateTime<Utc>>,
     pub author: Option<Author>,
+    pub specimens: Vec<SpecimenShort>,
    
 }
 
@@ -270,6 +272,7 @@ impl From<Item> for ItemShort {
             is_valid: item.is_valid,
             archived_at: item.archived_at,
             author: item.authors.first().cloned(),
+            specimens: item.specimens.into_iter().map(SpecimenShort::from).collect(),
         }
     }
 }
@@ -418,6 +421,7 @@ mod tests {
             is_valid: None,
             archived_at: None,
             author: None,
+            specimens: Vec::new(),
         };
         let json = serde_json::to_string(&item).unwrap();
         assert!(json.contains("\"id\":\"12345\""), "id should be string in JSON, got: {}", json);
