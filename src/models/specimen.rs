@@ -53,6 +53,7 @@ pub struct Specimen {
     pub source_name: Option<String>,
     #[serde(default)]
     pub availability: Option<i64>,
+
 }
 
 impl Specimen {

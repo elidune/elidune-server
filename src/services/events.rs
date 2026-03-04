@@ -3,7 +3,7 @@
 use crate::{
     error::AppResult,
     models::event::{CreateEvent, Event, EventQuery, UpdateEvent},
-    repository::{events::EventAnnualStats, Repository},
+    repository::{events, events::EventAnnualStats, Repository},
 };
 
 #[derive(Clone)]

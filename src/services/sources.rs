@@ -40,7 +40,9 @@ impl SourcesService {
         if name.trim().is_empty() {
             return Err(AppError::Validation("Source name cannot be empty".to_string()));
         }
-        self.repository.sources_rename(id, name.trim()).await
+        self.repository
+            .sources_rename(id, name.trim())
+            .await
     }
 
     /// Update a source (name and/or default status)
@@ -70,7 +72,10 @@ impl SourcesService {
         }
 
         // Check for non-archived specimens
-        let active_count = self.repository.sources_count_active_specimens(id).await?;
+        let active_count = self
+            .repository
+            .sources_count_active_specimens(id)
+            .await?;
         if active_count > 0 {
             return Err(AppError::BusinessRule(format!(
                 "Cannot archive source: {} non-archived specimen(s) still linked",
@@ -100,7 +105,10 @@ impl SourcesService {
         }
 
         // Create new source
-        let new_source = self.repository.sources_create(data.name.trim(), None).await?;
+        let new_source = self
+            .repository
+            .sources_create(data.name.trim(), None)
+            .await?;
 
         // Reassign specimens and items to the new source
         self.repository

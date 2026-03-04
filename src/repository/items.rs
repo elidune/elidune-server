@@ -8,8 +8,6 @@ use chrono::Utc;
 use sqlx::{FromRow, Row};
 use sqlx::types::Json;
 
-use z3950_rs::marc_rs::Record;
-
 use super::Repository;
 use crate::models::specimen::SpecimenShort;
 use crate::{
@@ -187,16 +185,7 @@ impl Repository {
     }
 
 
-    pub async fn items_get_marc_record(&self, id: i64) -> AppResult<Option<Record>> {
-        let query = "SELECT marc_record FROM items WHERE id = $1";
-        let marc_record = sqlx::query_scalar::<_, serde_json::Value>(query)
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?.map(|v| serde_json::from_value::<Record>(v).unwrap());
-        Ok(marc_record)
-    }
-
-
+  
     /// Load all authors for an item via the item_authors junction table
     async fn get_item_authors(&self, item_id: i64) -> AppResult<Vec<Author>> {
         let rows = sqlx::query(
@@ -253,6 +242,10 @@ impl Repository {
             ));
         }
 
+        if let Some(audience_type) = query.audience_type {
+            conditions.push(format!("audience_type = '{}'", audience_type));
+        }
+
         if let Some(ref keywords) = query.keywords {
             conditions.push(format!("LOWER(keywords) LIKE '%{}%'", keywords.to_lowercase()));
         }
@@ -268,15 +261,12 @@ impl Repository {
             ));
         }
 
-        if let Some(archive) = query.archive {
-            if archive {
-                conditions.push("archived_at IS NOT NULL".to_string());
-            } else {
-                conditions.push("archived_at IS NULL".to_string());
-            }
+        if  query.archive.unwrap_or(false) {
+            conditions.push("archived_at IS NOT NULL".to_string());
         } else {
             conditions.push("archived_at IS NULL".to_string());
         }
+
 
         let where_clause = conditions.join(" AND ");
 
@@ -378,14 +368,11 @@ impl Repository {
     // =========================================================================
 
     /// Create a new item
-    pub async fn items_create<'a>(&self, source_id: Option<i64>, item: &'a mut Item) -> AppResult<&'a mut Item> {
+    pub async fn items_create<'a>(&self, item: &'a mut Item) -> AppResult<&'a mut Item> {
         let now = Utc::now();
 
         item.updated_at = Some(now);
         item.created_at = Some(now);
-        if item.marc_record.is_none() {
-            item.marc_record = serde_json::to_value(&MarcRecord::from(&*item)).ok();
-        }
         item.series_id = self.process_serie(&item.series).await?;
         item.collection_id = self.process_collection(&item.collection).await?;
         item.edition_id = self.process_edition(&item.edition).await?;
@@ -399,11 +386,11 @@ impl Repository {
                 abstract, notes, keywords, is_valid,
                 series_id, series_volume_number,
                 collection_id, collection_sequence_number, collection_volume_number,
-                edition_id, created_at, updated_at, marc_record
+                edition_id, created_at, updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                 $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                $22, $23, $24, $25, $26, $27, $28, $29
+                $22, $23, $24, $25, $26, $27, $28
             ) RETURNING id
             "#,
         )
@@ -435,16 +422,19 @@ impl Repository {
         .bind(&item.edition_id)
         .bind(&item.created_at)
         .bind(&item.updated_at)
-        .bind(&item.marc_record)
         .fetch_one(&self.pool)
         .await?;
 
+        item.id = Some(id);
         self.sync_item_authors(id, &item.authors).await?;
 
         // create any attached specimens
         for specimen in &mut item.specimens {
-            self.upsert_specimen(id, source_id, specimen).await?;
+            specimen.item_id = Some(id);
+            self.upsert_specimen(specimen).await?;
         }
+
+        self.items_update_marc_record_for_item(item).await?;
 
         Ok(item)
     }
@@ -454,15 +444,13 @@ impl Repository {
     // =========================================================================
 
     /// Update an existing item
-    pub async fn items_update<'a>(&self, id: i64, source_id: Option<i64>, item: &'a mut Item) -> AppResult<&'a mut Item> {
+    pub async fn items_update<'a>(&self, id: i64, item: &'a mut Item) -> AppResult<&'a mut Item> {
 
         item.updated_at = Some(Utc::now());
-        if item.marc_record.is_none() {
-            item.marc_record = serde_json::to_value(&MarcRecord::from(&*item)).ok();
-        }
         item.series_id = self.process_serie(&item.series).await?;
         item.collection_id = self.process_collection(&item.collection).await?;
         item.edition_id = self.process_edition(&item.edition).await?;
+        item.id = Some(id);
 
         sqlx::query(
             r#"
@@ -476,9 +464,8 @@ impl Repository {
                 collection_sequence_number = $7,
                 collection_volume_number = $8,
                 edition_id = $9,
-                updated_at = $10,
-                marc_record = $11
-            WHERE id = $12
+                updated_at = $10
+            WHERE id = $11
             "#,
         )
         .bind(&item.media_type)
@@ -491,7 +478,6 @@ impl Repository {
         .bind(&item.collection_volume_number)
         .bind(&item.edition_id)
         .bind(&item.updated_at)
-        .bind(&item.marc_record)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -502,19 +488,36 @@ impl Repository {
 
         // Optionally create or update attached specimens
         for specimen in &mut item.specimens {
-            self.upsert_specimen(id, source_id, specimen).await?;
+            specimen.item_id = Some(id);
+            self.upsert_specimen(specimen).await?;
         }
+
+        self.items_update_marc_record_for_item(item).await?;
 
         Ok(item)
     }
 
-    /// Save marc_record JSONB for an item
-    pub async fn items_save_marc_record(&self, item_id: i64, marc_record: &Record) -> AppResult<()> {
+ 
+    /// Update marc record for an item
+    pub async fn items_update_marc_record_for_item(&self, item: &mut Item) -> AppResult<()> {
+        
+        if item.marc_record.is_none() {
+            item.marc_record = sqlx::query_scalar::<_, serde_json::Value>("SELECT marc_record FROM items WHERE id = $1")
+            .bind(item.id.unwrap_or(0))
+            .fetch_optional(&self.pool)
+            .await?.map(|v| serde_json::from_value::<MarcRecord>(v).unwrap());
+        }
+
+        // recreate the marc record
+        item.marc_record = Some(MarcRecord::from(&*item));
+
+        // and save it
         sqlx::query("UPDATE items SET marc_record = $1 WHERE id = $2")
-            .bind(serde_json::to_value(marc_record).unwrap())
-            .bind(item_id)
-            .execute(&self.pool)
-            .await?;
+        .bind(serde_json::to_value(&item.marc_record).unwrap())
+        .bind(item.id.unwrap_or(0))
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -845,57 +848,132 @@ impl Repository {
     }
 
 
+   
+
     /// Upsert a specimen
-    pub async fn upsert_specimen<'a>(&self, item_id: i64, source_id: Option<i64>, specimen: &'a mut Specimen) -> AppResult<&'a mut Specimen> {
+    pub async fn upsert_specimen<'a>(&self, specimen: &'a mut Specimen) -> AppResult<&'a mut Specimen> {
         let now = Utc::now();
         specimen.updated_at = Some(now);
-        specimen.item_id = Some(item_id);
-        if source_id.is_some() {
-            specimen.source_id = source_id;
-        } else if let Some(ref name) = specimen.source_name {
-            specimen.source_id = Some(self.sources_find_or_create_by_name(name).await?);
+
+        // 1) If the ID is already known, update directly by ID (ID has priority over barcode).
+        if let Some(id) = specimen.id {
+            sqlx::query(
+                r#"
+                UPDATE specimens SET
+                    item_id = $1,
+                    barcode = $2,
+                    call_number = $3,
+                    volume_designation = $4,
+                    place = $5,
+                    borrow_status = $6,
+                    notes = $7,
+                    price = $8,
+                    source_id = $9,
+                    updated_at = $10
+                WHERE id = $11
+                "#,
+            )
+            .bind(&specimen.item_id)
+            .bind(&specimen.barcode)
+            .bind(&specimen.call_number)
+            .bind(&specimen.volume_designation)
+            .bind(&specimen.place)
+            .bind(&specimen.borrow_status)
+            .bind(&specimen.notes)
+            .bind(&specimen.price)
+            .bind(&specimen.source_id)
+            .bind(&specimen.updated_at)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        } else {
+            // 2) No ID: try to find an existing specimen by barcode.
+            if let Some(ref barcode) = specimen.barcode {
+                let existing_id = sqlx::query_scalar::<_, i64>(
+                    "SELECT id FROM specimens WHERE barcode = $1",
+                )
+                .bind(barcode)
+                .fetch_optional(&self.pool)
+                .await?;
+                specimen.id = existing_id;
+            }
+
+            if let Some(id) = specimen.id {
+                // A specimen already exists with this barcode: update it.
+                sqlx::query(
+                    r#"
+                    UPDATE specimens SET
+                        item_id = $1,
+                        barcode = $2,
+                        call_number = $3,
+                        volume_designation = $4,
+                        place = $5,
+                        borrow_status = $6,
+                        notes = $7,
+                        price = $8,
+                        source_id = $9,
+                        updated_at = $10
+                    WHERE id = $11
+                    "#,
+                )
+                .bind(&specimen.item_id)
+                .bind(&specimen.barcode)
+                .bind(&specimen.call_number)
+                .bind(&specimen.volume_designation)
+                .bind(&specimen.place)
+                .bind(&specimen.borrow_status)
+                .bind(&specimen.notes)
+                .bind(&specimen.price)
+                .bind(&specimen.source_id)
+                .bind(&specimen.updated_at)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+            } else {
+                // 3) No specimen with this barcode: insert a new one.
+                let id = sqlx::query_scalar::<_, i64>(
+                    r#"
+                    INSERT INTO specimens (
+                        item_id,
+                        barcode,
+                        call_number,
+                        volume_designation,
+                        place,
+                        borrow_status,
+                        notes,
+                        price,
+                        source_id,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+                    RETURNING id
+                    "#,
+                )
+                .bind(&specimen.item_id)
+                .bind(&specimen.barcode)
+                .bind(&specimen.call_number)
+                .bind(&specimen.volume_designation)
+                .bind(&specimen.place)
+                .bind(&specimen.borrow_status)
+                .bind(&specimen.notes)
+                .bind(&specimen.price)
+                .bind(&specimen.source_id)
+                .bind(&specimen.updated_at)
+                .fetch_one(&self.pool)
+                .await?;
+
+                specimen.id = Some(id);
+            }
         }
-
-        let id = sqlx::query_scalar::<_, i64>(
-            r#"
-            INSERT INTO specimens (item_id, barcode, call_number, volume_designation, place, borrow_status, notes, price, source_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
-            ON CONFLICT (barcode) WHERE (barcode IS NOT NULL) DO UPDATE SET
-            item_id = EXCLUDED.item_id,
-            call_number = COALESCE(EXCLUDED.call_number, specimens.call_number),
-            volume_designation = COALESCE(EXCLUDED.volume_designation, specimens.volume_designation),
-            place = COALESCE(EXCLUDED.place, specimens.place),
-            borrow_status = COALESCE(EXCLUDED.borrow_status, specimens.borrow_status),
-            notes = COALESCE(EXCLUDED.notes, specimens.notes),
-            price = COALESCE(EXCLUDED.price, specimens.price),
-            source_id = COALESCE(EXCLUDED.source_id, specimens.source_id),
-            updated_at = EXCLUDED.updated_at,
-            archived_at = NULL
-            RETURNING id
-            "#
-        )
-        .bind(&specimen.item_id)
-        .bind(&specimen.barcode)
-        .bind(&specimen.call_number)
-        .bind(&specimen.volume_designation)
-        .bind(&specimen.place)
-        .bind(&specimen.borrow_status)
-        .bind(&specimen.notes)
-        .bind(&specimen.price)
-        .bind(&specimen.source_id)
-        .bind(&specimen.updated_at)
-        .fetch_one(&self.pool)
-        .await?;
-
-        specimen.id = Some(id);
+       
         Ok(specimen)
     }
 
     /// Update a specimen
-    pub async fn items_update_specimen(&self, id: i64, specimen: &Specimen) -> AppResult<Specimen> {
+    pub async fn items_update_specimen<'a>(&self, specimen: &'a mut Specimen) -> AppResult<&'a mut Specimen> {
         let now = Utc::now();
-        let mut new_specimen = specimen.clone();
-       new_specimen.updated_at = Some(now);
+        specimen.updated_at = Some(now);
         sqlx::query(
             r#"
             UPDATE specimens SET
@@ -911,20 +989,20 @@ impl Repository {
             WHERE id = $10
             "#
         )
-        .bind(&new_specimen.barcode)
-        .bind(&new_specimen.call_number)
-        .bind(&new_specimen.volume_designation)
-        .bind(&new_specimen.place)
-        .bind(&new_specimen.borrow_status)
-        .bind(&new_specimen.notes)
-        .bind(&new_specimen.price)
-        .bind(&new_specimen.source_id)
-        .bind(&new_specimen.updated_at)
-        .bind(id)
+        .bind(&specimen.barcode)
+        .bind(&specimen.call_number)
+        .bind(&specimen.volume_designation)
+        .bind(&specimen.place)
+        .bind(&specimen.borrow_status)
+        .bind(&specimen.notes)
+        .bind(&specimen.price)
+        .bind(&specimen.source_id)
+        .bind(&specimen.updated_at)
+        .bind(specimen.id.unwrap_or(0))
         .execute(&self.pool)
         .await?;
 
-        Ok(new_specimen)
+        Ok(specimen)
     }
 
     /// Delete a specimen (soft delete — sets archived_at)
@@ -1134,3 +1212,4 @@ impl Repository {
         Ok(result.rows_affected() as i64)
     }
 }
+

@@ -293,7 +293,6 @@ impl Z3950Service {
     pub async fn import_record(
         &self,
         item_id: i64,
-        source_id: Option<i64>,
         specimens: Option<Vec<ImportSpecimen>>,
         confirm_replace_existing_id: Option<i64>,
     ) -> AppResult<(Item, ImportReport)> {
@@ -314,7 +313,7 @@ impl Z3950Service {
         let item: Item = marc_record.into();
         let (mut item, report) = self
             .catalog
-            .create_item(item, source_id, false, confirm_replace_existing_id)
+            .create_item(item, false, confirm_replace_existing_id)
             .await?;
 
         if report.action == ImportAction::Created {
@@ -323,7 +322,10 @@ impl Z3950Service {
                     let specimen: Specimen = s.into();
                     let _ = self.catalog.create_specimen(item_id, specimen).await?;
                 }
-                item = self.repository.items_get_by_id_or_isbn(&item_id.to_string()).await?;
+                item = self
+                    .repository
+                    .items_get_by_id_or_isbn(&item_id.to_string())
+                    .await?;
             }
         }
 

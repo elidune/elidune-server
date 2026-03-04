@@ -135,7 +135,8 @@ impl Repository {
             "#
         )
         .fetch_one(&self.pool)
-        .await?;
+            .await?;
         Ok(count)
     }
 }
+

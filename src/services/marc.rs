@@ -85,7 +85,6 @@ impl MarcService {
     pub async fn enqueue_unimarc_batch(
         &self,
         data: &[u8],
-        source_id: i64,
     ) -> AppResult<EnqueueResult> {
         let format_encoding = FormatEncoding::new(MarcFormat::Unimarc, Encoding::Utf8);
         let records = parse(data, format_encoding)
@@ -100,12 +99,8 @@ impl MarcService {
         for (idx, record) in records.into_iter().enumerate() {
             let key = Self::redis_key(batch_id, idx);
 
-            let cached = CachedMarcRecord {
-                source_id,
-                record: record.clone(),
-            };
-
-            let json_str = serde_json::to_string(&cached)
+         
+            let json_str = serde_json::to_string(&record)
                 .map_err(|e| AppError::Internal(format!("Failed to serialize MARC record: {}", e)))?;
 
             // Store record
@@ -139,6 +134,7 @@ impl MarcService {
     pub async fn import_from_batch(
         &self,
         batch_id: i64,
+        source_id: i64,
         record_id: Option<usize>,
     ) -> AppResult<MarcBatchImportReport> {
         let mut conn = self.redis.get_connection().await?;
@@ -175,7 +171,7 @@ impl MarcService {
                 continue;
             };
 
-            let cached: CachedMarcRecord = match serde_json::from_str(&json_str) {
+            let record: MarcRecord = match serde_json::from_str(&json_str) {
                 Ok(v) => v,
                 Err(e) => {
                     failed.push(MarcBatchImportError {
@@ -186,19 +182,26 @@ impl MarcService {
                 }
             };
 
-           
-            match self.catalog.create_item(cached.record.into(), Some(cached.source_id), false, None).await {
-                Ok((_created, _report)) => {
+            let mut item: Item = record.into();
+            for specimen in &mut item.specimens {
+                specimen.source_id = Some(source_id);
+            }
+
+            match self.catalog.create_item(item, false, None).await {
+                Ok((item, report)) => {
                     imported += 1;
+                   
                 }
                 Err(e) => {
                     failed.push(MarcBatchImportError {
                         record_key: key.clone(),
-                        error: format!("{}", e),
+                        error: format!("Failed to create item: {}", e),
                     });
+                    continue;
                 }
             }
         }
+
 
         Ok(MarcBatchImportReport {
             batch_id,

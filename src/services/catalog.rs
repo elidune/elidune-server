@@ -28,7 +28,9 @@ impl CatalogService {
 
     /// Get item by ID with full details
     pub async fn get_item(&self, id: i64) -> AppResult<Item> {
-        self.repository.items_get_by_id_or_isbn(&id.to_string()).await
+        self.repository
+            .items_get_by_id_or_isbn(&id.to_string())
+            .await
     }
 
 
@@ -39,19 +41,24 @@ impl CatalogService {
     pub async fn create_item(
         &self,
         mut item: Item,
-        source_id: Option<i64>,
         allow_duplicate_isbn: bool,
         confirm_replace_existing_id: Option<i64>,
     ) -> AppResult<(Item, ImportReport)> {
         if !allow_duplicate_isbn {
             if let Some(ref isbn) = item.isbn {
-                if let Some(dup) = self.repository.items_find_by_isbn_for_import(isbn).await? {
+                if let Some(dup) = self
+                    .repository
+                    .items_find_by_isbn_for_import(isbn)
+                    .await?
+                {
                     if dup.specimen_count > 0 {
                         tracing::info!(
                             "Catalog create: merging bibliographic data into existing item id={} ({} specimens)",
                             dup.item_id, dup.specimen_count
                         );
-                        self.repository.items_update(dup.item_id, source_id, &mut item).await?;
+                        self.repository
+                            .items_update(dup.item_id, &mut item)
+                            .await?;
                         let report = ImportReport {
                             action: ImportAction::MergedBibliographic,
                             existing_id: Some(dup.item_id),
@@ -66,7 +73,9 @@ impl CatalogService {
 
                     if dup.archived_at.is_some() {
                         tracing::info!("Catalog create: replacing archived item id={}", dup.item_id);
-                        self.repository.items_update(dup.item_id, source_id, &mut item).await?;
+                        self.repository
+                            .items_update(dup.item_id, &mut item)
+                            .await?;
                         let report = ImportReport {
                             action: ImportAction::ReplacedArchived,
                             existing_id: Some(dup.item_id),
@@ -78,7 +87,9 @@ impl CatalogService {
 
                     if confirm_replace_existing_id == Some(dup.item_id) {
                         tracing::info!("Catalog create: confirmed replacement of item id={}", dup.item_id);
-                        self.repository.items_update(dup.item_id,  source_id, &mut item).await?;
+                        self.repository
+                            .items_update(dup.item_id, &mut item)
+                            .await?;
                         let report = ImportReport {
                             action: ImportAction::ReplacedConfirmed,
                             existing_id: Some(dup.item_id),
@@ -105,9 +116,7 @@ impl CatalogService {
             warnings.push("No ISBN — duplicate check skipped. This may create silent duplicates.".to_string());
         }
 
-        let record = MarcRecord::from(&item);
-        item.marc_record = serde_json::to_value(&record).ok();
-        self.repository.items_create(source_id, &mut item).await?;
+        self.repository.items_create(&mut item).await?;
         let report = ImportReport {
             action: ImportAction::Created,
             existing_id: None,
@@ -120,7 +129,9 @@ impl CatalogService {
     /// Update an existing item
     pub async fn update_item(&self, id: i64, mut item: Item) -> AppResult<Item> {
         // Check if item exists
-        self.repository.items_get_by_id_or_isbn(&id.to_string()).await?;
+        self.repository
+            .items_get_by_id_or_isbn(&id.to_string())
+            .await?;
 
         // Check for duplicate ISBN
         if let Some(ref isbn) = item.isbn {
@@ -135,9 +146,7 @@ impl CatalogService {
             }
         }
 
-        let record = MarcRecord::from(&item);
-        item.marc_record = serde_json::to_value(&record).ok();
-        self.repository.items_update(id, None, &mut item).await?;
+        self.repository.items_update(id, &mut item).await?;
         Ok(item)
     }
 
@@ -149,7 +158,9 @@ impl CatalogService {
     /// Get specimens for an item
     pub async fn get_specimens(&self, item_id: i64) -> AppResult<Vec<Specimen>> {
         // Verify item exists
-        self.repository.items_get_by_id_or_isbn(&item_id.to_string()).await?;
+        self.repository
+            .items_get_by_id_or_isbn(&item_id.to_string())
+            .await?;
         self.repository.items_get_specimens(item_id).await
     }
 
@@ -157,7 +168,9 @@ impl CatalogService {
     /// Barcode must be unique among active specimens.
     /// If barcode exists on an archived specimen, it is reactivated and updated.
     pub async fn create_specimen(&self, item_id: i64, specimen: Specimen) -> AppResult<Specimen> {
-        self.repository.items_get_by_id_or_isbn(&item_id.to_string()).await?;
+        self.repository
+            .items_get_by_id_or_isbn(&item_id.to_string())
+            .await?;
         if let Some(ref barcode) = specimen.barcode {
             if let Some((existing_id, is_archived)) = self
                 .repository
@@ -175,13 +188,25 @@ impl CatalogService {
                 ));
             }
         }
-        self.repository.items_create_specimen(item_id, &specimen).await
+        self.repository
+            .items_create_specimen(item_id, &specimen)
+            .await
     }
 
     /// Update a specimen
-    pub async fn update_specimen(&self, item_id: i64, specimen_id: i64, specimen: Specimen) -> AppResult<Specimen> {
+    pub async fn update_specimen<'a>(&self, item_id: i64, specimen: &'a mut Specimen) -> AppResult<&'a mut Specimen> {
+        
+        let specimen_id = specimen.id.ok_or_else(|| crate::error::AppError::NotFound(
+            format!("Specimen id is required")
+        ))?;
+
+
+
+
         // Verify item exists
-        self.repository.items_get_by_id_or_isbn(&item_id.to_string()).await?;
+        self.repository
+            .items_get_by_id_or_isbn(&item_id.to_string())
+            .await?;
         // Verify specimen belongs to item
         let specimens = self.repository.items_get_specimens(item_id).await?;
         if !specimens.iter().any(|s| s.id == Some(specimen_id)) {
@@ -201,17 +226,21 @@ impl CatalogService {
                 ));
             }
         }
-        self.repository.items_update_specimen(specimen_id, &specimen).await
+        self.repository.items_update_specimen(specimen).await
     }
 
     /// Delete a specimen
     pub async fn delete_specimen(&self, _item_id: i64, specimen_id: i64, force: bool) -> AppResult<()> {
-        self.repository.items_delete_specimen(specimen_id, force).await
+        self.repository
+            .items_delete_specimen(specimen_id, force)
+            .await
     }
 
     /// List all items in a series (ordered by volume number)
     pub async fn get_items_by_series(&self, series_id: i64) -> AppResult<Vec<ItemShort>> {
-        self.repository.items_get_by_series(series_id).await
+        self.repository
+            .items_get_by_series(series_id)
+            .await
     }
 }
 

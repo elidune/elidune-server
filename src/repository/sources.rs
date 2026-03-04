@@ -1,7 +1,6 @@
 //! Sources domain methods on Repository
 
 use chrono::Utc;
-use sqlx::{Pool, Postgres};
 
 use super::Repository;
 use crate::{
@@ -184,3 +183,4 @@ impl Repository {
         Ok(source)
     }
 }
+

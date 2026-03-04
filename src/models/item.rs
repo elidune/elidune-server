@@ -16,7 +16,7 @@ use super::specimen::Specimen;
 
 // Re-exports: canonical MARC data types from marc-rs (via z3950-rs).
 pub use z3950_rs::marc_rs::format::MarcFormat;
-pub use z3950_rs::marc_rs::record::{
+pub use z3950_rs::marc_rs::record::{ Record as MarcRecord,
     ControlField, DataField, EditionInfo, PublicationStatementInfo, Subfield,
 };
 pub use z3950_rs::marc_rs::author::{Author as MarcAuthor, AuthorKind};
@@ -146,25 +146,7 @@ impl std::fmt::Display for MediaType {
     }
 }
 
-/// Audience type. DB stores as i16 (97=Adult, 106=Children).
-/// Derived from MARC21 008 pos.22 or UNIMARC 100 pos.17 when importing from MARC.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(i16)]
-pub enum PublicType {
-    Adult = 97,
-    Children = 106,
-    Unknown = 117,
-}
 
-impl From<i16> for PublicType {
-    fn from(v: i16) -> Self {
-        match v {
-            97 => PublicType::Adult,
-            106 => PublicType::Children,
-            _ => PublicType::Unknown,
-        }
-    }
-}
 
 /// Full item model (DB + API). Data aligns with marc-rs `Record`: title, author, edition,
 /// ISBNs, classifications, language codes, specimens, etc. Built from MARC via the translator.
@@ -234,7 +216,7 @@ pub struct Item {
     pub specimens: Vec<Specimen>,
     #[sqlx(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub marc_record: Option<serde_json::Value>,
+    pub marc_record: Option<MarcRecord>,
 }
 
 
@@ -398,7 +380,7 @@ pub struct ItemQuery {
     pub keywords: Option<String>,
     pub freesearch: Option<String>,
     pub genre: Option<String>,
-    pub public_type: Option<String>,
+    pub audience_type: Option<i16>,
     pub archive: Option<bool>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,

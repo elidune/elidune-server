@@ -13,7 +13,7 @@ use crate::{
     config::UsersConfig,
     error::{AppError, AppResult},
     models::user::{AccountTypeSlug, CreateUser, UpdateProfile, UpdateUser, User, UserClaims, UserQuery, UserShort},
-    repository::Repository,
+    repository::{users, Repository},
 };
 
 #[derive(Clone)]
@@ -32,9 +32,7 @@ impl UsersService {
     /// Returns (token, user) if 2FA is not enabled, or (None, user) if 2FA is required
     pub async fn authenticate(&self, login: &str, password: &str, device_id: Option<&str>) -> AppResult<(Option<String>, User)> {
         // Authenticate by login (primary method)
-        let user = self
-            .repository
-            .users_get_by_login(login)
+        let user = self.repository.users_get_by_login(login)
             .await?
             .ok_or_else(|| AppError::Authentication("Invalid login or password".to_string()))?;
 
@@ -69,10 +67,7 @@ impl UsersService {
         }
 
         // Get user rights
-        let rights = self
-            .repository
-            .users_get_rights(&user.account_type)
-            .await?;
+        let rights = self.repository.users_get_rights(&user.account_type).await?;
 
         // Create JWT token
         let now = Utc::now().timestamp();
@@ -176,9 +171,7 @@ impl UsersService {
         let used_codes_json = serde_json::to_string(&new_used_codes)
             .map_err(|e| AppError::Internal(format!("Failed to serialize used codes: {}", e)))?;
 
-        self.repository
-            .users_mark_recovery_code_used(user_id, &used_codes_json)
-            .await?;
+        self.repository.users_mark_recovery_code_used(user_id, &used_codes_json).await?;
 
         // Create token
         self.create_token_for_user(&user).await
@@ -186,10 +179,7 @@ impl UsersService {
 
     /// Create JWT token for a user
     async fn create_token_for_user(&self, user: &User) -> AppResult<String> {
-        let rights = self
-            .repository
-            .users_get_rights(&user.account_type)
-            .await?;
+        let rights = self.repository.users_get_rights(&user.account_type).await?;
 
         let now = Utc::now().timestamp();
         let exp = now + (self.config.jwt_expiration_hours as i64 * 3600);
@@ -260,7 +250,7 @@ impl UsersService {
             return Err(AppError::Validation("Invalid 2FA method. Must be 'totp' or 'email'".to_string()));
         }
 
-        let user = self.repository.users_get_by_id(user_id).await?;
+        let user = self.get_by_id(user_id).await?;
 
         if method == "email" && user.email.is_none() {
             return Err(AppError::Validation("Email is required for email-based 2FA".to_string()));
@@ -270,24 +260,21 @@ impl UsersService {
         let recovery_codes_json = serde_json::to_string(&recovery_codes)
             .map_err(|e| AppError::Internal(format!("Failed to serialize recovery codes: {}", e)))?;
 
-        self.repository
-            .users_update_2fa_settings(
-                user_id,
-                true,
-                Some(method),
-                totp_secret.as_deref(),
-                Some(&recovery_codes_json),
-            )
-            .await?;
+        self.repository.users_update_2fa_settings(
+            user_id,
+            true,
+            Some(method),
+            totp_secret.as_deref(),
+            Some(&recovery_codes_json),
+        )
+        .await?;
 
         Ok(recovery_codes)
     }
 
     /// Disable 2FA for a user
     pub async fn disable_2fa(&self, user_id: i64) -> AppResult<()> {
-        self.repository
-            .users_update_2fa_settings(user_id, false, None, None, None)
-            .await?;
+        self.repository.users_update_2fa_settings(user_id, false, None, None, None).await?;
 
         Ok(())
     }

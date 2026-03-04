@@ -49,10 +49,6 @@ pub struct Z3950ImportRequest {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub item_id: i64,
-    /// Source ID
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub source_id: Option<i64>,
     /// Specimens to create for the imported item
     pub specimens: Option<Vec<ImportSpecimen>>,
     /// Set to the existing item ID to confirm replacement of a duplicate
@@ -178,7 +174,6 @@ pub async fn import_record(
         .z3950
         .import_record(
             request.item_id,
-            request.source_id,
             request.specimens,
             request.confirm_replace_existing_id,
         )

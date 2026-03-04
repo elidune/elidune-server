@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::{
     error::AppResult,
     models::loan::{CreateLoan, LoanDetails},
-    repository::Repository,
+    repository::{loans, users, Repository},
 };
 
 #[derive(Clone)]

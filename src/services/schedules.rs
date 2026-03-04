@@ -8,7 +8,7 @@ use crate::{
         CreateScheduleClosure, CreateSchedulePeriod, CreateScheduleSlot,
         ScheduleClosure, SchedulePeriod, ScheduleSlot, UpdateSchedulePeriod,
     },
-    repository::Repository,
+    repository::{schedules, Repository},
 };
 
 #[derive(Clone)]

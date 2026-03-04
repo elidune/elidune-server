@@ -282,3 +282,4 @@ pub struct EventTypeStats {
     pub count: i64,
     pub attendees: i64,
 }
+

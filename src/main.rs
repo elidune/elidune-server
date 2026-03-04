@@ -45,7 +45,6 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
     // Load configuration
-
     let config = config_path_from_args().map(|path| AppConfig::load(&path)).ok_or_else(|| anyhow::anyhow!("No configuration path provided"))??;
     
     // Initialize tracing
@@ -153,9 +152,9 @@ fn create_router(state: AppState) -> Router {
         .route("/items/:id", put(api::items::update_item))
         .route("/items/:id", delete(api::items::delete_item))
         // Specimens
-        .route("/items/:id/specimens", get(api::items::list_specimens))
-        .route("/items/:id/specimens", post(api::items::create_specimen))
-        .route("/items/:item_id/specimens/:specimen_id", put(api::items::update_specimen))
+        .route("/items/:item_id/specimens", get(api::items::list_specimens))
+        .route("/items/:item_id/specimens", post(api::items::create_specimen))
+        .route("/items/:item_id/specimens", put(api::items::update_specimen))
         .route("/items/:item_id/specimens/:specimen_id", delete(api::items::delete_specimen))
         // Users
         .route("/users", get(api::users::list_users))

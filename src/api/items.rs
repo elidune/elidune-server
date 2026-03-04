@@ -114,10 +114,6 @@ pub async fn get_item(
 #[serde_as]
 #[derive(Debug, Deserialize, Default, ToSchema)]
 pub struct CreateItemQuery {
-    /// Source ID
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub source_id: Option<i64>,
     /// If true, allow creating an item even when another item has the same ISBN
     #[serde(default)]
     pub allow_duplicate_isbn: bool,
@@ -135,14 +131,16 @@ pub struct CreateItemResponse {
 /// Query params for UNIMARC upload
 #[derive(Debug, Deserialize)]
 pub struct UploadUnimarcQuery {
-    /// Source ID to associate to all records in this batch
-    pub source_id: i64,
 }
 
 /// Query params for MARC batch import
 #[serde_as]
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ImportMarcBatchQuery {
+    /// Source ID
+    #[serde_as(as = "DisplayFromStr")]
+    #[schema(value_type = String)]
+    pub source_id: i64,
     /// Batch identifier returned by upload_unimarc
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -179,7 +177,7 @@ pub async fn create_item(
     let (item, import_report) = state
         .services
         .catalog
-        .create_item(item, query.source_id, query.allow_duplicate_isbn, query.confirm_replace_existing_id)
+        .create_item(item, query.allow_duplicate_isbn, query.confirm_replace_existing_id)
         .await?;
     Ok((StatusCode::CREATED, Json(CreateItemResponse { item, import_report })))
 }
@@ -202,7 +200,6 @@ pub async fn create_item(
 pub async fn upload_unimarc(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
-    Query(params): Query<UploadUnimarcQuery>,
     mut multipart: Multipart,
 ) -> AppResult<Json<EnqueueResult>> {
     claims.require_read_items()?;
@@ -231,7 +228,7 @@ pub async fn upload_unimarc(
     let enqueue_result = state
         .services
         .marc
-        .enqueue_unimarc_batch(&data, params.source_id)
+        .enqueue_unimarc_batch(&data)
         .await?;
 
     // store 
@@ -263,7 +260,7 @@ pub async fn import_marc_batch(
     let report = state
         .services
         .marc
-        .import_from_batch(params.batch_id, params.record_id)
+        .import_from_batch(params.batch_id, params.source_id, params.record_id)
         .await?;
 
     Ok(Json(report))
@@ -410,17 +407,17 @@ pub async fn create_specimen(
 pub async fn update_specimen(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
-    Path((item_id, specimen_id)): Path<(i64, i64)>,
-    Json(specimen): Json<Specimen>,
+    Path(item_id): Path<i64>,
+    Json(mut specimen): Json<Specimen>,
 ) -> AppResult<Json<Specimen>> {
     claims.require_write_items()?;
-
-    let updated = state
+println!("update specimen: {:?}", specimen);
+    state
         .services
         .catalog
-        .update_specimen(item_id, specimen_id, specimen)
+        .update_specimen(item_id, &mut specimen)
         .await?;
-    Ok(Json(updated))
+    Ok(Json(specimen))
 }
 
 /// Delete a specimen

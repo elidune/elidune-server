@@ -182,7 +182,7 @@ fn note_text(d: &NoteData) -> &str {
 }
 
 impl From<MarcRecord> for Item {
-    fn from(record: MarcRecord) -> Self {
+    fn from(mut record: MarcRecord) -> Self {
         let format = detect_format(&record);
         let is_marc21 = format == MarcFormat::Marc21;
 
@@ -489,13 +489,20 @@ impl From<MarcRecord> for Item {
         let media_type = crate::repository::items::record_type_to_media_type_db(
             record_type_as_char(&record),
         );
-        let public_type = if is_marc21 {
+        let audience_type = if is_marc21 {
             audience_marc21(&record)
         } else {
             audience_unimarc(&record)
         };
 
 
+
+        let specimens: Vec<Specimen> = record
+            .specimens()
+            .iter()
+            .map(|s| Specimen::from(s))
+            .collect();
+        record.specimens.clear();
 
         Item {
             id: None,
@@ -507,7 +514,7 @@ impl From<MarcRecord> for Item {
             title: Some(clean_title(&raw_title)),
             genre: None,
             subject,
-            audience_type: public_type,
+            audience_type,
             lang,
             lang_orig,
             publication_date,
@@ -534,43 +541,44 @@ impl From<MarcRecord> for Item {
             series: serie,
             collection,
             edition,
-            specimens: record
-                .specimens()
-                .iter()
-                .map(marc_specimen_to_specimen)
-                .collect(),
-            marc_record: Some(serde_json::to_value(&record).unwrap()),
+            specimens,
+            marc_record: Some(record),
         }
     }
 }
 
+
 /// Map marc_rs specimen (995/952) to our Specimen model (preview, id=0).
-fn marc_specimen_to_specimen(s: &z3950_rs::marc_rs::fields::Specimen) -> Specimen {
-    let notes = match (&s.section, &s.document_type) {
-        (Some(sec), Some(doc)) => Some(format!("{} — {}", sec, doc)),
-        (Some(sec), None) => Some(sec.clone()),
-        (None, Some(doc)) => Some(doc.clone()),
-        (None, None) => None,
-    };
-    Specimen {
-        id: None,
-        item_id: None,
-        source_id: None,
-        barcode: s.barcode.clone(),
-        call_number: s.call_number.clone(),
-        volume_designation: None,
-        place: None,
-        borrow_status: Some(98),
-        circulation_status: None,
-        notes,
-        price: None,
-        created_at: None,
-        updated_at: None,
-        archived_at: None,
-        source_name: s.library.clone(),
-        availability: Some(0),
+impl From<&z3950_rs::marc_rs::fields::Specimen> for Specimen {
+    fn from(s: &z3950_rs::marc_rs::fields::Specimen) -> Self {
+        let notes = match (&s.section, &s.document_type) {
+            (Some(sec), Some(doc)) => Some(format!("{} — {}", sec, doc)),
+            (Some(sec), None) => Some(sec.clone()),
+            (None, Some(doc)) => Some(doc.clone()),
+            (None, None) => None,
+        };
+        Specimen {
+            id: None,
+            item_id: None,
+            source_id: None,
+            barcode: s.barcode.clone(),
+            call_number: s.call_number.clone(),
+            volume_designation: None,
+            place: None,
+            borrow_status: Some(98),
+            circulation_status: None,
+            notes,
+            price: None,
+            created_at: None,
+            updated_at: None,
+            archived_at: None,
+            source_name: s.library.clone(),
+            availability: Some(0),
+        }
     }
 }
+
+
 
 fn language_id_to_code(id: i16) -> Option<&'static str> {
     match id {
@@ -642,8 +650,7 @@ impl From<&Item> for MarcRecord {
         // Start from existing marc_record if present, otherwise create a fresh record
         let mut record = item
             .marc_record
-            .as_ref()
-            .and_then(|v| serde_json::from_value::<MarcRecord>(v.clone()).ok())
+            .as_ref().cloned()
             .unwrap_or_else(|| {
                 MarcRecord::new(
                     Leader::builder()
@@ -654,6 +661,8 @@ impl From<&Item> for MarcRecord {
                         .build(),
                 )
             });
+
+        record.specimens.clear();
 
         // --- Title: update existing TitleStatement or insert as first ---
         if let Some(ref title) = item.title {
