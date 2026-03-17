@@ -19,10 +19,10 @@ impl LoansService {
     }
 
     /// Get loans for a user
-    pub async fn get_user_loans(&self, user_id: i64) -> AppResult<Vec<LoanDetails>> {
+    pub async fn get_user_loans(&self, user_id: i64, include_returned: bool) -> AppResult<Vec<LoanDetails>> {
         // Verify user exists
         self.repository.users_get_by_id(user_id).await?;
-        self.repository.loans_get_for_user(user_id).await
+        self.repository.loans_get_for_user(user_id, include_returned).await
     }
 
     /// Create a new loan (borrow an item)

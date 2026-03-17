@@ -8,7 +8,7 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use utoipa::ToSchema;
-use z3950_rs::marc_rs::{parse, Encoding, FormatEncoding, MarcFormat};
+use z3950_rs::marc_rs::{Encoding, MarcFormat, parse_records};
 
 use crate::{
     error::{AppError, AppResult},
@@ -86,9 +86,10 @@ impl MarcService {
         &self,
         data: &[u8],
     ) -> AppResult<EnqueueResult> {
-        let format_encoding = FormatEncoding::new(MarcFormat::Unimarc, Encoding::Utf8);
-        let records = parse(data, format_encoding)
-            .map_err(|e| AppError::Validation(format!("UNIMARC parse error: {}", e)))?;
+
+
+        let records = parse_records(&data).map_err(|e| AppError::Validation(format!("UNIMARC parse error: {}", e)))?;
+
 
         let batch_id: i64 = snowflaked::Generator::new(1).generate::<i64>();
 
@@ -96,11 +97,12 @@ impl MarcService {
 
         let mut items_short = Vec::with_capacity(records.len());
 
+
         for (idx, record) in records.into_iter().enumerate() {
             let key = Self::redis_key(batch_id, idx);
 
          
-            let json_str = serde_json::to_string(&record)
+            let json_str: String = serde_json::to_string(&record)
                 .map_err(|e| AppError::Internal(format!("Failed to serialize MARC record: {}", e)))?;
 
             // Store record

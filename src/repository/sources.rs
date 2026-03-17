@@ -143,7 +143,9 @@ impl Repository {
         old_source_ids: &[i64],
         new_source_id: i64,
     ) -> AppResult<i64> {
-        self.items_reassign_items_source(old_source_ids, new_source_id).await
+        // Items no longer reference sources directly; sources are attached to specimens.
+        let _ = (old_source_ids, new_source_id);
+        Ok(0)
     }
 
     /// Archive multiple sources by IDs

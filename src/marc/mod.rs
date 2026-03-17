@@ -5,7 +5,7 @@
 
 pub mod translator;
 
-pub use z3950_rs::marc_rs::{Record as MarcRecord, MarcFormat, DataField, Subfield, ControlField};
+pub use z3950_rs::marc_rs::{Record as MarcRecord, MarcFormat};
 
 
 

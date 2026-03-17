@@ -1,13 +1,13 @@
 //! Loans domain methods on Repository
 
 use chrono::{DateTime, Duration, Utc};
-use sqlx::{Pool, Postgres, Row};
+use sqlx::Row;
 
 use super::Repository;
 use crate::{
     error::{AppError, AppResult},
     models::{
-        item::ItemShort,
+        item::{Isbn, ItemShort},
         loan::{CreateLoan, Loan, LoanDetails, LoanSettings},
         specimen::SpecimenShort,
         user::{UserShort, UserShortRow},
@@ -41,23 +41,79 @@ impl Repository {
     }
 
     /// Get loans for a user
-    pub async fn loans_get_for_user(&self, user_id: i64) -> AppResult<Vec<LoanDetails>> {
-        let loans = sqlx::query(
-            r#"
-            SELECT l.*, s.barcode as specimen_identification,
+    pub async fn loans_get_for_user(&self, user_id: i64, include_returned: bool) -> AppResult<Vec<LoanDetails>> {
+        let author_subquery = r#"
+            (SELECT jsonb_build_object(
+                'id', a.id::text,
+                'lastname', a.lastname,
+                'firstname', a.firstname,
+                'bio', a.bio,
+                'notes', a.notes,
+                'function', ia.role
+            )
+            FROM item_authors ia
+            JOIN authors a ON a.id = ia.author_id
+            WHERE ia.item_id = i.id
+            ORDER BY ia.position LIMIT 1) as author
+        "#;
+
+        let sql = if include_returned {
+            format!(r#"
+            SELECT l.id, l.date, l.renew_date, l.nb_renews, l.issue_date,
+                   l.returned_date,
+                   s.barcode as specimen_identification,
                    s.id as specimen_id, s.barcode as specimen_barcode,
-                   s.call_number as specimen_call_number, s.borrow_status as specimen_borrow_status,
+                   s.call_number as specimen_call_number, s.borrowable as specimen_borrowable,
                    so.name as specimen_source_name,
                    i.id as item_id, i.media_type, i.isbn as item_isbn,
-                   i.title, i.publication_date
+                   i.title, i.publication_date,
+                   {author_subquery}
+            FROM loans l
+            JOIN specimens s ON l.specimen_id = s.id
+            LEFT JOIN sources so ON s.source_id = so.id
+            JOIN items i ON s.item_id = i.id
+            WHERE l.user_id = $1
+
+            UNION ALL
+
+            SELECT la.id, la.date, NULL::timestamptz as renew_date, la.nb_renews,
+                   la.issue_date, la.returned_date,
+                   s.barcode as specimen_identification,
+                   s.id as specimen_id, s.barcode as specimen_barcode,
+                   s.call_number as specimen_call_number, s.borrowable as specimen_borrowable,
+                   so.name as specimen_source_name,
+                   i.id as item_id, i.media_type, i.isbn as item_isbn,
+                   i.title, i.publication_date,
+                   {author_subquery}
+            FROM loans_archives la
+            JOIN specimens s ON la.specimen_id = s.id
+            LEFT JOIN sources so ON s.source_id = so.id
+            JOIN items i ON s.item_id = i.id
+            WHERE la.user_id = $1
+
+            ORDER BY returned_date NULLS FIRST, issue_date
+            "#)
+        } else {
+            format!(r#"
+            SELECT l.id, l.date, l.renew_date, l.nb_renews, l.issue_date,
+                   l.returned_date,
+                   s.barcode as specimen_identification,
+                   s.id as specimen_id, s.barcode as specimen_barcode,
+                   s.call_number as specimen_call_number, s.borrowable as specimen_borrowable,
+                   so.name as specimen_source_name,
+                   i.id as item_id, i.media_type, i.isbn as item_isbn,
+                   i.title, i.publication_date,
+                   {author_subquery}
             FROM loans l
             JOIN specimens s ON l.specimen_id = s.id
             LEFT JOIN sources so ON s.source_id = so.id
             JOIN items i ON s.item_id = i.id
             WHERE l.user_id = $1 AND l.returned_date IS NULL
             ORDER BY l.issue_date
-            "#,
-        )
+            "#)
+        };
+
+        let loans = sqlx::query(&sql)
         .bind(user_id)
         .fetch_all(&self.pool)
         .await?;
@@ -69,12 +125,13 @@ impl Repository {
             let start_date: DateTime<Utc> = row.get("date");
             let issue_date: Option<DateTime<Utc>> = row.get("issue_date");
             let renew_date: Option<DateTime<Utc>> = row.get("renew_date");
+            let returned_date: Option<DateTime<Utc>> = row.get("returned_date");
 
             let borrowed_specimen = SpecimenShort {
                 id: row.get("specimen_id"),
                 barcode: row.get("specimen_barcode"),
                 call_number: row.get("specimen_call_number"),
-                borrow_status: row.get("specimen_borrow_status"),
+                borrowable: row.get("specimen_borrowable"),
                 source_name: row.get("specimen_source_name"),
                 availability: Some(0), // borrowed = not available
             };
@@ -85,21 +142,26 @@ impl Repository {
                 issue_date: issue_date.unwrap_or(now),
                 renewal_date: renew_date,
                 nb_renews: row.get::<Option<i16>, _>("nb_renews").unwrap_or(0),
+                returned_date: returned_date,
                 item: ItemShort {
                     id: row.get("item_id"),
                     media_type: row.get("media_type"),
-                    isbn: row.get("item_isbn"),
+                    isbn: row
+                        .get::<Option<String>, _>("item_isbn")
+                        .map(Isbn::new)
+                        .filter(|i| !i.is_empty()),
                     title: row.get("title"),
                     date: row.get("publication_date"),
                     status: 0,
                     is_valid: Some(1),
                     archived_at: None,
-                    author: None,
+                    author: row.get::<Option<serde_json::Value>, _>("author")
+                        .and_then(|v| serde_json::from_value(v).ok()),
                     specimens: vec![borrowed_specimen],
                 },
                 user: None,
                 specimen_identification: row.get("specimen_identification"),
-                is_overdue: issue_date.map(|d| d < now).unwrap_or(false),
+                is_overdue: returned_date.is_none() && issue_date.map(|d| d < now).unwrap_or(false),
             });
         }
 
@@ -140,7 +202,7 @@ impl Repository {
         // Get specimen info and loan settings
         let specimen_row = sqlx::query(
             r#"
-            SELECT s.borrow_status, i.media_type
+            SELECT s.borrowable, i.media_type
             FROM specimens s
             JOIN items i ON s.item_id = i.id
             WHERE s.id = $1
@@ -150,11 +212,11 @@ impl Repository {
         .fetch_one(&self.pool)
         .await?;
 
-        let status: Option<i16> = specimen_row.get("borrow_status");
+        let borrowable: bool = specimen_row.get("borrowable");
         let media_type: Option<String> = specimen_row.get("media_type");
 
         // Check if borrowable
-        if status != Some(98) && !loan.force {
+        if !borrowable && !loan.force {
             return Err(AppError::BusinessRule("Specimen is not borrowable".to_string()));
         }
 
@@ -267,7 +329,7 @@ impl Repository {
             SELECT i.id, i.media_type, i.isbn, i.title, i.publication_date,
                    s.barcode as specimen_identification,
                    s.id as specimen_id, s.barcode as specimen_barcode,
-                   s.call_number as specimen_call_number, s.borrow_status as specimen_borrow_status,
+                   s.call_number as specimen_call_number, s.borrowable as specimen_borrowable,
                    so.name as specimen_source_name
             FROM items i
             JOIN specimens s ON s.item_id = i.id
@@ -297,7 +359,7 @@ impl Repository {
             id: item_row.get("specimen_id"),
             barcode: item_row.get("specimen_barcode"),
             call_number: item_row.get("specimen_call_number"),
-            borrow_status: item_row.get("specimen_borrow_status"),
+            borrowable: item_row.get("specimen_borrowable"),
             source_name: item_row.get("specimen_source_name"),
             availability: Some(1), // returned = available
         };
@@ -308,6 +370,7 @@ impl Repository {
             issue_date: loan.issue_date.unwrap_or(now),
             renewal_date: loan.renew_date,
             nb_renews: loan.nb_renews.unwrap_or(0),
+            returned_date: Some(now),
             item: ItemShort {
                 id: item_row.get("id"),
                 media_type: item_row.get("media_type"),

@@ -114,9 +114,6 @@ impl SourcesService {
         self.repository
             .sources_reassign_specimens(&data.source_ids, new_source.id)
             .await?;
-        self.repository
-            .sources_reassign_items(&data.source_ids, new_source.id)
-            .await?;
 
         // Archive old sources
         self.repository

@@ -38,6 +38,7 @@ pub struct LoanDetails {
     pub issue_date: DateTime<Utc>,
     pub renewal_date: Option<DateTime<Utc>>,
     pub nb_renews: i16,
+    pub returned_date: Option<DateTime<Utc>>,
     pub item: ItemShort,
     pub user: Option<UserShort>,
     pub specimen_identification: Option<String>,

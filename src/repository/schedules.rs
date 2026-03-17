@@ -1,7 +1,6 @@
 //! Schedules domain methods on Repository (periods, slots, closures)
 
 use chrono::{NaiveDate, NaiveTime, Utc};
-use sqlx::{Pool, Postgres};
 
 use super::Repository;
 use crate::{

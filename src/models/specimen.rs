@@ -6,21 +6,8 @@ use serde_with::{serde_as, DisplayFromStr};
 use sqlx::FromRow;
 use utoipa::ToSchema;
 
-/// Specimen borrow status (can it be borrowed?)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(i16)]
-pub enum SpecimenBorrowStatus {
-    Borrowable = 98,
-    NotBorrowable = 110,
-}
-
-impl From<i16> for SpecimenBorrowStatus {
-    fn from(v: i16) -> Self {
-        match v {
-            98 => SpecimenBorrowStatus::Borrowable,
-            _ => SpecimenBorrowStatus::NotBorrowable,
-        }
-    }
+fn default_borrowable() -> bool {
+    true
 }
 
 /// Full specimen model from database.
@@ -42,7 +29,8 @@ pub struct Specimen {
     pub call_number: Option<String>,
     pub volume_designation: Option<String>,
     pub place: Option<i16>,
-    pub borrow_status: Option<i16>,
+    #[serde(default = "default_borrowable")]
+    pub borrowable: bool,
     pub circulation_status: Option<i16>,
     pub notes: Option<String>,
     pub price: Option<String>,
@@ -74,7 +62,7 @@ pub struct SpecimenShort {
     pub id: i64,
     pub barcode: Option<String>,
     pub call_number: Option<String>,
-    pub borrow_status: Option<i16>,
+    pub borrowable: bool,
     pub source_name: Option<String>,
     pub availability: Option<i64>,
 }
@@ -86,7 +74,7 @@ impl From<Specimen> for SpecimenShort {
             id: specimen.id.unwrap_or(0),
             barcode: specimen.barcode,
             call_number: specimen.call_number,
-            borrow_status: specimen.borrow_status,
+            borrowable: specimen.borrowable,
             source_name: specimen.source_name,
             availability: specimen.availability,
         }

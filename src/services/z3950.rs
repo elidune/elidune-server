@@ -2,14 +2,11 @@
 //!
 //! Uses the z3950-rs crate for Z39.50 protocol communication.
 
-use chrono::Utc;
 use sqlx::Row;
 use serde_json;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use redis::AsyncCommands;
 
-use z3950_rs::marc_rs::{Encoding, MarcFormat, Record as MarcRecord};
+use z3950_rs::marc_rs::{ MarcFormat, Record as MarcRecord};
 use z3950_rs::{Client, QueryLanguage};
 use crate::{
     api::z3950::{ImportSpecimen, Z3950SearchQuery},
@@ -34,8 +31,7 @@ struct Z3950Server {
     database: String,
     login: Option<String>,
     password: Option<String>,
-    format: MarcFormat,
-    encoding: Encoding,
+    format: Option<MarcFormat>,
 }
 
 #[derive(Clone)]
@@ -92,10 +88,9 @@ impl Z3950Service {
                 address: row.get("address"),
                 port: row.get("port"),
                 database: row.get("database"),
-                format: row.get::<&str, _>("format").into(),
+                format: None,
                 login: row.get("login"),
                 password: row.get("password"),
-                encoding: row.get::<&str, _>("encoding").into(),
             })
             .collect();
 

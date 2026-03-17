@@ -147,6 +147,7 @@ use crate::api::{auth, equipment, events, health, items, loans, schedules, setti
             crate::models::import_report::ImportReport,
             crate::models::import_report::ImportAction,
             crate::models::import_report::DuplicateConfirmationRequired,
+            crate::models::import_report::DuplicateSpecimenBarcodeRequired,
             // Items
             items::CreateItemResponse,
             // Stats

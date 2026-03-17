@@ -8,6 +8,9 @@ use axum::{
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::models::item::ItemShort;
+use crate::models::specimen::SpecimenShort;
+
 /// Application error codes matching the original C implementation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -72,6 +75,14 @@ pub enum AppError {
     #[error("Duplicate ISBN requires confirmation")]
     DuplicateNeedsConfirmation {
         existing_id: i64,
+        existing_item: ItemShort,
+        message: String,
+    },
+
+    #[error("Duplicate barcode requires confirmation")]
+    DuplicateBarcodeNeedsConfirmation {
+        existing_id: i64,
+        existing_specimen: SpecimenShort,
         message: String,
     },
 }
@@ -127,10 +138,28 @@ impl IntoResponse for AppError {
             AppError::BusinessRule(msg) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, ErrorCode::Failure, msg.clone())
             }
-            AppError::DuplicateNeedsConfirmation { existing_id, ref message } => {
+            AppError::DuplicateNeedsConfirmation {
+                existing_id,
+                existing_item,
+                ref message,
+            } => {
                 let body = Json(crate::models::import_report::DuplicateConfirmationRequired {
                     code: "duplicate_isbn_needs_confirmation".to_string(),
                     existing_id: *existing_id,
+                    existing_item: existing_item.clone(),
+                    message: message.clone(),
+                });
+                return (StatusCode::CONFLICT, body).into_response();
+            }
+            AppError::DuplicateBarcodeNeedsConfirmation {
+                existing_id,
+                existing_specimen,
+                ref message,
+            } => {
+                let body = Json(crate::models::import_report::DuplicateSpecimenBarcodeRequired {
+                    code: "duplicate_barcode_needs_confirmation".to_string(),
+                    existing_id: *existing_id,
+                    existing_specimen: existing_specimen.clone(),
                     message: message.clone(),
                 });
                 return (StatusCode::CONFLICT, body).into_response();

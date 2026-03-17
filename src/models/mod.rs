@@ -17,7 +17,7 @@ pub mod visitor_count;
 // Re-export commonly used types
 pub use author::Author;
 pub use enums::{Genre, Lang, Occupation, Sex, StaffType, EquipmentType, EquipmentStatus, EventType};
-pub use import_report::{ImportReport, ImportAction, DuplicateCandidate, DuplicateConfirmationRequired};
+pub use import_report::{ImportReport, ImportAction, DuplicateCandidate, DuplicateConfirmationRequired, DuplicateSpecimenBarcodeRequired};
 pub use item_author::ItemAuthor;
 pub use equipment::Equipment;
 pub use event::Event;

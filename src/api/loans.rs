@@ -1,7 +1,7 @@
 //! Loan management endpoints
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     Json,
 };
@@ -65,10 +65,11 @@ pub struct ReturnResponse {
     tag = "loans",
     security(("bearer_auth" = [])),
     params(
-        ("id" = i64, Path, description = "User ID")
+        ("id" = i64, Path, description = "User ID"),
+        ("include_returned" = Option<bool>, Query, description = "Include returned loans (default: false)")
     ),
     responses(
-        (status = 200, description = "User's active loans", body = Vec<LoanDetails>),
+        (status = 200, description = "User's loans", body = Vec<LoanDetails>),
         (status = 404, description = "User not found")
     )
 )]
@@ -76,11 +77,22 @@ pub async fn get_user_loans(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     Path(user_id): Path<i64>,
+    Query(query): Query<GetUserLoansQuery>,
 ) -> AppResult<Json<Vec<LoanDetails>>> {
     claims.require_read_users()?;
 
-    let loans = state.services.loans.get_user_loans(user_id).await?;
+    let loans = state
+        .services
+        .loans
+        .get_user_loans(user_id, query.include_returned)
+        .await?;
     Ok(Json(loans))
+}
+
+#[derive(Debug, Deserialize, Default, ToSchema)]
+pub struct GetUserLoansQuery {
+    #[serde(default)]
+    pub include_returned: bool,
 }
 
 /// Create a new loan (borrow an item)

@@ -273,24 +273,33 @@ pub async fn import_marc_batch(
     tag = "items",
     security(("bearer_auth" = [])),
     params(
-        ("id" = i32, Path, description = "Item ID")
+        ("id" = i32, Path, description = "Item ID"),
+        ("allow_duplicate_isbn" = Option<bool>, Query, description = "Allow duplicate ISBN (default: false)")
     ),
     request_body = Item,
     responses(
         (status = 200, description = "Item updated", body = Item),
-        (status = 404, description = "Item not found")
+        (status = 404, description = "Item not found"),
+        (status = 409, description = "Duplicate ISBN requires confirmation")
     )
 )]
 pub async fn update_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     Path(id): Path<i64>,
+    Query(query): Query<UpdateItemQuery>,
     Json(item): Json<Item>,
 ) -> AppResult<Json<Item>> {
     claims.require_write_items()?;
 
-    let updated = state.services.catalog.update_item(id, item).await?;
+    let updated = state.services.catalog.update_item(id, item, query.allow_duplicate_isbn).await?;
     Ok(Json(updated))
+}
+
+#[derive(Debug, Deserialize, Default, ToSchema)]
+pub struct UpdateItemQuery {
+    #[serde(default)]
+    pub allow_duplicate_isbn: bool,
 }
 
 /// Delete an item

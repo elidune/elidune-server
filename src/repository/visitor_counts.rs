@@ -1,7 +1,6 @@
 //! Visitor counts domain methods on Repository
 
 use chrono::NaiveDate;
-use sqlx::{Pool, Postgres};
 
 use super::Repository;
 use crate::{

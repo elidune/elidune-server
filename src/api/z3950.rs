@@ -80,10 +80,12 @@ pub struct ImportSpecimen {
 
 impl From<ImportSpecimen> for Specimen {
     fn from(s: ImportSpecimen) -> Self {
-        let borrow_status = s
+        let borrowable = s
             .status
             .as_ref()
-            .and_then(|st| st.parse::<i16>().ok());
+            .and_then(|st| st.parse::<i16>().ok())
+            .map(|v| v == 98)
+            .unwrap_or(true);
         Specimen {
             id: None,
             item_id: None,
@@ -92,7 +94,7 @@ impl From<ImportSpecimen> for Specimen {
             call_number: s.call_number,
             volume_designation: None,
             place: s.place,
-            borrow_status,
+            borrowable,
             circulation_status: None,
             notes: s.notes,
             price: s.price,

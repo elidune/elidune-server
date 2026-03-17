@@ -9,20 +9,129 @@ use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use sqlx::FromRow;
 use utoipa::{IntoParams, ToSchema};
+use z3950_rs::marc_rs;
 use crate::models::Author;
 use crate::models::specimen::SpecimenShort;
 
 use super::specimen::Specimen;
 
 // Re-exports: canonical MARC data types from marc-rs (via z3950-rs).
-pub use z3950_rs::marc_rs::format::MarcFormat;
-pub use z3950_rs::marc_rs::record::{ Record as MarcRecord,
-    ControlField, DataField, EditionInfo, PublicationStatementInfo, Subfield,
-};
-pub use z3950_rs::marc_rs::author::{Author as MarcAuthor, AuthorKind};
-pub use z3950_rs::marc_rs::fields::{
-    DeweyClassification, Isbn, LanguageData, LinkingData, PublicationData, SeriesStatementData,
-};
+pub use crate::marc::{MarcFormat, MarcRecord};
+
+/// Normalized ISBN/identifier stored without any special characters.
+///
+/// Construction from a string strips all non-ASCII alphanumeric characters
+/// and uppercases ASCII letters (so `x` becomes `X`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, ToSchema)]
+#[schema(value_type = String)]
+pub struct Isbn(String);
+
+#[derive(Debug, Clone, Copy)]
+pub struct IsbnParseError;
+
+impl std::fmt::Display for IsbnParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid isbn")
+    }
+}
+
+impl std::error::Error for IsbnParseError {}
+
+impl Isbn {
+    pub fn new(raw: impl AsRef<str>) -> Self {
+        let s = raw
+            .as_ref()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_uppercase())
+            .collect::<String>();
+        Self(s)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Display for Isbn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::str::FromStr for Isbn {
+    type Err = IsbnParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::new(s))
+    }
+}
+
+impl From<String> for Isbn {
+    fn from(s: String) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<&str> for Isbn {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+impl AsRef<str> for Isbn {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl Serialize for Isbn {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Isbn {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Isbn::new(s))
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for Isbn {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <String as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for Isbn {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + 'static + Send + Sync>> {
+        let s: String = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Ok(Isbn::new(s))
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for Isbn {
+    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> sqlx::encode::IsNull {
+        <String as sqlx::Encode<sqlx::Postgres>>::encode(self.0.clone(), buf)
+    }
+}
 
 /// Item operational status (independent of archival)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -47,45 +156,39 @@ impl Default for ItemStatus {
     }
 }
 
+/// Audience type codes for catalog items.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum AudienceType {
+    #[serde(rename = "97")]
+    Adult,
+    #[serde(rename = "106")]
+    Children,
+    #[serde(rename = "117")]
+    Unknown,
+}
+
 /// Media type codes for catalog items.
 /// Maps from MARC Leader position 6 (record type) via `record_type_to_media_type_db` (see repository).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum MediaType {
-    #[serde(rename = "")]
     All,
-    #[serde(rename = "u")]
     Unknown,
-    #[serde(rename = "b")]
     PrintedText,
-    #[serde(rename = "m")]
     Multimedia,
-    #[serde(rename = "bc")]
     Comics,
-    #[serde(rename = "p")]
     Periodic,
-    #[serde(rename = "v")]
     Video,
-    #[serde(rename = "vt")]
     VideoTape,
-    #[serde(rename = "vd")]
     VideoDvd,
-    #[serde(rename = "a")]
     Audio,
-    #[serde(rename = "am")]
     AudioMusic,
-    #[serde(rename = "amt")]
     AudioMusicTape,
-    #[serde(rename = "amc")]
     AudioMusicCd,
-    #[serde(rename = "an")]
     AudioNonMusic,
-    #[serde(rename = "ant")]
     AudioNonMusicTape,
-    #[serde(rename = "anc")]
     AudioNonMusicCd,
-    #[serde(rename = "c")]
     CdRom,
-    #[serde(rename = "i")]
     Images,
 }
 
@@ -113,12 +216,38 @@ impl MediaType {
             MediaType::Images => "i",
         }
     }
+
+    /// Canonical DB/API string representation (camelCase).
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            MediaType::All => "all",
+            MediaType::Unknown => "unknown",
+            MediaType::PrintedText => "printedText",
+            MediaType::Multimedia => "multimedia",
+            MediaType::Comics => "comics",
+            MediaType::Periodic => "periodic",
+            MediaType::Video => "video",
+            MediaType::VideoTape => "videoTape",
+            MediaType::VideoDvd => "videoDvd",
+            MediaType::Audio => "audio",
+            MediaType::AudioMusic => "audioMusic",
+            MediaType::AudioMusicTape => "audioMusicTape",
+            MediaType::AudioMusicCd => "audioMusicCd",
+            MediaType::AudioNonMusic => "audioNonMusic",
+            MediaType::AudioNonMusicTape => "audioNonMusicTape",
+            MediaType::AudioNonMusicCd => "audioNonMusicCd",
+            MediaType::CdRom => "cdRom",
+            MediaType::Images => "images",
+        }
+    }
 }
 
 impl From<&str> for MediaType {
     fn from(s: &str) -> Self {
         match s {
+            // Legacy codes
             "" => MediaType::All,
+            "u" => MediaType::Unknown,
             "b" => MediaType::PrintedText,
             "m" => MediaType::Multimedia,
             "bc" => MediaType::Comics,
@@ -135,14 +264,265 @@ impl From<&str> for MediaType {
             "anc" => MediaType::AudioNonMusicCd,
             "c" => MediaType::CdRom,
             "i" => MediaType::Images,
+            // New camelCase strings
+            "all" => MediaType::All,
+            "unknown" => MediaType::Unknown,
+            "printedText" => MediaType::PrintedText,
+            "multimedia" => MediaType::Multimedia,
+            "comics" => MediaType::Comics,
+            "periodic" => MediaType::Periodic,
+            "video" => MediaType::Video,
+            "videoTape" => MediaType::VideoTape,
+            "videoDvd" => MediaType::VideoDvd,
+            "audio" => MediaType::Audio,
+            "audioMusic" => MediaType::AudioMusic,
+            "audioMusicTape" => MediaType::AudioMusicTape,
+            "audioMusicCd" => MediaType::AudioMusicCd,
+            "audioNonMusic" => MediaType::AudioNonMusic,
+            "audioNonMusicTape" => MediaType::AudioNonMusicTape,
+            "audioNonMusicCd" => MediaType::AudioNonMusicCd,
+            "cdRom" => MediaType::CdRom,
+            "images" => MediaType::Images,
             _ => MediaType::Unknown,
         }
     }
 }
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Language {
+    Unknown,
+    French,
+    English,
+    German,
+    Spanish,
+    Italian,
+    Portuguese,
+    Japanese,
+    Chinese,
+    Russian,
+    Arabic,
+    Dutch,
+    Swedish,
+    Norwegian,
+    Danish,
+    Finnish,
+    Polish,
+    Czech,
+    Hungarian,
+    Romanian,
+    Turkish,
+    Korean,
+    Latin,
+    Greek,
+    Croatian,
+    Hindi,
+    Hebrew,
+    Persian,
+    Catalan,
+    Thai,
+    Vietnamese,
+    Indonesian,
+    Malay,
+}
+
+impl Language {
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Language::Unknown => "unknown",
+            Language::French => "french",
+            Language::English => "english",
+            Language::German => "german",
+            Language::Spanish => "spanish",
+            Language::Italian => "italian",
+            Language::Portuguese => "portuguese",
+            Language::Japanese => "japanese",
+            Language::Chinese => "chinese",
+            Language::Russian => "russian",
+            Language::Arabic => "arabic",
+            Language::Dutch => "dutch",
+            Language::Swedish => "swedish",
+            Language::Norwegian => "norwegian",
+            Language::Danish => "danish",
+            Language::Finnish => "finnish",
+            Language::Polish => "polish",
+            Language::Czech => "czech",
+            Language::Hungarian => "hungarian",
+            Language::Romanian => "romanian",
+            Language::Turkish => "turkish",
+            Language::Korean => "korean",
+            Language::Latin => "latin",
+            Language::Greek => "greek",
+            Language::Croatian => "croatian",
+            Language::Hindi => "hindi",
+            Language::Hebrew => "hebrew",
+            Language::Persian => "persian",
+            Language::Catalan => "catalan",
+            Language::Thai => "thai",
+            Language::Vietnamese => "vietnamese",
+            Language::Indonesian => "indonesian",
+            Language::Malay => "malay",
+        }
+    }
+}
+
+impl From<&str> for Language {
+    fn from(s: &str) -> Self {
+        match s {
+            // Legacy numeric IDs
+            "0" => Language::Unknown,
+            "1" => Language::French,
+            "2" => Language::English,
+            "3" => Language::German,
+            "4" => Language::Japanese,
+            "5" => Language::Spanish,
+            "6" => Language::Portuguese,
+            // Legacy ISO-ish 3-letter codes (migration 027)
+            "fre" | "fra" => Language::French,
+            "eng" => Language::English,
+            "ger" | "deu" => Language::German,
+            "jpn" => Language::Japanese,
+            "spa" => Language::Spanish,
+            "por" => Language::Portuguese,
+            // Older camelCase strings from previous version
+            "langUnknown" => Language::Unknown,
+            "langFr" => Language::French,
+            "langEn" => Language::English,
+            "langDe" => Language::German,
+            "langJp" => Language::Japanese,
+            "langEs" => Language::Spanish,
+            "langPo" => Language::Portuguese,
+            // New canonical camelCase strings
+            "unknown" => Language::Unknown,
+            "french" => Language::French,
+            "english" => Language::English,
+            "german" => Language::German,
+            "japanese" => Language::Japanese,
+            "spanish" => Language::Spanish,
+            "portuguese" => Language::Portuguese,
+            "italian" => Language::Italian,
+            "chinese" => Language::Chinese,
+            "russian" => Language::Russian,
+            "arabic" => Language::Arabic,
+            "dutch" => Language::Dutch,
+            "swedish" => Language::Swedish,
+            "norwegian" => Language::Norwegian,
+            "danish" => Language::Danish,
+            "finnish" => Language::Finnish,
+            "polish" => Language::Polish,
+            "czech" => Language::Czech,
+            "hungarian" => Language::Hungarian,
+            "romanian" => Language::Romanian,
+            "turkish" => Language::Turkish,
+            "korean" => Language::Korean,
+            "latin" => Language::Latin,
+            "greek" => Language::Greek,
+            "croatian" => Language::Croatian,
+            "hindi" => Language::Hindi,
+            "hebrew" => Language::Hebrew,
+            "persian" => Language::Persian,
+            "catalan" => Language::Catalan,
+            "thai" => Language::Thai,
+            "vietnamese" => Language::Vietnamese,
+            "indonesian" => Language::Indonesian,
+            "malay" => Language::Malay,
+            _ => Language::Unknown,
+        }
+    }
+}
+
+
+
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_db_str())
+    }
+}
+
+impl std::str::FromStr for Language {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Language::from(s))
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for Language {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <String as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for Language {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + 'static + Send + Sync>> {
+        let s: String = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Ok(Language::from(s.as_str()))
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for Language {
+    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> sqlx::encode::IsNull {
+        <String as sqlx::Encode<sqlx::Postgres>>::encode(self.to_string(), buf)
+    }
+}
+
+impl sqlx::postgres::PgHasArrayType for Language {
+    fn array_type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as sqlx::postgres::PgHasArrayType>::array_type_info()
+    }
+}
+
+
+
 impl std::fmt::Display for MediaType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_code())
+        write!(f, "{}", self.as_db_str())
+    }
+}
+
+impl std::str::FromStr for MediaType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(MediaType::from(s))
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for MediaType {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <String as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for MediaType {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + 'static + Send + Sync>> {
+        let s: String = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Ok(MediaType::from(s.as_str()))
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for MediaType {
+    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> sqlx::encode::IsNull {
+        <String as sqlx::Encode<sqlx::Postgres>>::encode(self.to_string(), buf)
+    }
+}
+
+impl sqlx::postgres::PgHasArrayType for MediaType {
+    fn array_type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as sqlx::postgres::PgHasArrayType>::array_type_info()
     }
 }
 
@@ -157,17 +537,15 @@ pub struct Item {
     #[schema(value_type = Option<String>)]
     #[serde(default)]
     pub id: Option<i64>,
-    pub media_type: Option<String>,
-    pub isbn: Option<String>,
-    pub barcode: Option<String>,
-    pub call_number: Option<String>,
-    pub price: Option<String>,
+    pub media_type: MediaType,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    pub isbn: Option<Isbn>,
     pub title: Option<String>,
-    pub genre: Option<i16>,
     pub subject: Option<String>,
     pub audience_type: Option<i16>,
-    pub lang: Option<i16>,
-    pub lang_orig: Option<i16>,
+    pub lang: Option<Language>,
+    pub lang_orig: Option<Language>,
     pub publication_date: Option<String>,
     pub page_extent: Option<String>,
     pub format: Option<String>,
@@ -175,8 +553,7 @@ pub struct Item {
     pub accompanying_material: Option<String>,
     pub abstract_: Option<String>,
     pub notes: Option<String>,
-    pub keywords: Option<String>,
-    pub state: Option<String>,
+    pub keywords: Option<Vec<String>>,
     pub is_valid: Option<i16>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
@@ -193,8 +570,6 @@ pub struct Item {
     pub collection_sequence_number: Option<i16>,
     #[serde(default)]
     pub collection_volume_number: Option<i16>,
-    #[serde(default)]
-    pub status: i16,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub archived_at: Option<DateTime<Utc>>,
@@ -227,8 +602,10 @@ pub struct ItemShort {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub id: i64,
-    pub media_type: Option<String>,
-    pub isbn: Option<String>,
+    pub media_type: MediaType,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    pub isbn: Option<Isbn>,
     pub title: Option<String>,
     pub date: Option<String>,
     pub status: i16,
@@ -250,7 +627,7 @@ impl From<Item> for ItemShort {
             isbn: item.isbn,
             title: item.title,
             date: item.publication_date,
-            status: item.status,
+            status: 0,
             is_valid: item.is_valid,
             archived_at: item.archived_at,
             author: item.authors.first().cloned(),
@@ -275,18 +652,7 @@ pub struct Serie {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-impl From<&SeriesStatementData> for Serie {
-    fn from(d: &SeriesStatementData) -> Self {
-        Self {
-            id: None,
-            key: None,
-            name: Some(d.statement.clone()),
-            issn: d.issn.clone(),
-            created_at: None,
-            updated_at: None,
-        }
-    }
-}
+
 
 /// Collection model. Persistence shape for MARC linking (e.g. 410); source: marc-rs `LinkingData` (title → primary_title, issn).
 #[serde_as]
@@ -307,20 +673,7 @@ pub struct Collection {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-impl From<&LinkingData> for Collection {
-    fn from(d: &LinkingData) -> Self {
-        Self {
-            id: None,
-            key: None,
-            primary_title: d.title.clone(),
-            secondary_title: None,
-            tertiary_title: None,
-            issn: d.issn.clone(),
-            created_at: None,
-            updated_at: None,
-        }
-    }
-}
+
 
 /// Edition (publisher) model. Persistence shape for MARC publication (260/264/210); source: marc-rs `EditionInfo` or `PublicationData`.
 #[serde_as]
@@ -339,37 +692,12 @@ pub struct Edition {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-impl From<&EditionInfo> for Edition {
-    fn from(e: &EditionInfo) -> Self {
-        Self {
-            id: None,
-            publisher_name: e.publisher.clone(),
-            place_of_publication: e.place.clone(),
-            date: e.date.clone(),
-            created_at: None,
-            updated_at: None,
-        }
-    }
-}
-
-impl From<&PublicationData> for Edition {
-    fn from(p: &PublicationData) -> Self {
-        Self {
-            id: None,
-            publisher_name: p.publisher().map(String::from),
-            place_of_publication: p.place().map(String::from),
-            date: p.date().map(String::from),
-            created_at: None,
-            updated_at: None,
-        }
-    }
-}
 
 /// Item query parameters (API). Filter values are strings; use `MarcFormat` when filtering by MARC format where applicable.
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct ItemQuery {
     pub media_type: Option<String>,
-    pub isbn: Option<String>,
+    pub isbn: Option<Isbn>,
     pub barcode: Option<String>,
     pub author: Option<String>,
     pub title: Option<String>,
@@ -379,7 +707,6 @@ pub struct ItemQuery {
     pub content: Option<String>,
     pub keywords: Option<String>,
     pub freesearch: Option<String>,
-    pub genre: Option<String>,
     pub audience_type: Option<i16>,
     pub archive: Option<bool>,
     pub page: Option<i64>,
@@ -388,14 +715,14 @@ pub struct ItemQuery {
 
 #[cfg(test)]
 mod tests {
-    use super::ItemShort;
+    use super::{Isbn, ItemShort, MediaType};
     use serde_json;
 
     #[test]
     fn item_short_id_serializes_as_string() {
         let item = ItemShort {
             id: 12345,
-            media_type: None,
+            media_type: MediaType::Unknown,
             isbn: None,
             title: Some("Test".to_string()),
             date: None,
@@ -414,5 +741,17 @@ mod tests {
         let json = r#"{"id":"12345","media_type":null,"isbn":null,"title":"Test","date":null,"status":0,"is_valid":null,"archived_at":null,"author":null}"#;
         let item: ItemShort = serde_json::from_str(json).unwrap();
         assert_eq!(item.id, 12345);
+    }
+
+    #[test]
+    fn isbn_strips_special_chars_and_uppercases() {
+        let isbn = Isbn::new("978-2-07-040850-4");
+        assert_eq!(isbn.as_str(), "9782070408504");
+
+        let isbn = Isbn::new(" 2 07 040850 x ");
+        assert_eq!(isbn.as_str(), "207040850X");
+
+        let isbn = Isbn::new("isbn: 978_2_07");
+        assert_eq!(isbn.as_str(), "ISBN978207");
     }
 }

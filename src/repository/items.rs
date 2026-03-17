@@ -16,7 +16,7 @@ use crate::{
     models::{
         author::Author,
         import_report::DuplicateCandidate,
-        item::{Collection, Edition, Item, ItemQuery, ItemShort, Serie},
+        item::{Collection, Edition, Isbn, Item, ItemQuery, ItemShort, MediaType, Serie},
         specimen::Specimen,
     },
 };
@@ -25,8 +25,8 @@ use crate::{
 #[derive(FromRow)]
 struct ItemShortRow {
     id: i64,
-    media_type: Option<String>,
-    isbn: Option<String>,
+    media_type: MediaType,
+    isbn: Option<Isbn>,
     title: Option<String>,
     date: Option<String>,
     status: i16,
@@ -44,7 +44,7 @@ struct SpecimenShortRow {
     id: i64,
     barcode: Option<String>,
     call_number: Option<String>,
-    borrow_status: Option<i16>,
+    borrowable: bool,
     source_name: Option<String>,
     availability: Option<i64>,
 }
@@ -55,7 +55,7 @@ impl From<SpecimenShortRow> for SpecimenShort {
             id: r.id,
             barcode: r.barcode,
             call_number: r.call_number,
-            borrow_status: r.borrow_status,
+            borrowable: r.borrowable,
             source_name: r.source_name,
             availability: r.availability,
         }
@@ -79,27 +79,10 @@ impl From<ItemShortRow> for ItemShort {
     }
 }
 
-// --- MARC type → DB (char/int) conversion helpers ---
 
-/// Converts record type char (Leader position 6) to DB media_type string.
-pub fn record_type_to_media_type_db(record_type: char) -> String {
-        match record_type {
-            'a' | 't' => "b",
-            'c' | 'd' => "bc",
-            'g' => "v",
-            'i' | 'j' => "a",
-            'm' => "c",
-            'k' => "i",
-            _ => "u",
-        }
-    
-    .to_string()
-}
 
 fn sanitize_isbn(s: &str) -> String {
-    s.chars()
-        .filter(|c| c.is_alphanumeric() || *c == ' ')
-        .collect::<String>()
+    Isbn::new(s).to_string()
 }
 
 fn normalize_key(s: &str) -> String {
@@ -131,14 +114,14 @@ impl Repository {
     pub async fn items_get_by_id_or_isbn(&self, id_or_isbn: &str) -> AppResult<Item> {
 
         let query = r#"
-            SELECT id, media_type, isbn, price, barcode, call_number,
+            SELECT id, media_type, isbn,
                    publication_date, lang, lang_orig, title,
-                   genre, subject, audience_type, page_extent, format,
+                   subject, audience_type, page_extent, format,
                    table_of_contents, accompanying_material,
-                   abstract as abstract_, notes, keywords, state,
+                   abstract as abstract_, notes, keywords, 
                    series_id, series_volume_number, edition_id,
                    collection_id, collection_sequence_number, collection_volume_number,
-                   is_valid, status,
+                   is_valid,
                    created_at, updated_at, archived_at
             FROM items
             WHERE (id = $1 OR isbn = $2) AND archived_at IS NULL
@@ -147,7 +130,7 @@ impl Repository {
         // query id and isbn in the same query
         let mut item = sqlx::query_as::<_, Item>(query)
         .bind(id_or_isbn.parse::<i64>().unwrap_or(0))
-        .bind(id_or_isbn)
+        .bind(Isbn::new(id_or_isbn).to_string())
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Item with id {} not found", id_or_isbn)))?;
@@ -215,6 +198,42 @@ impl Repository {
             .collect())
     }
 
+    /// Get a short item representation by ID (includes author + specimens).
+    pub async fn items_get_short_by_id(&self, id: i64) -> AppResult<ItemShort> {
+        let row: ItemShortRow = sqlx::query_as(
+            r#"
+            SELECT i.id, i.media_type, i.isbn, i.title,
+                   i.publication_date as date, 0::smallint as status,
+                   1::smallint as is_local, i.is_valid, i.archived_at,
+                   (
+                       SELECT jsonb_build_object(
+                           'id', a.id::text,
+                           'lastname', a.lastname,
+                           'firstname', a.firstname,
+                           'bio', a.bio,
+                           'notes', a.notes,
+                           'function', ia.role
+                       )
+                       FROM item_authors ia
+                       JOIN authors a ON a.id = ia.author_id
+                       WHERE ia.item_id = i.id
+                       ORDER BY ia.position LIMIT 1
+                   ) as author
+            FROM items i
+            WHERE i.id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Item with id {} not found", id)))?;
+
+        let mut short = ItemShort::from(row);
+        let specimens_map = self.items_get_specimens_short_by_item_ids(&[short.id]).await?;
+        short.specimens = specimens_map.get(&short.id).cloned().unwrap_or_default();
+        Ok(short)
+    }
+
     // =========================================================================
     // SEARCH
     // =========================================================================
@@ -247,14 +266,18 @@ impl Repository {
         }
 
         if let Some(ref keywords) = query.keywords {
-            conditions.push(format!("LOWER(keywords) LIKE '%{}%'", keywords.to_lowercase()));
+            conditions.push(format!(
+                "EXISTS (SELECT 1 FROM unnest(keywords) kw WHERE LOWER(kw) LIKE '%{}%')",
+                keywords.to_lowercase()
+            ));
         }
 
         if let Some(ref freesearch) = query.freesearch {
             let term = freesearch.to_lowercase();
             conditions.push(format!(
                 "(LOWER(title) LIKE '%{t}%' OR LOWER(isbn) LIKE '%{t}%' OR LOWER(subject) LIKE '%{t}%' \
-                 OR LOWER(keywords) LIKE '%{t}%' OR LOWER(call_number) LIKE '%{t}%' \
+                 OR EXISTS (SELECT 1 FROM unnest(keywords) kw WHERE LOWER(kw) LIKE '%{t}%') \
+                 OR EXISTS (SELECT 1 FROM specimens s WHERE s.item_id = i.id AND LOWER(s.call_number) LIKE '%{t}%') \
                  OR EXISTS (SELECT 1 FROM item_authors ia JOIN authors a ON a.id = ia.author_id \
                             WHERE ia.item_id = i.id AND (LOWER(a.lastname) LIKE '%{t}%' OR LOWER(a.firstname) LIKE '%{t}%')))",
                 t = term
@@ -380,30 +403,30 @@ impl Repository {
         let id = sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO items (
-                media_type, isbn, price, barcode, call_number, publication_date,
-                lang, lang_orig, title, genre, subject,
+                media_type, isbn, publication_date,
+                lang, lang_orig, title, subject,
                 audience_type, page_extent, format, table_of_contents, accompanying_material,
                 abstract, notes, keywords, is_valid,
                 series_id, series_volume_number,
                 collection_id, collection_sequence_number, collection_volume_number,
                 edition_id, created_at, updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                $13, $14, $15, $16, $17, $18, $19, $20, $21,
-                $22, $23, $24, $25, $26, $27, $28
+                $1, $2, $3,
+                $4, $5, $6, $7,
+                $8, $9, $10, $11, $12,
+                $13, $14, $15, $16,
+                $17, $18,
+                $19, $20, $21,
+                $22, $23, $24
             ) RETURNING id
             "#,
         )
         .bind(&item.media_type)
-        .bind(&item.isbn.as_ref().map(|s| sanitize_isbn(s)))
-        .bind(&item.price)
-        .bind(&item.barcode)
-        .bind(&item.call_number)
+        .bind(&item.isbn.as_ref().map(|i| i.to_string()))
         .bind(&item.publication_date)
         .bind(&item.lang)
         .bind(&item.lang_orig)
         .bind(&item.title)
-        .bind(&item.genre)
         .bind(&item.subject)
         .bind(&item.audience_type)
         .bind(&item.page_extent)
@@ -427,13 +450,6 @@ impl Repository {
 
         item.id = Some(id);
         self.sync_item_authors(id, &item.authors).await?;
-
-        // create any attached specimens
-        for specimen in &mut item.specimens {
-            specimen.item_id = Some(id);
-            self.upsert_specimen(specimen).await?;
-        }
-
         self.items_update_marc_record_for_item(item).await?;
 
         Ok(item)
@@ -469,7 +485,7 @@ impl Repository {
             "#,
         )
         .bind(&item.media_type)
-        .bind(&item.isbn.as_ref().map(|s| sanitize_isbn(s)))
+        .bind(&item.isbn.as_ref().map(|i| i.to_string()))
         .bind(&item.title)
         .bind(&item.series_id)
         .bind(&item.series_volume_number)
@@ -486,12 +502,6 @@ impl Repository {
             self.sync_item_authors(id, &item.authors).await?;
         }
 
-        // Optionally create or update attached specimens
-        for specimen in &mut item.specimens {
-            specimen.item_id = Some(id);
-            self.upsert_specimen(specimen).await?;
-        }
-
         self.items_update_marc_record_for_item(item).await?;
 
         Ok(item)
@@ -502,10 +512,14 @@ impl Repository {
     pub async fn items_update_marc_record_for_item(&self, item: &mut Item) -> AppResult<()> {
         
         if item.marc_record.is_none() {
-            item.marc_record = sqlx::query_scalar::<_, serde_json::Value>("SELECT marc_record FROM items WHERE id = $1")
+            item.marc_record = sqlx::query_scalar::<_, Option<serde_json::Value>>(
+                "SELECT marc_record FROM items WHERE id = $1",
+            )
             .bind(item.id.unwrap_or(0))
             .fetch_optional(&self.pool)
-            .await?.map(|v| serde_json::from_value::<MarcRecord>(v).unwrap());
+            .await?
+            .flatten()
+            .and_then(|v| serde_json::from_value::<MarcRecord>(v).ok());
         }
 
         // recreate the marc record
@@ -760,7 +774,7 @@ impl Repository {
         let specimens = sqlx::query_as::<_, Specimen>(
             r#"
             SELECT s.id, s.item_id, s.source_id, s.barcode, s.call_number, s.volume_designation,
-                   s.place, s.borrow_status, s.circulation_status, s.notes, s.price,
+                   s.place, s.borrowable, s.circulation_status, s.notes, s.price,
                    s.created_at, s.updated_at, s.archived_at,
                    so.name as source_name,
                    (SELECT COUNT(*) FROM loans l WHERE l.specimen_id = s.id AND l.returned_date IS NULL) as availability
@@ -787,7 +801,7 @@ impl Repository {
         }
         let rows: Vec<SpecimenShortRow> = sqlx::query_as(
             r#"
-            SELECT s.item_id, s.id, s.barcode, s.call_number, s.borrow_status,
+            SELECT s.item_id, s.id, s.barcode, s.call_number, s.borrowable,
                    so.name as source_name,
                    (SELECT COUNT(*) FROM loans l WHERE l.specimen_id = s.id AND l.returned_date IS NULL) as availability
             FROM specimens s
@@ -825,7 +839,7 @@ impl Repository {
         let id = sqlx::query_scalar::<_, i64>(
             r#"
             INSERT INTO specimens (
-                item_id, barcode, call_number, volume_designation, place, borrow_status, notes, price, source_id, created_at, updated_at
+                item_id, barcode, call_number, volume_designation, place, borrowable, notes, price, source_id, created_at, updated_at
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
             RETURNING id
             "#,
@@ -835,7 +849,7 @@ impl Repository {
         .bind(&specimen.call_number)
         .bind(&specimen.volume_designation)
         .bind(&specimen.place)
-        .bind(&specimen.borrow_status.unwrap_or(98))
+        .bind(specimen.borrowable)
         .bind(&specimen.notes)
         .bind(&specimen.price)
         .bind(source_id)
@@ -865,7 +879,7 @@ impl Repository {
                     call_number = $3,
                     volume_designation = $4,
                     place = $5,
-                    borrow_status = $6,
+                    borrowable = $6,
                     notes = $7,
                     price = $8,
                     source_id = $9,
@@ -878,7 +892,7 @@ impl Repository {
             .bind(&specimen.call_number)
             .bind(&specimen.volume_designation)
             .bind(&specimen.place)
-            .bind(&specimen.borrow_status)
+            .bind(specimen.borrowable)
             .bind(&specimen.notes)
             .bind(&specimen.price)
             .bind(&specimen.source_id)
@@ -908,7 +922,7 @@ impl Repository {
                         call_number = $3,
                         volume_designation = $4,
                         place = $5,
-                        borrow_status = $6,
+                        borrowable = $6,
                         notes = $7,
                         price = $8,
                         source_id = $9,
@@ -921,7 +935,7 @@ impl Repository {
                 .bind(&specimen.call_number)
                 .bind(&specimen.volume_designation)
                 .bind(&specimen.place)
-                .bind(&specimen.borrow_status)
+                .bind(specimen.borrowable)
                 .bind(&specimen.notes)
                 .bind(&specimen.price)
                 .bind(&specimen.source_id)
@@ -939,7 +953,7 @@ impl Repository {
                         call_number,
                         volume_designation,
                         place,
-                        borrow_status,
+                        borrowable,
                         notes,
                         price,
                         source_id,
@@ -955,7 +969,7 @@ impl Repository {
                 .bind(&specimen.call_number)
                 .bind(&specimen.volume_designation)
                 .bind(&specimen.place)
-                .bind(&specimen.borrow_status)
+                .bind(specimen.borrowable)
                 .bind(&specimen.notes)
                 .bind(&specimen.price)
                 .bind(&specimen.source_id)
@@ -981,7 +995,7 @@ impl Repository {
                 call_number = COALESCE($2, call_number),
                 volume_designation = COALESCE($3, volume_designation),
                 place = COALESCE($4, place),
-                borrow_status = COALESCE($5, borrow_status),
+                borrowable = COALESCE($5, borrowable),
                 notes = COALESCE($6, notes),
                 price = COALESCE($7, price),
                 source_id = COALESCE($8, source_id),
@@ -993,7 +1007,7 @@ impl Repository {
         .bind(&specimen.call_number)
         .bind(&specimen.volume_designation)
         .bind(&specimen.place)
-        .bind(&specimen.borrow_status)
+        .bind(specimen.borrowable)
         .bind(&specimen.notes)
         .bind(&specimen.price)
         .bind(&specimen.source_id)
@@ -1087,7 +1101,7 @@ impl Repository {
             r#"
             UPDATE specimens SET
                 item_id = $1, barcode = $2, call_number = $3, volume_designation = $4,
-                place = $5, borrow_status = $6,
+                place = $5, borrowable = $6,
                 notes = $7, price = $8, source_id = $9,
                 archived_at = NULL,
                 updated_at = $10
@@ -1099,7 +1113,7 @@ impl Repository {
         .bind(&specimen.call_number)
         .bind(&specimen.volume_designation)
         .bind(&specimen.place)
-        .bind(specimen.borrow_status.unwrap_or(98))
+        .bind(specimen.borrowable)
         .bind(&specimen.notes)
         .bind(&specimen.price)
         .bind(source_id)
@@ -1111,7 +1125,7 @@ impl Repository {
         sqlx::query_as::<_, Specimen>(
             r#"
             SELECT s.id, s.item_id, s.source_id, s.barcode, s.call_number, s.volume_designation,
-                   s.place, s.borrow_status, s.circulation_status, s.notes, s.price,
+                   s.place, s.borrowable, s.circulation_status, s.notes, s.price,
                    s.created_at, s.updated_at, s.archived_at,
                    so.name as source_name,
                    (SELECT COUNT(*) FROM loans l WHERE l.specimen_id = s.id AND l.returned_date IS NULL) as availability
@@ -1127,7 +1141,75 @@ impl Repository {
     }
 
     // =========================================================================
-    // ISBN DEDUPLICATION
+    // ISBN / BARCODE DUPLICATE CHECKS
+    // =========================================================================
+
+    /// Find an active (non-archived) item that has the given ISBN,
+    /// optionally excluding a specific item id (useful during updates).
+    pub async fn items_find_active_by_isbn(&self, isbn: &str, exclude_id: Option<i64>) -> AppResult<Option<i64>> {
+        let row: Option<i64> = if let Some(eid) = exclude_id {
+            sqlx::query_scalar(
+                "SELECT id FROM items WHERE isbn = $1 AND archived_at IS NULL AND id != $2 LIMIT 1",
+            )
+            .bind(isbn)
+            .bind(eid)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query_scalar(
+                "SELECT id FROM items WHERE isbn = $1 AND archived_at IS NULL LIMIT 1",
+            )
+            .bind(isbn)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        Ok(row)
+    }
+
+    /// Find an existing specimen by barcode and return its short representation,
+    /// optionally excluding a specific specimen id (useful during updates).
+    pub async fn items_find_specimen_short_by_barcode(
+        &self,
+        barcode: &str,
+        exclude_specimen_id: Option<i64>,
+    ) -> AppResult<Option<SpecimenShort>> {
+        let row: Option<SpecimenShortRow> = if let Some(eid) = exclude_specimen_id {
+            sqlx::query_as(
+                r#"
+                SELECT s.item_id, s.id, s.barcode, s.call_number, s.borrowable,
+                       so.name as source_name,
+                       (SELECT COUNT(*) FROM loans l WHERE l.specimen_id = s.id AND l.returned_date IS NULL) as availability
+                FROM specimens s
+                LEFT JOIN sources so ON s.source_id = so.id
+                WHERE s.barcode = $1 AND s.id != $2
+                LIMIT 1
+                "#,
+            )
+            .bind(barcode)
+            .bind(eid)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                r#"
+                SELECT s.item_id, s.id, s.barcode, s.call_number, s.borrowable,
+                       so.name as source_name,
+                       (SELECT COUNT(*) FROM loans l WHERE l.specimen_id = s.id AND l.returned_date IS NULL) as availability
+                FROM specimens s
+                LEFT JOIN sources so ON s.source_id = so.id
+                WHERE s.barcode = $1
+                LIMIT 1
+                "#,
+            )
+            .bind(barcode)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        Ok(row.map(SpecimenShort::from))
+    }
+
+    // =========================================================================
+    // ISBN DEDUPLICATION (legacy — kept for backward compat)
     // =========================================================================
 
     /// Find an existing item by ISBN for import deduplication.
@@ -1204,12 +1286,9 @@ impl Repository {
         old_source_ids: &[i64],
         new_source_id: i64,
     ) -> AppResult<i64> {
-        let result = sqlx::query("UPDATE items SET source_id = $1 WHERE source_id = ANY($2)")
-            .bind(new_source_id)
-            .bind(old_source_ids)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() as i64)
+        // Items no longer have a source_id; sources are attached to specimens.
+        let _ = (old_source_ids, new_source_id);
+        Ok(0)
     }
 }
 
