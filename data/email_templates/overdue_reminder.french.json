@@ -1,0 +1,5 @@
+{
+  "subject": "Rappel : documents en retard à la bibliothèque",
+  "body_plain": "Bonjour {{firstname}} {{lastname}},\n\nNous vous rappelons que les documents suivants sont en retard :\n\n{{loans_list}}\n\nMerci de les rapporter dès que possible.\n\nCordialement,\nL'équipe de la bibliothèque",
+  "body_html": "<html><body style=\"font-family: Arial, sans-serif; color: #333;\">\n<p>Bonjour <strong>{{firstname}} {{lastname}}</strong>,</p>\n<p>Nous vous rappelons que les documents suivants sont <strong>en retard</strong> :</p>\n{{loans_table_html}}\n<p>Merci de les rapporter dès que possible.</p>\n<p>Cordialement,<br><em>L'équipe de la bibliothèque</em></p>\n</body></html>"
+}

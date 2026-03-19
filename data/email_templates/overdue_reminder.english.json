@@ -1,0 +1,5 @@
+{
+  "subject": "Reminder: overdue library items",
+  "body_plain": "Dear {{firstname}} {{lastname}},\n\nThis is a reminder that the following items are overdue:\n\n{{loans_list}}\n\nPlease return them as soon as possible.\n\nKind regards,\nThe library team",
+  "body_html": "<html><body style=\"font-family: Arial, sans-serif; color: #333;\">\n<p>Dear <strong>{{firstname}} {{lastname}}</strong>,</p>\n<p>This is a reminder that the following items are <strong>overdue</strong>:</p>\n{{loans_table_html}}\n<p>Please return them as soon as possible.</p>\n<p>Kind regards,<br><em>The library team</em></p>\n</body></html>"
+}
