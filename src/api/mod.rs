@@ -1,5 +1,7 @@
 //! API handlers for Elidune REST endpoints
 
+pub mod admin_config;
+pub mod audit;
 pub mod auth;
 pub mod equipment;
 pub mod events;
@@ -16,12 +18,36 @@ pub mod users;
 pub mod visitor_counts;
 pub mod z3950;
 
+use std::net::SocketAddr;
+
 use axum::{
     async_trait,
-    extract::FromRequestParts,
+    extract::{ConnectInfo, FromRequestParts},
     http::{header::AUTHORIZATION, request::Parts},
 };
 use crate::{error::AppError, models::user::UserClaims, AppState};
+
+/// Resolved client IP for audit: proxy headers first, then `ConnectInfo` peer address.
+pub struct ClientIp(pub Option<String>);
+
+#[async_trait]
+impl<S> FromRequestParts<S> for ClientIp
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|c| c.0);
+        Ok(ClientIp(crate::services::audit::resolve_client_ip(
+            &parts.headers,
+            peer,
+        )))
+    }
+}
 
 /// Extractor for authenticated user from JWT token
 pub struct AuthenticatedUser(pub UserClaims);

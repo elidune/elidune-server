@@ -8,54 +8,93 @@ use axum::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     error::AppResult,
     models::loan::{CreateLoan, LoanDetails},
+    services::{
+        audit::{self},
+        reminders::{OverdueLoansPage, ReminderReport},
+    },
 };
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
 
 /// Create loan request
 #[serde_as]
-#[derive(Deserialize, ToSchema)]
+#[derive(Serialize, Deserialize, ToSchema)]
 pub struct CreateLoanRequest {
-    /// User ID
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub user_id: i64,
-    /// Specimen ID (optional if identification provided)
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub specimen_id: Option<i64>,
-    /// Specimen barcode/identification
     pub specimen_identification: Option<String>,
-    /// Force loan even if rules are violated
     pub force: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct LoanCreatedAudit {
+    user_id: i64,
+    specimen_id: Option<i64>,
+    specimen_identification: Option<String>,
+    force: bool,
+    issue_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+struct RenewLoanAudit {
+    new_issue_at: DateTime<Utc>,
+    renew_count: i16,
+}
+
+#[derive(Serialize)]
+struct RenewLoanBySpecimenAudit {
+    specimen_identification: String,
+    new_issue_at: DateTime<Utc>,
+    renew_count: i16,
+}
+
+#[derive(Serialize)]
+struct ReminderBatchManualAudit {
+    triggered_by: &'static str,
+    emails_sent: u32,
+    loans_reminded: u32,
+    errors: usize,
 }
 
 /// Loan response with calculated dates
 #[serde_as]
 #[derive(Serialize, ToSchema)]
 pub struct LoanResponse {
-    /// Loan ID
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub id: i64,
-    /// Due date (ISO 8601 format)
     pub issue_at: DateTime<Utc>,
-    /// Status message
     pub message: String,
 }
 
 /// Return response with loan details
 #[derive(Serialize, ToSchema)]
 pub struct ReturnResponse {
-    /// Return status
     pub status: String,
-    /// Loan details
     pub loan: LoanDetails,
+}
+
+/// Query parameters for overdue loans list
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct OverdueLoansQuery {
+    pub page: Option<i64>,
+    pub per_page: Option<i64>,
+}
+
+/// Query parameters for sending reminders
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+pub struct SendRemindersQuery {
+    /// If true, no emails are sent; only shows what would be sent
+    pub dry_run: Option<bool>,
 }
 
 /// Get loans for a specific user
@@ -66,7 +105,7 @@ pub struct ReturnResponse {
     security(("bearer_auth" = [])),
     params(
         ("id" = i64, Path, description = "User ID"),
-        ("archived" = Option<bool>, Query, description = "If true, return past (returned) loans instead of active ones")
+        ("archived" = Option<bool>, Query, description = "If true, return past (returned) loans")
     ),
     responses(
         (status = 200, description = "User's loans", body = Vec<LoanDetails>),
@@ -111,18 +150,33 @@ pub struct GetUserLoansQuery {
 pub async fn create_loan(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(request): Json<CreateLoanRequest>,
 ) -> AppResult<(StatusCode, Json<LoanResponse>)> {
     claims.require_write_borrows()?;
-
     let loan = CreateLoan {
         user_id: request.user_id,
         specimen_id: request.specimen_id,
-        specimen_identification: request.specimen_identification,
+        specimen_identification: request.specimen_identification.clone(),
         force: request.force.unwrap_or(false),
     };
 
     let (loan_id, issue_at) = state.services.loans.create_loan(loan).await?;
+
+    state.services.audit.log(
+        audit::event::LOAN_CREATED,
+        Some(claims.user_id),
+        Some("loan"),
+        Some(loan_id),
+        ip,
+        Some(LoanCreatedAudit {
+            user_id: request.user_id,
+            specimen_id: request.specimen_id,
+            specimen_identification: request.specimen_identification.clone(),
+            force: request.force.unwrap_or(false),
+            issue_at,
+        }),
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -140,9 +194,7 @@ pub async fn create_loan(
     path = "/loans/{id}/return",
     tag = "loans",
     security(("bearer_auth" = [])),
-    params(
-        ("id" = i32, Path, description = "Loan ID")
-    ),
+    params(("id" = i32, Path, description = "Loan ID")),
     responses(
         (status = 200, description = "Item returned", body = ReturnResponse),
         (status = 404, description = "Loan not found"),
@@ -152,16 +204,22 @@ pub async fn create_loan(
 pub async fn return_loan(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(loan_id): Path<i64>,
 ) -> AppResult<Json<ReturnResponse>> {
     claims.require_write_borrows()?;
-
     let loan = state.services.loans.return_loan(loan_id).await?;
 
-    Ok(Json(ReturnResponse {
-        status: "returned".to_string(),
-        loan,
-    }))
+    state.services.audit.log(
+        audit::event::LOAN_RETURNED,
+        Some(claims.user_id),
+        Some("loan"),
+        Some(loan_id),
+        ip,
+        Some(&loan),
+    );
+
+    Ok(Json(ReturnResponse { status: "returned".to_string(), loan }))
 }
 
 /// Renew a loan
@@ -170,9 +228,7 @@ pub async fn return_loan(
     path = "/loans/{id}/renew",
     tag = "loans",
     security(("bearer_auth" = [])),
-    params(
-        ("id" = i32, Path, description = "Loan ID")
-    ),
+    params(("id" = i32, Path, description = "Loan ID")),
     responses(
         (status = 200, description = "Loan renewed", body = LoanResponse),
         (status = 404, description = "Loan not found"),
@@ -182,11 +238,23 @@ pub async fn return_loan(
 pub async fn renew_loan(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(loan_id): Path<i64>,
 ) -> AppResult<Json<LoanResponse>> {
     claims.require_write_borrows()?;
-
     let (new_issue_date, renew_count) = state.services.loans.renew_loan(loan_id).await?;
+
+    state.services.audit.log(
+        audit::event::LOAN_RENEWED,
+        Some(claims.user_id),
+        Some("loan"),
+        Some(loan_id),
+        ip,
+        Some(RenewLoanAudit {
+            new_issue_at: new_issue_date,
+            renew_count,
+        }),
+    );
 
     Ok(Json(LoanResponse {
         id: loan_id,
@@ -201,9 +269,7 @@ pub async fn renew_loan(
     path = "/loans/specimens/{specimen_id}/return",
     tag = "loans",
     security(("bearer_auth" = [])),
-    params(
-        ("specimen_id" = String, Path, description = "Specimen ID")
-    ),
+    params(("specimen_id" = String, Path, description = "Specimen barcode")),
     responses(
         (status = 200, description = "Item returned", body = ReturnResponse),
         (status = 404, description = "Specimen or active loan not found"),
@@ -213,16 +279,23 @@ pub async fn renew_loan(
 pub async fn return_loan_by_specimen(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(specimen_id): Path<String>,
 ) -> AppResult<Json<ReturnResponse>> {
     claims.require_write_borrows()?;
-
     let loan = state.services.loans.return_loan_by_specimen(&specimen_id).await?;
+    let loan_id = loan.id;
 
-    Ok(Json(ReturnResponse {
-        status: "returned".to_string(),
-        loan,
-    }))
+    state.services.audit.log(
+        audit::event::LOAN_RETURNED,
+        Some(claims.user_id),
+        Some("loan"),
+        Some(loan_id),
+        ip,
+        Some((specimen_id.as_str(), &loan)),
+    );
+
+    Ok(Json(ReturnResponse { status: "returned".to_string(), loan }))
 }
 
 /// Renew a loan by specimen ID
@@ -231,9 +304,7 @@ pub async fn return_loan_by_specimen(
     path = "/loans/specimens/{specimen_id}/renew",
     tag = "loans",
     security(("bearer_auth" = [])),
-    params(
-        ("specimen_id" = String, Path, description = "Specimen ID")
-    ),
+    params(("specimen_id" = String, Path, description = "Specimen barcode")),
     responses(
         (status = 200, description = "Loan renewed", body = LoanResponse),
         (status = 404, description = "Specimen or active loan not found"),
@@ -243,15 +314,110 @@ pub async fn return_loan_by_specimen(
 pub async fn renew_loan_by_specimen(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(specimen_id): Path<String>,
 ) -> AppResult<Json<LoanResponse>> {
     claims.require_write_borrows()?;
+    let (loan_id, new_issue_date, renew_count) = state
+        .services
+        .loans
+        .renew_loan_by_specimen(&specimen_id)
+        .await?;
 
-    let (loan_id, new_issue_date, renew_count) = state.services.loans.renew_loan_by_specimen(&specimen_id).await?;
+    state.services.audit.log(
+        audit::event::LOAN_RENEWED,
+        Some(claims.user_id),
+        Some("loan"),
+        Some(loan_id),
+        ip,
+        Some(RenewLoanBySpecimenAudit {
+            specimen_identification: specimen_id,
+            new_issue_at: new_issue_date,
+            renew_count,
+        }),
+    );
 
     Ok(Json(LoanResponse {
         id: loan_id,
         issue_at: new_issue_date,
         message: format!("Loan renewed ({} renewals)", renew_count),
     }))
+}
+
+/// Get all overdue loans (admin dashboard)
+#[utoipa::path(
+    get,
+    path = "/loans/overdue",
+    tag = "loans",
+    security(("bearer_auth" = [])),
+    params(OverdueLoansQuery),
+    responses(
+        (status = 200, description = "Paginated overdue loans", body = OverdueLoansPage),
+        (status = 403, description = "Insufficient permissions")
+    )
+)]
+pub async fn get_overdue_loans(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    Query(query): Query<OverdueLoansQuery>,
+) -> AppResult<Json<OverdueLoansPage>> {
+    claims.require_read_loans()?;
+
+    let page = state
+        .services
+        .reminders
+        .get_overdue_loans(
+            query.page.unwrap_or(1),
+            query.per_page.unwrap_or(50),
+        )
+        .await?;
+
+    Ok(Json(page))
+}
+
+/// Trigger overdue reminder emails (admin only)
+#[utoipa::path(
+    post,
+    path = "/loans/send-overdue-reminders",
+    tag = "loans",
+    security(("bearer_auth" = [])),
+    params(SendRemindersQuery),
+    responses(
+        (status = 200, description = "Reminder report", body = ReminderReport),
+        (status = 403, description = "Insufficient permissions")
+    )
+)]
+pub async fn send_overdue_reminders(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Query(query): Query<SendRemindersQuery>,
+) -> AppResult<Json<ReminderReport>> {
+    claims.require_admin()?;
+
+    let dry_run = query.dry_run.unwrap_or(false);
+
+    let report = state
+        .services
+        .reminders
+        .send_overdue_reminders(dry_run, Some(claims.user_id), ip.clone())
+        .await?;
+
+    if !dry_run {
+        state.services.audit.log(
+            audit::event::SYSTEM_REMINDERS_BATCH_COMPLETED,
+            Some(claims.user_id),
+            None,
+            None,
+            ip,
+            Some(ReminderBatchManualAudit {
+                triggered_by: "manual",
+                emails_sent: report.emails_sent,
+                loans_reminded: report.loans_reminded,
+                errors: report.errors.len(),
+            }),
+        );
+    }
+
+    Ok(Json(report))
 }

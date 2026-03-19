@@ -42,7 +42,7 @@ pub struct Event {
 }
 
 /// Create event request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateEvent {
     pub name: String,
     /// Type (0=animation, 1=school_visit, 2=exhibition, 3=conference, 4=workshop, 5=show, 6=other)
@@ -65,7 +65,7 @@ pub struct CreateEvent {
 }
 
 /// Update event request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateEvent {
     pub name: Option<String>,
     pub event_type: Option<i16>,

@@ -279,6 +279,7 @@ pub struct UserRow {
     totp_secret: Option<String>,
     recovery_codes: Option<String>,
     recovery_codes_used: Option<String>,
+    receive_reminders: Option<bool>,
 }
 
 impl From<UserRow> for User {
@@ -317,6 +318,7 @@ impl From<UserRow> for User {
             totp_secret: row.totp_secret,
             recovery_codes: row.recovery_codes,
             recovery_codes_used: row.recovery_codes_used,
+            receive_reminders: row.receive_reminders.unwrap_or(true),
         }
     }
 }
@@ -349,6 +351,8 @@ pub struct User {
     pub issue_at: Option<DateTime<Utc>>,
     pub account_type: AccountTypeSlug,
     pub fee: Option<FeeSlug>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
     pub public_type: Option<i64>,
     pub notes: Option<String>,
     pub status: Option<i16>,
@@ -374,6 +378,8 @@ pub struct User {
     pub recovery_codes: Option<String>,
     #[serde(skip_serializing)]
     pub recovery_codes_used: Option<String>,
+    /// Whether the user wants to receive overdue reminder emails
+    pub receive_reminders: bool,
 }
 
 /// Internal row structure for UserShort queries
@@ -426,19 +432,17 @@ pub struct UserQuery {
     pub per_page: Option<i64>,
 }
 
-/// Create user request
+/// User create/update body. `login` is required when creating; omit fields for partial update.
 #[serde_as]
-#[derive(Debug, Deserialize, Validate, ToSchema)]
-pub struct CreateUser {
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+pub struct UserPayload {
     pub barcode: Option<String>,
-    /// Login (username) - required and unique, used for authentication
-    #[validate(length(min = 3, message = "Login must be at least 3 characters"))]
-    pub login: String,
+    /// Login (username); required on create, optional on update
+    pub login: Option<String>,
     #[validate(length(min = 4, message = "Password must be at least 4 characters"))]
     pub password: Option<String>,
     pub firstname: Option<String>,
     pub lastname: Option<String>,
-    /// Email address (optional)
     #[validate(email(message = "Invalid email format"))]
     pub email: Option<String>,
     pub addr_street: Option<String>,
@@ -448,46 +452,14 @@ pub struct CreateUser {
     pub birthdate: Option<String>,
     pub account_type: Option<AccountTypeSlug>,
     pub fee: Option<FeeSlug>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
     pub public_type: Option<i64>,
     pub notes: Option<String>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub group_id: Option<i64>,
-    /// Sex (70=Female, 77=Male, 85=Unknown)
-    pub sex: Option<i16>,
-    /// Staff type (NULL=not staff, 0=employee, 1=volunteer)
-    pub staff_type: Option<i16>,
-    /// Contractual hours per week
-    pub hours_per_week: Option<f64>,
-    /// Staff start date (YYYY-MM-DD)
-    pub staff_start_date: Option<String>,
-    /// Staff end date (YYYY-MM-DD)
-    pub staff_end_date: Option<String>,
-}
-
-/// Update user request
-#[serde_as]
-#[derive(Debug, Deserialize, Validate, ToSchema)]
-pub struct UpdateUser {
-    pub barcode: Option<String>,
-    pub login: Option<String>,
-    pub password: Option<String>,
-    pub firstname: Option<String>,
-    pub lastname: Option<String>,
-    #[validate(email(message = "Invalid email format"))]
-    pub email: Option<String>,
-    pub addr_street: Option<String>,
-    pub addr_zip_code: Option<i32>,
-    pub addr_city: Option<String>,
-    pub phone: Option<String>,
-    pub birthdate: Option<String>,
-    pub account_type: Option<AccountTypeSlug>,
-    pub fee: Option<FeeSlug>,
-    pub public_type: Option<i64>,
-    pub notes: Option<String>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub group_id: Option<i64>,
+    /// User status; for updates only (ignored on create)
     pub status: Option<i16>,
     /// Sex (70=Female, 77=Male, 85=Unknown)
     pub sex: Option<i16>,

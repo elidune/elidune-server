@@ -1,4 +1,6 @@
-//! Email service for sending 2FA codes and notifications
+//! Email service for sending 2FA codes, notifications, and overdue reminders.
+
+use std::sync::Arc;
 
 use lettre::{
     message::{header::ContentType, Mailbox, Message, MultiPart, SinglePart},
@@ -9,7 +11,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use crate::{
-    config::EmailConfig,
+    dynamic_config::DynamicConfig,
     error::{AppError, AppResult},
     models::Language,
     services::email_templates,
@@ -17,16 +19,16 @@ use crate::{
 
 #[derive(Clone)]
 pub struct EmailService {
-    config: EmailConfig,
+    dynamic_config: Arc<DynamicConfig>,
 }
 
 impl EmailService {
-    pub fn new(config: EmailConfig) -> Self {
-        Self { config }
+    pub fn new(dynamic_config: Arc<DynamicConfig>) -> Self {
+        Self { dynamic_config }
     }
 
-    fn templates_dir(&self) -> &Path {
-        Path::new(&self.config.templates_dir)
+    fn templates_dir_str(&self) -> String {
+        self.dynamic_config.read_email().templates_dir.clone()
     }
 
     /// Send a 2FA code via email
@@ -36,11 +38,8 @@ impl EmailService {
         code: &str,
         lang: Option<Language>,
     ) -> AppResult<()> {
-        let template = email_templates::load_template(
-            self.templates_dir(),
-            "2fa_code",
-            lang,
-        )?;
+        let dir = self.templates_dir_str();
+        let template = email_templates::load_template(Path::new(&dir), "2fa_code", lang)?;
         let (subject, body_plain, body_html) =
             email_templates::substitute(&template, &[("code", code)]);
         self.send_email_with_html(to, &subject, &body_plain, &body_html).await
@@ -53,18 +52,14 @@ impl EmailService {
         code: &str,
         lang: Option<Language>,
     ) -> AppResult<()> {
-        let template = email_templates::load_template(
-            self.templates_dir(),
-            "recovery_code",
-            lang,
-        )?;
+        let dir = self.templates_dir_str();
+        let template = email_templates::load_template(Path::new(&dir), "recovery_code", lang)?;
         let (subject, body_plain, body_html) =
             email_templates::substitute(&template, &[("code", code)]);
         self.send_email_with_html(to, &subject, &body_plain, &body_html).await
     }
 
-    /// Send password reset email with a reset token.
-    /// `reset_url` is the full URL with token substituted (for the reset link in the email).
+    /// Send password reset email
     pub async fn send_password_reset(
         &self,
         to: &str,
@@ -72,34 +67,43 @@ impl EmailService {
         lang: Option<Language>,
         reset_url: Option<&str>,
     ) -> AppResult<()> {
-        let template = email_templates::load_template(
-            self.templates_dir(),
-            "password_reset",
-            lang,
-        )?;
+        let dir = self.templates_dir_str();
+        let template = email_templates::load_template(Path::new(&dir), "password_reset", lang)?;
         let vars: Vec<(&str, &str)> = match reset_url {
             Some(url) => vec![("token", token), ("reset_url", url)],
             None => vec![("token", token), ("reset_url", "")],
         };
-        let (subject, body_plain, body_html) =
-            email_templates::substitute(&template, &vars);
+        let (subject, body_plain, body_html) = email_templates::substitute(&template, &vars);
         self.send_email_with_html(to, &subject, &body_plain, &body_html).await
     }
 
-    async fn send_email_with_html(
+    /// Send a test email using the current live SMTP configuration
+    pub async fn send_test_email(&self, to: &str) -> AppResult<()> {
+        let subject = "Elidune - Test email / Email de test";
+        let body_plain = "This is a test email from Elidune to verify your SMTP configuration.\n\
+                          Ceci est un email de test envoyé par Elidune pour vérifier votre configuration SMTP.";
+        let body_html = "<html><body>\
+            <h2>Elidune - Test email</h2>\
+            <p>This is a test email from Elidune to verify your SMTP configuration.</p>\
+            <p>Ceci est un email de test envoyé par Elidune pour vérifier votre configuration SMTP.</p>\
+            </body></html>";
+        self.send_email_with_html(to, subject, body_plain, body_html).await
+    }
+
+    /// Low-level send: builds the SMTP transport from the current live config on each call.
+    pub async fn send_email_with_html(
         &self,
         to: &str,
         subject: &str,
         body_plain: &str,
         body_html: &str,
     ) -> AppResult<()> {
-        let from_name = self
-            .config
-            .smtp_from_name
-            .as_deref()
-            .unwrap_or("Elidune");
-        let from_mailbox = Mailbox::from_str(&format!("{} <{}>", from_name, self.config.smtp_from))
-            .map_err(|e| AppError::Internal(format!("Invalid from address: {}", e)))?;
+        let config = self.dynamic_config.read_email();
+
+        let from_name = config.smtp_from_name.as_deref().unwrap_or("Elidune");
+        let from_mailbox =
+            Mailbox::from_str(&format!("{} <{}>", from_name, config.smtp_from))
+                .map_err(|e| AppError::Internal(format!("Invalid from address: {}", e)))?;
 
         let to_mailbox = Mailbox::from_str(to)
             .map_err(|e| AppError::Internal(format!("Invalid to address: {}", e)))?;
@@ -123,23 +127,18 @@ impl EmailService {
             )
             .map_err(|e| AppError::Internal(format!("Failed to build email: {}", e)))?;
 
-        let mailer_builder = if self.config.smtp_use_tls {
-            // Use STARTTLS for secure connection
-            SmtpTransport::starttls_relay(&self.config.smtp_host)
+        let mailer_builder = if config.smtp_use_tls {
+            SmtpTransport::starttls_relay(&config.smtp_host)
                 .map_err(|e| AppError::Internal(format!("Failed to create SMTP transport: {}", e)))?
         } else {
-            SmtpTransport::builder_dangerous(&self.config.smtp_host)
+            SmtpTransport::builder_dangerous(&config.smtp_host)
         }
-        .port(self.config.smtp_port);
+        .port(config.smtp_port);
 
-        let mailer_builder = if let (Some(username), Some(password)) = (
-            &self.config.smtp_username,
-            &self.config.smtp_password,
-        ) {
-            mailer_builder.credentials(Credentials::new(
-                username.clone(),
-                password.clone(),
-            ))
+        let mailer_builder = if let (Some(username), Some(password)) =
+            (&config.smtp_username, &config.smtp_password)
+        {
+            mailer_builder.credentials(Credentials::new(username.clone(), password.clone()))
         } else {
             mailer_builder
         };

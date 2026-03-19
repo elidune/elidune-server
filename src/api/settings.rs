@@ -7,8 +7,9 @@ use utoipa::ToSchema;
 
 use crate::error::AppResult;
 use crate::models::item::MediaType;
+use crate::services::audit;
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
 
 /// Loan settings by media type
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -66,7 +67,7 @@ fn default_z3950_encoding() -> String {
 }
 
 /// Update settings request
-#[derive(Deserialize, ToSchema)]
+#[derive(Serialize, Deserialize, ToSchema)]
 pub struct UpdateSettingsRequest {
     /// Loan settings to update
     pub loan_settings: Option<Vec<LoanSettings>>,
@@ -109,10 +110,20 @@ pub async fn get_settings(
 pub async fn update_settings(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(request): Json<UpdateSettingsRequest>,
 ) -> AppResult<Json<SettingsResponse>> {
     claims.require_write_settings()?;
-
     let settings = state.services.settings.update_settings(request).await?;
+
+    state.services.audit.log(
+        audit::event::SETTINGS_UPDATED,
+        Some(claims.user_id),
+        None,
+        None,
+        ip,
+        Some(&settings),
+    );
+
     Ok(Json(settings))
 }

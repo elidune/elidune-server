@@ -9,8 +9,32 @@ use crate::error::AppResult;
 #[allow(unused_imports)] // Used in utoipa macros
 use crate::error::ErrorResponse;
 use crate::models::Language;
+use crate::services::audit;
+
+use super::ClientIp;
 
 use super::AuthenticatedUser;
+
+#[derive(Serialize)]
+struct LoginIdentifierAudit<'a> {
+    login: &'a str,
+}
+
+#[derive(Clone, Copy, Serialize)]
+struct TwoFaVerifyAttemptAudit {
+    trust_device: bool,
+    has_device_id: bool,
+}
+
+#[derive(Serialize)]
+struct PasswordChangedViaResetAudit {
+    source: &'static str,
+}
+
+#[derive(Serialize)]
+struct UserIdAudit {
+    user_id: i64,
+}
 
 /// Login request body
 #[derive(Deserialize, ToSchema)]
@@ -87,13 +111,43 @@ pub struct UserInfo {
 )]
 pub async fn login(
     State(state): State<crate::AppState>,
+    ClientIp(ip): ClientIp,
     Json(request): Json<LoginRequest>,
 ) -> AppResult<Json<LoginResponse>> {
-    let (token, user) = state
+    let login_result = state
         .services
         .users
         .authenticate(&request.username, &request.password, request.device_id.as_deref())
-        .await?;
+        .await;
+
+    match &login_result {
+        Ok((_, user)) => {
+            state.services.audit.log(
+                audit::event::AUTH_LOGIN_SUCCESS,
+                Some(user.id),
+                Some("user"),
+                Some(user.id),
+                ip.clone(),
+                Some(LoginIdentifierAudit {
+                    login: request.username.as_str(),
+                }),
+            );
+        }
+        Err(_) => {
+            state.services.audit.log(
+                audit::event::AUTH_LOGIN_FAILED,
+                None,
+                None,
+                None,
+                ip.clone(),
+                Some(LoginIdentifierAudit {
+                    login: request.username.as_str(),
+                }),
+            );
+        }
+    }
+
+    let (token, user) = login_result?;
 
 
 
@@ -135,6 +189,15 @@ pub async fn login(
                 .email
                 .send_2fa_code(email, &code, user.language)
                 .await?;
+
+            state.services.audit.log(
+                audit::event::EMAIL_2FA_CODE_SENT,
+                Some(user.id),
+                Some("user"),
+                Some(user.id),
+                ip.clone(),
+                Some(serde_json::json!({ "to": email.as_str() })),
+            );
         }
     }
 
@@ -235,15 +298,40 @@ pub struct Verify2FAResponse {
 )]
 pub async fn verify_2fa(
     State(state): State<crate::AppState>,
+    ClientIp(ip): ClientIp,
     Json(request): Json<Verify2FARequest>,
 ) -> AppResult<Json<Verify2FAResponse>> {
     let trust_device = request.trust_device.unwrap_or(false);
-    let token = state
+    let verify_ctx = TwoFaVerifyAttemptAudit {
+        trust_device,
+        has_device_id: request.device_id.is_some(),
+    };
+    let result = state
         .services
         .users
         .verify_2fa(request.user_id, &request.code, request.device_id.as_deref(), trust_device)
-        .await?;
+        .await;
 
+    match &result {
+        Ok(_) => state.services.audit.log(
+            audit::event::AUTH_2FA_VERIFIED,
+            Some(request.user_id),
+            Some("user"),
+            Some(request.user_id),
+            ip,
+            Some(verify_ctx),
+        ),
+        Err(_) => state.services.audit.log(
+            audit::event::AUTH_2FA_FAILED,
+            Some(request.user_id),
+            Some("user"),
+            Some(request.user_id),
+            ip,
+            Some(verify_ctx),
+        ),
+    }
+
+    let token = result?;
     Ok(Json(Verify2FAResponse {
         token,
         token_type: "Bearer".to_string(),
@@ -323,8 +411,10 @@ pub async fn verify_recovery(
 )]
 pub async fn request_password_reset(
     State(state): State<crate::AppState>,
+    ClientIp(ip): ClientIp,
     Json(request): Json<RequestPasswordResetRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
+
     if !request.reset_url.contains("<token>") {
         return Err(crate::error::AppError::Validation(
             "reset_url must contain the <token> placeholder".to_string(),
@@ -345,6 +435,23 @@ pub async fn request_password_reset(
         .send_password_reset(&email, &token, lang, Some(&reset_url))
         .await?;
 
+    state.services.audit.log(
+        audit::event::AUTH_PASSWORD_RESET_REQUESTED,
+        None,
+        None,
+        None,
+        ip.clone(),
+        Some(serde_json::json!({ "identifier": request.identifier.as_str() })),
+    );
+    state.services.audit.log(
+        audit::event::EMAIL_PASSWORD_RESET_SENT,
+        None,
+        None,
+        None,
+        ip,
+        Some(serde_json::json!({ "to": email.as_str() })),
+    );
+
     Ok(Json(serde_json::json!({
         "message": "Password reset email sent"
     })))
@@ -364,8 +471,10 @@ pub async fn request_password_reset(
 )]
 pub async fn reset_password(
     State(state): State<crate::AppState>,
+    ClientIp(ip): ClientIp,
     Json(request): Json<ResetPasswordRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
+
     if request.new_password.len() < 4 {
         return Err(crate::error::AppError::Validation(
             "Password must be at least 4 characters".to_string(),
@@ -377,6 +486,17 @@ pub async fn reset_password(
         .users
         .reset_password(&request.token, &request.new_password)
         .await?;
+
+    state.services.audit.log(
+        audit::event::AUTH_PASSWORD_CHANGED,
+        None,
+        None,
+        None,
+        ip,
+        Some(PasswordChangedViaResetAudit {
+            source: "reset_token",
+        }),
+    );
 
     Ok(Json(serde_json::json!({
         "message": "Password has been reset"
@@ -414,6 +534,7 @@ pub struct Setup2FAResponse {
 pub async fn setup_2fa(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(request): Json<Setup2FARequest>,
 ) -> AppResult<Json<Setup2FAResponse>> {
     let user = state.services.users.get_by_id(claims.user_id).await?;
@@ -431,10 +552,16 @@ pub async fn setup_2fa(
         .enable_2fa(claims.user_id, &request.method, totp_secret)
         .await?;
 
-    Ok(Json(Setup2FAResponse {
-        provisioning_uri,
-        recovery_codes,
-    }))
+    state.services.audit.log(
+        audit::event::AUTH_2FA_ENABLED,
+        Some(claims.user_id),
+        Some("user"),
+        Some(claims.user_id),
+        ip,
+        Some(serde_json::json!({ "method": request.method.as_str() })),
+    );
+
+    Ok(Json(Setup2FAResponse { provisioning_uri, recovery_codes }))
 }
 
 /// Disable 2FA endpoint
@@ -451,8 +578,20 @@ pub async fn setup_2fa(
 pub async fn disable_2fa(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
 ) -> AppResult<Json<serde_json::Value>> {
     state.services.users.disable_2fa(claims.user_id).await?;
+
+    state.services.audit.log(
+        audit::event::AUTH_2FA_DISABLED,
+        Some(claims.user_id),
+        Some("user"),
+        Some(claims.user_id),
+        ip,
+        Some(UserIdAudit {
+            user_id: claims.user_id,
+        }),
+    );
 
     Ok(Json(serde_json::json!({"message": "2FA disabled successfully"})))
 }

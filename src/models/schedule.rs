@@ -29,7 +29,7 @@ pub struct SchedulePeriod {
 }
 
 /// Create schedule period request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateSchedulePeriod {
     pub name: String,
     /// Start date (YYYY-MM-DD)
@@ -40,7 +40,7 @@ pub struct CreateSchedulePeriod {
 }
 
 /// Update schedule period request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateSchedulePeriod {
     pub name: Option<String>,
     pub start_date: Option<String>,
@@ -73,7 +73,7 @@ pub struct ScheduleSlot {
 }
 
 /// Create schedule slot request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateScheduleSlot {
     /// Day of week (0=Monday, 6=Sunday)
     pub day_of_week: i16,
@@ -102,7 +102,7 @@ pub struct ScheduleClosure {
 }
 
 /// Create closure request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateScheduleClosure {
     /// Closure date (YYYY-MM-DD)
     pub closure_date: String,

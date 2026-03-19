@@ -25,6 +25,8 @@ pub struct Loan {
     pub issue_at: Option<DateTime<Utc>>,
     pub notes: Option<String>,
     pub returned_at: Option<DateTime<Utc>>,
+    pub last_reminder_sent_at: Option<DateTime<Utc>>,
+    pub reminder_count: Option<i32>,
 }
 
 /// Loan with full details for display

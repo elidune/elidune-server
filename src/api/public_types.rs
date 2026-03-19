@@ -11,12 +11,13 @@ use crate::{
     models::public_type::{
         CreatePublicType, PublicType, PublicTypeLoanSettings, UpdatePublicType,
     },
+    services::audit,
 };
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
 
 /// Request body for upserting a loan setting override
-#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+#[derive(Debug, serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
 pub struct UpsertLoanSettingRequest {
     pub media_type: String,
     pub duration: Option<i16>,
@@ -81,10 +82,12 @@ pub async fn get_public_type(
 pub async fn create_public_type(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(data): Json<CreatePublicType>,
 ) -> AppResult<(StatusCode, Json<PublicType>)> {
     claims.require_write_settings()?;
     let public_type = state.services.public_types.create(&data).await?;
+    state.services.audit.log(audit::event::PUBLIC_TYPE_CREATED, Some(claims.user_id), Some("public_type"), Some(public_type.id), ip, Some((&data, &public_type)));
     Ok((StatusCode::CREATED, Json(public_type)))
 }
 
@@ -104,11 +107,13 @@ pub async fn create_public_type(
 pub async fn update_public_type(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Json(data): Json<UpdatePublicType>,
 ) -> AppResult<Json<PublicType>> {
     claims.require_write_settings()?;
     let public_type = state.services.public_types.update(id, &data).await?;
+    state.services.audit.log(audit::event::PUBLIC_TYPE_UPDATED, Some(claims.user_id), Some("public_type"), Some(id), ip, Some((id, &data, &public_type)));
     Ok(Json(public_type))
 }
 
@@ -128,10 +133,12 @@ pub async fn update_public_type(
 pub async fn delete_public_type(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     claims.require_write_settings()?;
     state.services.public_types.delete(id).await?;
+    state.services.audit.log(audit::event::PUBLIC_TYPE_DELETED, Some(claims.user_id), Some("public_type"), Some(id), ip, Some(serde_json::json!({ "id": id })));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -151,6 +158,7 @@ pub async fn delete_public_type(
 pub async fn upsert_loan_setting(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Json(data): Json<UpsertLoanSettingRequest>,
 ) -> AppResult<Json<PublicTypeLoanSettings>> {
@@ -160,6 +168,7 @@ pub async fn upsert_loan_setting(
         .public_types
         .upsert_loan_setting(id, &data.media_type, data.duration, data.nb_max, data.nb_renews)
         .await?;
+    state.services.audit.log(audit::event::PUBLIC_TYPE_LOAN_SETTING_UPDATED, Some(claims.user_id), Some("public_type"), Some(id), ip, Some((&data, &setting)));
     Ok(Json(setting))
 }
 
@@ -181,6 +190,7 @@ pub async fn upsert_loan_setting(
 pub async fn delete_loan_setting(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path((id, media_type)): Path<(i64, String)>,
 ) -> AppResult<StatusCode> {
     claims.require_write_settings()?;
@@ -189,5 +199,6 @@ pub async fn delete_loan_setting(
         .public_types
         .delete_loan_setting(id, &media_type)
         .await?;
+    state.services.audit.log(audit::event::PUBLIC_TYPE_LOAN_SETTING_DELETED, Some(claims.user_id), Some("public_type"), Some(id), ip, Some(serde_json::json!({ "id": id, "media_type": media_type })));
     Ok(StatusCode::NO_CONTENT)
 }

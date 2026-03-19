@@ -140,8 +140,7 @@ use crate::api::{auth, equipment, events, health, items, loans, public_types, sc
             crate::models::user::User,
             crate::models::user::UserShort,
             crate::models::user::UserQuery,
-            crate::models::user::CreateUser,
-            crate::models::user::UpdateUser,
+            crate::models::user::UserPayload,
             crate::models::user::UpdateProfile,
             crate::models::user::UpdateAccountType,
             // Loans

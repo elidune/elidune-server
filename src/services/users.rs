@@ -13,7 +13,7 @@ use totp_lite::totp_custom;
 use crate::{
     config::UsersConfig,
     error::{AppError, AppResult},
-    models::user::{AccountTypeSlug, CreateUser, UpdateProfile, UpdateUser, User, UserClaims, UserQuery, UserShort},
+    models::user::{AccountTypeSlug, UpdateProfile, User, UserClaims, UserPayload, UserQuery, UserShort},
     repository::Repository,
 };
 
@@ -324,9 +324,20 @@ impl UsersService {
     }
 
     /// Create a new user
-    pub async fn create_user(&self, user: CreateUser) -> AppResult<User> {
-        // Check if login already exists (required and unique)
-        if self.repository.users_login_exists(&user.login, None).await? {
+    pub async fn create_user(&self, mut user: UserPayload) -> AppResult<User> {
+        let login = user
+            .login
+            .take()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::Validation("Login is required".to_string()))?;
+        if login.len() < 3 {
+            return Err(AppError::Validation(
+                "Login must be at least 3 characters".to_string(),
+            ));
+        }
+
+        if self.repository.users_login_exists(&login, None).await? {
             return Err(AppError::Conflict("Login already exists".to_string()));
         }
 
@@ -339,11 +350,13 @@ impl UsersService {
             None
         };
 
+        user.login = Some(login);
+
         self.repository.users_create(&user, password).await
     }
 
     /// Update an existing user
-    pub async fn update_user(&self, id: i64, user: UpdateUser) -> AppResult<User> {
+    pub async fn update_user(&self, id: i64, user: UserPayload) -> AppResult<User> {
         // Check if user exists
         self.repository.users_get_by_id(id).await?;
 

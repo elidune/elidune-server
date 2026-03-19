@@ -40,7 +40,7 @@ pub struct PublicTypeLoanSettings {
 }
 
 /// Create public type request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreatePublicType {
     pub name: String,
     pub label: String,
@@ -53,7 +53,7 @@ pub struct CreatePublicType {
 }
 
 /// Update public type request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdatePublicType {
     pub name: Option<String>,
     pub label: Option<String>,

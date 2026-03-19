@@ -7,13 +7,14 @@ use axum::{
 };
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
+use crate::services::audit;
 
 use crate::{
     error::AppResult,
     models::source::{CreateSource, MergeSources, Source, UpdateSource},
 };
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
 
 /// Query parameters for listing sources
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -36,10 +37,12 @@ pub struct SourcesQuery {
 pub async fn create_source(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(data): Json<CreateSource>,
 ) -> AppResult<(StatusCode, Json<Source>)> {
     claims.require_write_items()?;
     let source = state.services.sources.create(&data).await?;
+    state.services.audit.log(audit::event::SOURCE_CREATED, Some(claims.user_id), Some("source"), Some(source.id), ip, Some((&data, &source)));
     Ok((StatusCode::CREATED, Json(source)))
 }
 
@@ -104,11 +107,13 @@ pub async fn get_source(
 pub async fn update_source(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Json(data): Json<UpdateSource>,
 ) -> AppResult<Json<Source>> {
     claims.require_write_items()?;
     let source = state.services.sources.update(id, &data).await?;
+    state.services.audit.log(audit::event::SOURCE_UPDATED, Some(claims.user_id), Some("source"), Some(id), ip, Some((id, &data, &source)));
     Ok(Json(source))
 }
 
@@ -127,10 +132,12 @@ pub async fn update_source(
 pub async fn archive_source(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Source>> {
     claims.require_write_items()?;
     let source = state.services.sources.archive(id).await?;
+    state.services.audit.log(audit::event::SOURCE_ARCHIVED, Some(claims.user_id), Some("source"), Some(id), ip, Some(&source));
     Ok(Json(source))
 }
 
@@ -148,9 +155,11 @@ pub async fn archive_source(
 pub async fn merge_sources(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(data): Json<MergeSources>,
 ) -> AppResult<(StatusCode, Json<Source>)> {
     claims.require_write_items()?;
     let source = state.services.sources.merge(&data).await?;
+    state.services.audit.log(audit::event::SOURCE_MERGED, Some(claims.user_id), Some("source"), Some(source.id), ip, Some((&data, &source)));
     Ok((StatusCode::CREATED, Json(source)))
 }

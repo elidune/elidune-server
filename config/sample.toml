@@ -15,7 +15,11 @@ jwt_expiration_hours = 24
 
 [logging]
 level = "debug"
-format = "pretty"  # "pretty" or "json"
+format = "pretty"       # "pretty" | "plain" | "json"
+output = "stdout"       # "stdout" | "stderr" | "file" | "syslog"
+# file_path = "logs/elidune.log"   # required when output = "file"
+# file_rotation = "daily"          # "daily" | "hourly" | "never" (default: daily)
+overridable = true
 
 [email]
 smtp_host = ""
@@ -26,8 +30,18 @@ smtp_from = ""
 smtp_from_name = "Elidune"
 smtp_use_tls = true
 # templates_dir = "data/email_templates"  # optional, default
+overridable = true
 
 [redis]
 url = "redis://127.0.0.1:6379"
 
+[reminders]
+enabled = true
+frequency_days = 7      # Minimum days between two reminders for the same loan
+send_time = "09:00"     # HH:MM (24h) when the scheduler sends reminders
+smtp_throttle_ms = 100  # Delay between individual emails (ms)
+overridable = true
 
+[audit]
+retention_days = 365    # Audit log entries older than this are deleted automatically
+overridable = true

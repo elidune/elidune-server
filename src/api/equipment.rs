@@ -9,9 +9,10 @@ use axum::{
 use crate::{
     error::AppResult,
     models::equipment::{CreateEquipment, Equipment, UpdateEquipment},
+    services::audit,
 };
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
 
 /// List all equipment
 #[utoipa::path(
@@ -67,10 +68,12 @@ pub async fn get_equipment(
 pub async fn create_equipment(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(data): Json<CreateEquipment>,
 ) -> AppResult<(StatusCode, Json<Equipment>)> {
     claims.require_write_settings()?;
     let equipment = state.services.equipment.create(&data).await?;
+    state.services.audit.log(audit::event::EQUIPMENT_CREATED, Some(claims.user_id), Some("equipment"), Some(equipment.id), ip, Some(&equipment));
     Ok((StatusCode::CREATED, Json(equipment)))
 }
 
@@ -89,11 +92,13 @@ pub async fn create_equipment(
 pub async fn update_equipment(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Json(data): Json<UpdateEquipment>,
 ) -> AppResult<Json<Equipment>> {
     claims.require_write_settings()?;
     let equipment = state.services.equipment.update(id, &data).await?;
+    state.services.audit.log(audit::event::EQUIPMENT_UPDATED, Some(claims.user_id), Some("equipment"), Some(id), ip, Some(&equipment));
     Ok(Json(equipment))
 }
 
@@ -111,9 +116,11 @@ pub async fn update_equipment(
 pub async fn delete_equipment(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     claims.require_write_settings()?;
     state.services.equipment.delete(id).await?;
+    state.services.audit.log(audit::event::EQUIPMENT_DELETED, Some(claims.user_id), Some("equipment"), Some(id), ip, Some(serde_json::json!({ "id": id })));
     Ok(StatusCode::NO_CONTENT)
 }

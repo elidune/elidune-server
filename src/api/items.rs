@@ -17,10 +17,13 @@ use crate::{
         item::{Item, ItemQuery, ItemShort},
         specimen::Specimen,
     },
-    services::marc::{EnqueueResult, MarcBatchImportReport},
+    services::{
+        audit::{self},
+        marc::{EnqueueResult, MarcBatchImportReport},
+    },
 };
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
 
 #[derive(Debug, Deserialize, Default)]
 pub struct GetItemQuery {
@@ -135,7 +138,7 @@ pub struct UploadUnimarcQuery {
 
 /// Query params for MARC batch import
 #[serde_as]
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ImportMarcBatchQuery {
     /// Source ID
     #[serde_as(as = "DisplayFromStr")]
@@ -169,16 +172,26 @@ pub struct ImportMarcBatchQuery {
 pub async fn create_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Query(query): Query<CreateItemQuery>,
     Json(item): Json<Item>,
 ) -> AppResult<(StatusCode, Json<CreateItemResponse>)> {
     claims.require_write_items()?;
-
     let (item, import_report) = state
         .services
         .catalog
         .create_item(item, query.allow_duplicate_isbn, query.confirm_replace_existing_id)
         .await?;
+
+    state.services.audit.log(
+        audit::event::ITEM_CREATED,
+        Some(claims.user_id),
+        Some("item"),
+        item.id,
+        ip,
+        Some(&item),
+    );
+
     Ok((StatusCode::CREATED, Json(CreateItemResponse { item, import_report })))
 }
 
@@ -253,15 +266,24 @@ pub async fn upload_unimarc(
 pub async fn import_marc_batch(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Query(params): Query<ImportMarcBatchQuery>,
 ) -> AppResult<Json<MarcBatchImportReport>> {
     claims.require_write_items()?;
-
     let report = state
         .services
         .marc
         .import_from_batch(params.batch_id, params.source_id, params.record_id)
         .await?;
+
+    state.services.audit.log(
+        audit::event::IMPORT_MARC_BATCH,
+        Some(claims.user_id),
+        None,
+        None,
+        ip,
+        Some(&params),
+    );
 
     Ok(Json(report))
 }
@@ -286,13 +308,23 @@ pub async fn import_marc_batch(
 pub async fn update_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Query(query): Query<UpdateItemQuery>,
     Json(item): Json<Item>,
 ) -> AppResult<Json<Item>> {
     claims.require_write_items()?;
-
     let updated = state.services.catalog.update_item(id, item, query.allow_duplicate_isbn).await?;
+
+    state.services.audit.log(
+        audit::event::ITEM_UPDATED,
+        Some(claims.user_id),
+        Some("item"),
+        Some(id),
+        ip,
+        Some((id, &updated)),
+    );
+
     Ok(Json(updated))
 }
 
@@ -321,16 +353,26 @@ pub struct UpdateItemQuery {
 pub async fn delete_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Query(params): Query<DeleteItemParams>,
 ) -> AppResult<StatusCode> {
     claims.require_write_items()?;
-
     state
         .services
         .catalog
         .delete_item(id, params.force.unwrap_or(false))
         .await?;
+
+    state.services.audit.log(
+        audit::event::ITEM_DELETED,
+        Some(claims.user_id),
+        Some("item"),
+        Some(id),
+        ip,
+        Some(serde_json::json!({ "id": id, "force": params.force.unwrap_or(false) })),
+    );
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -383,16 +425,26 @@ pub async fn list_specimens(
 pub async fn create_specimen(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(item_id): Path<i64>,
     Json(specimen): Json<Specimen>,
 ) -> AppResult<(StatusCode, Json<Specimen>)> {
     claims.require_write_items()?;
-
     let created = state
         .services
         .catalog
         .create_specimen(item_id, specimen)
         .await?;
+
+    state.services.audit.log(
+        audit::event::SPECIMEN_CREATED,
+        Some(claims.user_id),
+        Some("specimen"),
+        created.id,
+        ip,
+        Some((item_id, &created)),
+    );
+
     Ok((StatusCode::CREATED, Json(created)))
 }
 
@@ -416,16 +468,27 @@ pub async fn create_specimen(
 pub async fn update_specimen(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(item_id): Path<i64>,
     Json(mut specimen): Json<Specimen>,
 ) -> AppResult<Json<Specimen>> {
     claims.require_write_items()?;
-println!("update specimen: {:?}", specimen);
+    let specimen_id = specimen.id;
     state
         .services
         .catalog
         .update_specimen(item_id, &mut specimen)
         .await?;
+
+    state.services.audit.log(
+        audit::event::SPECIMEN_UPDATED,
+        Some(claims.user_id),
+        Some("specimen"),
+        specimen_id,
+        ip,
+        Some((item_id, &specimen)),
+    );
+
     Ok(Json(specimen))
 }
 
@@ -449,16 +512,30 @@ println!("update specimen: {:?}", specimen);
 pub async fn delete_specimen(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path((item_id, specimen_id)): Path<(i64, i64)>,
     Query(params): Query<DeleteSpecimenParams>,
 ) -> AppResult<StatusCode> {
     claims.require_write_items()?;
-
     state
         .services
         .catalog
         .delete_specimen(item_id, specimen_id, params.force.unwrap_or(false))
         .await?;
+
+    state.services.audit.log(
+        audit::event::SPECIMEN_DELETED,
+        Some(claims.user_id),
+        Some("specimen"),
+        Some(specimen_id),
+        ip,
+        Some(serde_json::json!({
+            "item_id": item_id,
+            "specimen_id": specimen_id,
+            "force": params.force.unwrap_or(false),
+        })),
+    );
+
     Ok(StatusCode::NO_CONTENT)
 }
 

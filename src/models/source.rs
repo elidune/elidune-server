@@ -21,7 +21,7 @@ pub struct Source {
 }
 
 /// Create source request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateSource {
     /// Source name
     pub name: String,
@@ -30,7 +30,7 @@ pub struct CreateSource {
 }
 
 /// Update source request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateSource {
     /// New name for the source
     pub name: Option<String>,
@@ -40,7 +40,7 @@ pub struct UpdateSource {
 
 /// Merge sources request
 #[serde_as]
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct MergeSources {
     /// IDs of sources to merge
     #[serde_as(as = "Vec<DisplayFromStr>")]

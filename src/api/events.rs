@@ -11,9 +11,10 @@ use utoipa::ToSchema;
 use crate::{
     error::AppResult,
     models::event::{CreateEvent, Event, EventQuery, UpdateEvent},
+    services::audit,
 };
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
 
 /// Paginated events response
 #[derive(Serialize, ToSchema)]
@@ -78,10 +79,12 @@ pub async fn get_event(
 pub async fn create_event(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(data): Json<CreateEvent>,
 ) -> AppResult<(StatusCode, Json<Event>)> {
     claims.require_write_settings()?;
     let event = state.services.events.create(&data).await?;
+    state.services.audit.log(audit::event::EVENT_CREATED, Some(claims.user_id), Some("event"), Some(event.id), ip, Some((&data, &event)));
     Ok((StatusCode::CREATED, Json(event)))
 }
 
@@ -100,11 +103,13 @@ pub async fn create_event(
 pub async fn update_event(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Json(data): Json<UpdateEvent>,
 ) -> AppResult<Json<Event>> {
     claims.require_write_settings()?;
     let event = state.services.events.update(id, &data).await?;
+    state.services.audit.log(audit::event::EVENT_UPDATED, Some(claims.user_id), Some("event"), Some(id), ip, Some((id, &data, &event)));
     Ok(Json(event))
 }
 
@@ -122,9 +127,11 @@ pub async fn update_event(
 pub async fn delete_event(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     claims.require_write_settings()?;
     state.services.events.delete(id).await?;
+    state.services.audit.log(audit::event::EVENT_DELETED, Some(claims.user_id), Some("event"), Some(id), ip, Some(serde_json::json!({ "id": id })));
     Ok(StatusCode::NO_CONTENT)
 }

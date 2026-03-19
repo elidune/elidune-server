@@ -9,10 +9,11 @@ use serde::Deserialize;
 
 use crate::{
     error::AppResult,
-    models::user::{CreateUser, UpdateAccountType, UpdateProfile, UpdateUser, User, UserQuery, UserShort},
+    models::user::{UpdateAccountType, UpdateProfile, User, UserPayload, UserQuery, UserShort},
+    services::audit,
 };
 
-use super::{items::PaginatedResponse, AuthenticatedUser};
+use super::{items::PaginatedResponse, AuthenticatedUser, ClientIp};
 
 /// List users with search and pagination
 #[utoipa::path(
@@ -79,7 +80,7 @@ pub async fn get_user(
     path = "/users",
     tag = "users",
     security(("bearer_auth" = [])),
-    request_body = CreateUser,
+    request_body = UserPayload,
     responses(
         (status = 201, description = "User created", body = User),
         (status = 400, description = "Invalid input"),
@@ -89,11 +90,21 @@ pub async fn get_user(
 pub async fn create_user(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
-    Json(user): Json<CreateUser>,
+    ClientIp(ip): ClientIp,
+    Json(user): Json<UserPayload>,
 ) -> AppResult<(StatusCode, Json<User>)> {
     claims.require_write_users()?;
-
     let created = state.services.users.create_user(user).await?;
+
+    state.services.audit.log(
+        audit::event::USER_CREATED,
+        Some(claims.user_id),
+        Some("user"),
+        Some(created.id),
+        ip,
+        Some(&created),
+    );
+
     Ok((StatusCode::CREATED, Json(created)))
 }
 
@@ -106,7 +117,7 @@ pub async fn create_user(
     params(
         ("id" = i32, Path, description = "User ID")
     ),
-    request_body = UpdateUser,
+    request_body = UserPayload,
     responses(
         (status = 200, description = "User updated", body = User),
         (status = 404, description = "User not found")
@@ -115,12 +126,23 @@ pub async fn create_user(
 pub async fn update_user(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
-    Json(user): Json<UpdateUser>,
+    Json(user): Json<UserPayload>,
 ) -> AppResult<Json<User>> {
     claims.require_write_users()?;
-
+    let audit_payload = user.clone();
     let updated = state.services.users.update_user(id, user).await?;
+
+    state.services.audit.log(
+        audit::event::USER_UPDATED,
+        Some(claims.user_id),
+        Some("user"),
+        Some(id),
+        ip,
+        Some((id, audit_payload)),
+    );
+
     Ok(Json(updated))
 }
 
@@ -143,16 +165,26 @@ pub async fn update_user(
 pub async fn delete_user(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Query(params): Query<DeleteUserParams>,
 ) -> AppResult<StatusCode> {
     claims.require_write_users()?;
-
     state
         .services
         .users
         .delete_user(id, params.force.unwrap_or(false))
         .await?;
+
+    state.services.audit.log(
+        audit::event::USER_DELETED,
+        Some(claims.user_id),
+        Some("user"),
+        Some(id),
+        ip,
+        Some(serde_json::json!({ "id": id, "force": params.force.unwrap_or(false) })),
+    );
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -202,11 +234,21 @@ pub async fn update_my_profile(
 pub async fn update_account_type(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Json(request): Json<UpdateAccountType>,
 ) -> AppResult<Json<User>> {
     claims.require_admin()?;
-
     let updated = state.services.users.update_account_type(id, &request.account_type).await?;
+
+    state.services.audit.log(
+        audit::event::USER_ACCOUNT_TYPE_CHANGED,
+        Some(claims.user_id),
+        Some("user"),
+        Some(id),
+        ip,
+        Some(serde_json::json!({ "new_account_type": request.account_type })),
+    );
+
     Ok(Json(updated))
 }

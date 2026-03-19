@@ -24,7 +24,7 @@ pub struct VisitorCount {
 }
 
 /// Create visitor count request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct CreateVisitorCount {
     /// Date of the count (YYYY-MM-DD)
     pub count_date: String,

@@ -6,7 +6,7 @@ use sqlx::Row;
 use super::Repository;
 use crate::{
     error::{AppError, AppResult},
-    models::user::{AccountTypeSlug, CreateUser, Rights, UpdateProfile, UpdateUser, User, UserQuery, UserRights, UserShort, UserStatus},
+    models::user::{AccountTypeSlug, Rights, UpdateProfile, User, UserPayload, UserQuery, UserRights, UserShort, UserStatus},
 };
 
 impl Repository {
@@ -207,7 +207,7 @@ impl Repository {
     }
 
     /// Create a new user
-    pub async fn users_create(&self, user: &CreateUser, password: Option<String>) -> AppResult<User> {
+    pub async fn users_create(&self, user: &UserPayload, password: Option<String>) -> AppResult<User> {
         let now = Utc::now();
 
         let account_type = user.account_type.as_ref().map(|at| at.as_str()).unwrap_or("guest");
@@ -235,7 +235,11 @@ impl Repository {
             ) RETURNING id
             "#,
         )
-        .bind(&user.login)
+        .bind(
+            user.login
+                .as_deref()
+                .ok_or_else(|| AppError::Validation("Login is required".to_string()))?,
+        )
         .bind(&password)
         .bind(&user.firstname)
         .bind(&user.lastname)
@@ -266,7 +270,7 @@ impl Repository {
     }
 
     /// Update an existing user
-    pub async fn users_update(&self, id: i64, user: &UpdateUser, password: Option<String>) -> AppResult<User> {
+    pub async fn users_update(&self, id: i64, user: &UserPayload, password: Option<String>) -> AppResult<User> {
         let now = Utc::now();
 
         // Build dynamic update query

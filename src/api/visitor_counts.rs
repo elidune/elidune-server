@@ -6,13 +6,15 @@ use axum::{
     Json,
 };
 use chrono::NaiveDate;
+use serde_json::json;
 
 use crate::{
     error::AppResult,
     models::visitor_count::{CreateVisitorCount, VisitorCount, VisitorCountQuery},
+    services::audit,
 };
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
 
 /// List visitor counts
 #[utoipa::path(
@@ -55,11 +57,12 @@ pub async fn list_visitor_counts(
 pub async fn create_visitor_count(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(data): Json<CreateVisitorCount>,
 ) -> AppResult<(StatusCode, Json<VisitorCount>)> {
     claims.require_write_settings()?;
-
     let count = state.services.visitor_counts.create(&data).await?;
+    state.services.audit.log(audit::event::VISITOR_COUNT_CREATED, Some(claims.user_id), Some("visitor_count"), Some(count.id), ip, Some((&data, &count)));
     Ok((StatusCode::CREATED, Json(count)))
 }
 
@@ -77,10 +80,11 @@ pub async fn create_visitor_count(
 pub async fn delete_visitor_count(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     claims.require_write_settings()?;
-
     state.services.visitor_counts.delete(id).await?;
+    state.services.audit.log(audit::event::VISITOR_COUNT_DELETED, Some(claims.user_id), Some("visitor_count"), Some(id), ip, Some(json!({ "id": id })));
     Ok(StatusCode::NO_CONTENT)
 }
