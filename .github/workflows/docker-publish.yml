@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: jcollonville/elidune-server
+  IMAGE_NAME: jcollonville/elidune-complete
 
 jobs:
   build-and-push:
@@ -37,5 +37,5 @@ jobs:
           file: ./Dockerfile.complete
           push: true
           tags: |
-            ghcr.io/jcollonville/elidune-server:latest
-            ghcr.io/jcollonville/elidune-server:${{ github.sha }}
+            ghcr.io/jcollonville/elidune-complete:latest
+            ghcr.io/jcollonville/elidune-complete:${{ github.sha }}
