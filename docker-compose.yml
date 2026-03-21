@@ -35,6 +35,19 @@ services:
     networks:
       - elidune-network
 
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    ports:
+      - "7700:7700"
+    environment:
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-changeme}
+      - MEILI_ENV=production
+    volumes:
+      - meili_data:/meili_data
+    restart: unless-stopped
+    networks:
+      - elidune-network
+
   # Optional: pgAdmin for database management
   pgadmin:
     image: dpage/pgadmin4:latest
@@ -53,6 +66,7 @@ services:
 
 volumes:
   postgres_data:
+  meili_data:
 
 networks:
   elidune-network:

@@ -69,6 +69,7 @@ utoipa-swagger-ui = { version = "7", features = ["axum"] }
 snowflaked = "1.0"
 z3950-rs = "0.0.6"
 regex = "1"
+meilisearch-sdk = "0.32"
 
 [dev-dependencies]
 tokio-test = "0.4"

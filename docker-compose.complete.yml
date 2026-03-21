@@ -23,11 +23,25 @@ services:
       retries: 5
       start_period: 60s
 
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    container_name: elidune-meilisearch
+    ports:
+      - "${MEILI_PORT:-7700}:7700"
+    environment:
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-changeme}
+      - MEILI_ENV=production
+    volumes:
+      - meili_data:/meili_data
+    restart: unless-stopped
+
 volumes:
   postgres_data:
     name: elidune-postgres-data
   redis_data:
     name: elidune-redis-data
+  meili_data:
+    name: elidune-meili-data
 
 networks:
   default:

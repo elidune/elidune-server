@@ -275,3 +275,46 @@ pub async fn test_email(
 
     Ok(StatusCode::OK)
 }
+
+/// Trigger a full reindex of the catalog into Meilisearch.
+///
+/// Fetches all items from PostgreSQL and pushes them to Meilisearch in batches.
+/// Useful after initial setup, bulk imports, or if the index gets out of sync.
+/// Returns immediately with the number of items queued; Meilisearch processes them asynchronously.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/reindex-search",
+    tag = "admin",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Reindex queued", body = ReindexSearchResponse),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 503, description = "Meilisearch not configured")
+    )
+)]
+pub async fn reindex_search(
+    State(state): State<AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+) -> AppResult<Json<ReindexSearchResponse>> {
+    claims.require_write_settings()?;
+
+    let (count, available) = state.services.catalog.reindex_search().await?;
+
+    state.services.audit.log(
+        "admin.reindex_search",
+        Some(claims.user_id),
+        None,
+        None,
+        ip,
+        Some(serde_json::json!({ "items_queued": count, "meilisearch_available": available })),
+    );
+
+    Ok(Json(ReindexSearchResponse { items_queued: count, meilisearch_available: available }))
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ReindexSearchResponse {
+    pub items_queued: usize,
+    pub meilisearch_available: bool,
+}

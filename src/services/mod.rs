@@ -14,6 +14,7 @@ pub mod redis;
 pub mod scheduler;
 pub mod reminders;
 pub mod schedules;
+pub mod search;
 pub mod settings;
 pub mod sources;
 pub mod stats;
@@ -26,7 +27,7 @@ use std::sync::Arc;
 use sqlx::{Pool, Postgres};
 
 use crate::{
-    config::{UsersConfig, RedisConfig},
+    config::{MeilisearchConfig, RedisConfig, UsersConfig},
     dynamic_config::DynamicConfig,
     error::AppResult,
     repository::Repository,
@@ -47,6 +48,7 @@ pub struct Services {
     pub redis: redis::RedisService,
     pub reminders: reminders::RemindersService,
     pub schedules: schedules::SchedulesService,
+    pub search: Option<Arc<search::MeilisearchService>>,
     pub settings: settings::SettingsService,
     pub sources: sources::SourcesService,
     pub stats: stats::StatsService,
@@ -69,9 +71,26 @@ impl Services {
         dynamic_config: Arc<DynamicConfig>,
         redis_config: RedisConfig,
         redis_service: redis::RedisService,
+        meilisearch_config: Option<MeilisearchConfig>,
     ) -> AppResult<Self> {
         let pool = repository.pool.clone();
-        let catalog = catalog::CatalogService::new(repository.clone());
+
+        // Build optional Meilisearch service
+        let search_service: Option<Arc<search::MeilisearchService>> = if let Some(ref cfg) = meilisearch_config {
+            let svc = search::MeilisearchService::new(cfg);
+            svc.ensure_index().await;
+            Some(Arc::new(svc))
+        } else {
+            tracing::info!("Meilisearch not configured — catalog freesearch will use PostgreSQL fallback");
+            None
+        };
+
+        let catalog = if let Some(ref svc) = search_service {
+            catalog::CatalogService::with_search(repository.clone(), Arc::clone(svc))
+        } else {
+            catalog::CatalogService::new(repository.clone())
+        };
+
         let marc_service = marc::MarcService::new(catalog.clone(), redis_service.clone());
         let audit_service = audit::AuditService::new(pool.clone());
         let email_service = email::EmailService::new(dynamic_config.clone());
@@ -101,6 +120,7 @@ impl Services {
             redis: redis_service.clone(),
             reminders: reminders_service,
             schedules: schedules::SchedulesService::new(repository.clone()),
+            search: search_service,
             settings: settings::SettingsService::new(repository.clone()),
             sources: sources::SourcesService::new(repository.clone()),
             stats: stats::StatsService::new(repository.clone()),

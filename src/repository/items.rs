@@ -16,7 +16,7 @@ use crate::{
     models::{
         author::Author,
         import_report::DuplicateCandidate,
-        item::{Collection, Edition, Isbn, Item, ItemQuery, ItemShort, MediaType, Serie},
+        item::{Collection, Edition, Isbn, Item, ItemQuery, ItemShort, MeiliItemDocument, MediaType, Serie},
         specimen::Specimen,
     },
 };
@@ -88,238 +88,6 @@ fn like_escape(s: &str) -> String {
         .replace('_', "\\_")
 }
 
-// =============================================================================
-// Google-like query parser → PostgreSQL tsquery
-// =============================================================================
-
-/// A parsed search token from the freesearch input string.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SearchToken {
-    And(Vec<SearchToken>),
-    Or(Vec<SearchToken>),
-    /// Single word/prefix term. `prefix = true` appends `:*` for prefix matching.
-    Term { word: String, prefix: bool },
-    /// Quoted phrase: words must appear in order (tsquery `<->` adjacency).
-    Phrase(Vec<String>),
-    /// Negation: the inner token must NOT match.
-    Not(Box<SearchToken>),
-}
-
-/// Parse a freesearch string into a [`SearchToken`] tree.
-///
-/// Supported syntax (mirrors Google search):
-/// - `word`           → prefix term (AND with others)
-/// - `"exact phrase"` → phrase match
-/// - `-word`          → exclude term
-/// - `-"phrase"`      → exclude phrase
-/// - `word OR word`   → OR group
-/// - `+word`          → required (same as bare AND, explicit)
-fn parse_search_query(input: &str) -> Option<SearchToken> {
-    let tokens = tokenize_search_input(input);
-    if tokens.is_empty() {
-        return None;
-    }
-    Some(build_token_tree(tokens))
-}
-
-#[derive(Debug, Clone)]
-enum RawToken {
-    Word(String),
-    Phrase(String),
-    Negate,
-    OrKeyword,
-}
-
-fn tokenize_search_input(input: &str) -> Vec<RawToken> {
-    let mut out = Vec::new();
-    let mut chars = input.chars().peekable();
-
-    while let Some(&ch) = chars.peek() {
-        match ch {
-            ' ' | '\t' | '\n' => {
-                chars.next();
-            }
-            '"' => {
-                chars.next();
-                let mut phrase = String::new();
-                for c in chars.by_ref() {
-                    if c == '"' {
-                        break;
-                    }
-                    phrase.push(c);
-                }
-                let trimmed = phrase.trim().to_string();
-                if !trimmed.is_empty() {
-                    out.push(RawToken::Phrase(trimmed));
-                }
-            }
-            '-' => {
-                chars.next();
-                out.push(RawToken::Negate);
-            }
-            '+' => {
-                chars.next();
-            }
-            _ => {
-                let mut word = String::new();
-                while let Some(&c) = chars.peek() {
-                    if c.is_whitespace() || c == '"' {
-                        break;
-                    }
-                    word.push(c);
-                    chars.next();
-                }
-                if !word.is_empty() {
-                    if word.eq_ignore_ascii_case("OR") {
-                        out.push(RawToken::OrKeyword);
-                    } else {
-                        out.push(RawToken::Word(word));
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-fn build_token_tree(raw: Vec<RawToken>) -> SearchToken {
-    let mut or_groups: Vec<Vec<SearchToken>> = vec![Vec::new()];
-    let mut negate_next = false;
-
-    for tok in raw {
-        match tok {
-            RawToken::Negate => {
-                negate_next = true;
-            }
-            RawToken::OrKeyword => {
-                or_groups.push(Vec::new());
-                negate_next = false;
-            }
-            RawToken::Word(w) => {
-                let term = SearchToken::Term {
-                    word: tsquery_sanitize(&w),
-                    prefix: true,
-                };
-                let node = if negate_next {
-                    SearchToken::Not(Box::new(term))
-                } else {
-                    term
-                };
-                negate_next = false;
-                or_groups.last_mut().unwrap().push(node);
-            }
-            RawToken::Phrase(p) => {
-                let words: Vec<String> = p
-                    .split_whitespace()
-                    .map(|s| tsquery_sanitize(s))
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if words.is_empty() {
-                    negate_next = false;
-                    continue;
-                }
-                let phrase = SearchToken::Phrase(words);
-                let node = if negate_next {
-                    SearchToken::Not(Box::new(phrase))
-                } else {
-                    phrase
-                };
-                negate_next = false;
-                or_groups.last_mut().unwrap().push(node);
-            }
-        }
-    }
-
-    let or_parts: Vec<SearchToken> = or_groups
-        .into_iter()
-        .filter(|g| !g.is_empty())
-        .map(|mut g| {
-            if g.len() == 1 {
-                g.remove(0)
-            } else {
-                SearchToken::And(g)
-            }
-        })
-        .collect();
-
-    match or_parts.len() {
-        0 => SearchToken::And(vec![]),
-        1 => or_parts.into_iter().next().unwrap(),
-        _ => SearchToken::Or(or_parts),
-    }
-}
-
-/// Render a [`SearchToken`] tree to a PostgreSQL tsquery string.
-fn render_tsquery(token: &SearchToken) -> Option<String> {
-    match token {
-        SearchToken::And(children) => {
-            let parts: Vec<String> = children.iter().filter_map(render_tsquery).collect();
-            if parts.is_empty() {
-                None
-            } else if parts.len() == 1 {
-                Some(parts.into_iter().next().unwrap())
-            } else {
-                Some(parts.join(" & "))
-            }
-        }
-        SearchToken::Or(children) => {
-            let parts: Vec<String> = children.iter().filter_map(render_tsquery).collect();
-            if parts.is_empty() {
-                None
-            } else if parts.len() == 1 {
-                Some(parts.into_iter().next().unwrap())
-            } else {
-                Some(format!("({})", parts.join(" | ")))
-            }
-        }
-        SearchToken::Term { word, prefix } => {
-            if word.is_empty() {
-                return None;
-            }
-            if *prefix {
-                Some(format!("{}:*", word))
-            } else {
-                Some(word.clone())
-            }
-        }
-        SearchToken::Phrase(words) => {
-            let non_empty: Vec<&String> = words.iter().filter(|w| !w.is_empty()).collect();
-            if non_empty.is_empty() {
-                return None;
-            }
-            if non_empty.len() == 1 {
-                return Some(format!("{}:*", non_empty[0]));
-            }
-            Some(non_empty.iter().map(|w| w.as_str()).collect::<Vec<_>>().join(" <-> "))
-        }
-        SearchToken::Not(inner) => {
-            render_tsquery(inner).map(|s| {
-                if s.contains(' ') {
-                    format!("!({})", s)
-                } else {
-                    format!("!{}", s)
-                }
-            })
-        }
-    }
-}
-
-/// Sanitize a word for tsquery: keep only alphanumeric chars, lowercase.
-/// Words are left UNQUOTED so `to_tsquery` normalizes them through the
-/// text-search dictionary (lowercase + unaccent).
-fn tsquery_sanitize(w: &str) -> String {
-    w.chars()
-        .filter(|c| c.is_alphanumeric())
-        .collect::<String>()
-        .to_lowercase()
-}
-
-/// Parse a freesearch string and return the final tsquery expression,
-/// or `None` if the input produces no usable terms.
-pub fn freesearch_to_tsquery(input: &str) -> Option<String> {
-    let token = parse_search_query(input.trim())?;
-    render_tsquery(&token)
-}
 
 fn normalize_key(s: &str) -> String {
     s.to_lowercase()
@@ -474,18 +242,13 @@ impl Repository {
     // SEARCH
     // =========================================================================
 
-    /// Search items with full-text search (FTS via tsvector) and parameterized
-    /// field filters. All ItemQuery fields are handled. Results are ranked by
-    /// ts_rank when a freesearch query is present, otherwise ordered by title.
+    /// Search items with parameterized field filters. All non-freesearch ItemQuery fields
+    /// are handled here. When freesearch is present, the CatalogService routes through
+    /// Meilisearch instead; this path handles field-only filters and Meilisearch fallback.
     pub async fn items_search(&self, query: &ItemQuery) -> AppResult<(Vec<ItemShort>, i64)> {
         let page = query.page.unwrap_or(1).max(1);
         let per_page = query.per_page.unwrap_or(20).clamp(1, 200);
         let offset = (page - 1) * per_page;
-
-        let tsquery_str = query
-            .freesearch
-            .as_deref()
-            .and_then(freesearch_to_tsquery);
 
         // Typed parameter enum to build dynamic queries safely.
         #[derive(Debug)]
@@ -603,18 +366,19 @@ impl Repository {
             ));
         }
 
-        // freesearch → FTS on search_vector
-        let fts_param_idx: Option<usize> = if let Some(ref tsq) = tsquery_str {
-            params.push(Param::Text(tsq.clone()));
-            let idx = params.len();
-            where_parts.push(format!(
-                "i.search_vector @@ to_tsquery('simple_unaccent', ${})",
-                idx
-            ));
-            Some(idx)
-        } else {
-            None
-        };
+        // freesearch with ILIKE fallback when Meilisearch is not routing (rare / fallback path)
+        if let Some(ref fs) = query.freesearch {
+            let fs = fs.trim();
+            if !fs.is_empty() {
+                params.push(Param::Text(format!("%{}%", like_escape(fs))));
+                let idx = params.len();
+                where_parts.push(format!(
+                    "(unaccent(lower(i.title)) LIKE unaccent(lower(${idx})) \
+                     OR unaccent(lower(i.subject)) LIKE unaccent(lower(${idx})) \
+                     OR unaccent(lower(i.notes)) LIKE unaccent(lower(${idx})))"
+                ));
+            }
+        }
 
         let where_sql = if where_parts.is_empty() {
             "1=1".to_string()
@@ -622,14 +386,7 @@ impl Repository {
             where_parts.join(" AND ")
         };
 
-        let order_sql = if let Some(fts_idx) = fts_param_idx {
-            format!(
-                "ts_rank(i.search_vector, to_tsquery('simple_unaccent', ${})) DESC, i.title ASC NULLS LAST",
-                fts_idx
-            )
-        } else {
-            "i.title ASC NULLS LAST".to_string()
-        };
+        let order_sql = "i.title ASC NULLS LAST".to_string();
 
         // Single query with COUNT(*) OVER() to avoid two round-trips.
         let sql = format!(
@@ -765,6 +522,162 @@ impl Repository {
     }
 
     // =========================================================================
+    // MEILISEARCH DOCUMENT BUILDERS
+    // =========================================================================
+
+    /// Build a single Meilisearch document for the given item ID using a single JOIN query.
+    pub async fn items_get_meili_document(&self, id: i64) -> AppResult<Option<MeiliItemDocument>> {
+        let doc = sqlx::query_as::<_, MeiliItemDocument>(
+            r#"
+            SELECT
+                i.id,
+                i.media_type,
+                i.isbn::text AS isbn,
+                i.title,
+                COALESCE(
+                    string_agg(DISTINCT concat_ws(' ', a.lastname, a.firstname), ', ')
+                    FILTER (WHERE a.id IS NOT NULL),
+                    ''
+                ) AS author_names,
+                i.subject,
+                COALESCE(i.keywords, '{}') AS keywords,
+                ed.publisher_name,
+                se.name AS series_name,
+                co.primary_title AS collection_name,
+                COALESCE(
+                    array_agg(DISTINCT sp.barcode) FILTER (WHERE sp.barcode IS NOT NULL),
+                    '{}'
+                ) AS barcodes,
+                COALESCE(
+                    array_agg(DISTINCT sp.call_number) FILTER (WHERE sp.call_number IS NOT NULL),
+                    '{}'
+                ) AS call_numbers,
+                i.abstract AS abstract_text,
+                i.notes,
+                i.table_of_contents,
+                i.lang,
+                i.audience_type,
+                (i.archived_at IS NOT NULL) AS is_archived
+            FROM items i
+            LEFT JOIN item_authors ia ON ia.item_id = i.id
+            LEFT JOIN authors a ON a.id = ia.author_id
+            LEFT JOIN editions ed ON ed.id = i.edition_id
+            LEFT JOIN series se ON se.id = i.series_id
+            LEFT JOIN collections co ON co.id = i.collection_id
+            LEFT JOIN specimens sp ON sp.item_id = i.id AND sp.archived_at IS NULL
+            WHERE i.id = $1
+            GROUP BY i.id, ed.publisher_name, se.name, co.primary_title
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(doc)
+    }
+
+    /// Build Meilisearch documents for all items (used for full reindex).
+    pub async fn items_get_all_meili_documents(&self) -> AppResult<Vec<MeiliItemDocument>> {
+        let docs = sqlx::query_as::<_, MeiliItemDocument>(
+            r#"
+            SELECT
+                i.id,
+                i.media_type,
+                i.isbn::text AS isbn,
+                i.title,
+                COALESCE(
+                    string_agg(DISTINCT concat_ws(' ', a.lastname, a.firstname), ', ')
+                    FILTER (WHERE a.id IS NOT NULL),
+                    ''
+                ) AS author_names,
+                i.subject,
+                COALESCE(i.keywords, '{}') AS keywords,
+                ed.publisher_name,
+                se.name AS series_name,
+                co.primary_title AS collection_name,
+                COALESCE(
+                    array_agg(DISTINCT sp.barcode) FILTER (WHERE sp.barcode IS NOT NULL),
+                    '{}'
+                ) AS barcodes,
+                COALESCE(
+                    array_agg(DISTINCT sp.call_number) FILTER (WHERE sp.call_number IS NOT NULL),
+                    '{}'
+                ) AS call_numbers,
+                i.abstract AS abstract_text,
+                i.notes,
+                i.table_of_contents,
+                i.lang,
+                i.audience_type,
+                (i.archived_at IS NOT NULL) AS is_archived
+            FROM items i
+            LEFT JOIN item_authors ia ON ia.item_id = i.id
+            LEFT JOIN authors a ON a.id = ia.author_id
+            LEFT JOIN editions ed ON ed.id = i.edition_id
+            LEFT JOIN series se ON se.id = i.series_id
+            LEFT JOIN collections co ON co.id = i.collection_id
+            LEFT JOIN specimens sp ON sp.item_id = i.id AND sp.archived_at IS NULL
+            GROUP BY i.id, ed.publisher_name, se.name, co.primary_title
+            ORDER BY i.id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(docs)
+    }
+
+    /// Load ItemShort rows for the given IDs, preserving the input order (Meilisearch ranking).
+    pub async fn items_get_short_by_ids_ordered(&self, ids: &[i64]) -> AppResult<Vec<ItemShort>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let rows: Vec<ItemShortRow> = sqlx::query_as(
+            r#"
+            SELECT i.id, i.media_type, i.isbn, i.title,
+                   i.publication_date AS date, 0::smallint AS status,
+                   1::smallint AS is_local, i.is_valid, i.archived_at,
+                   (
+                       SELECT jsonb_build_object(
+                           'id', a.id::text,
+                           'lastname', a.lastname,
+                           'firstname', a.firstname,
+                           'bio', a.bio,
+                           'notes', a.notes,
+                           'function', ia.role
+                       )
+                       FROM item_authors ia
+                       JOIN authors a ON a.id = ia.author_id
+                       WHERE ia.item_id = i.id
+                       ORDER BY ia.position LIMIT 1
+                   ) AS author
+            FROM items i
+            WHERE i.id = ANY($1)
+            "#,
+        )
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let id_to_index: std::collections::HashMap<i64, usize> =
+            ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+
+        let item_ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        let specimens_map = self.items_get_specimens_short_by_item_ids(&item_ids).await?;
+
+        let mut items: Vec<(usize, ItemShort)> = rows
+            .into_iter()
+            .map(|r| {
+                let pos = id_to_index.get(&r.id).copied().unwrap_or(usize::MAX);
+                let mut short = ItemShort::from(r);
+                short.specimens = specimens_map.get(&short.id).cloned().unwrap_or_default();
+                (pos, short)
+            })
+            .collect();
+
+        items.sort_by_key(|(pos, _)| *pos);
+        Ok(items.into_iter().map(|(_, item)| item).collect())
+    }
+
+    // =========================================================================
     // CREATE
     // =========================================================================
 
@@ -886,7 +799,7 @@ impl Repository {
     }
 
  
-    /// Update marc record for an item, then refresh the search_vector.
+    /// Update marc record for an item.
     pub async fn items_update_marc_record_for_item(&self, item: &mut Item) -> AppResult<()> {
         
         if item.marc_record.is_none() {
@@ -903,26 +816,13 @@ impl Repository {
         item.marc_record = Some(MarcRecord::from(&*item));
 
         sqlx::query(
-            "UPDATE items SET marc_record = $1, \
-             search_vector = items_rebuild_search_vector($2) \
-             WHERE id = $2",
+            "UPDATE items SET marc_record = $1 WHERE id = $2",
         )
         .bind(serde_json::to_value(&item.marc_record).unwrap())
         .bind(item.id.unwrap_or(0))
         .execute(&self.pool)
         .await?;
 
-        Ok(())
-    }
-
-    /// Rebuild the search_vector for an item (called after specimen mutations).
-    async fn items_rebuild_search_vector(&self, item_id: i64) -> AppResult<()> {
-        sqlx::query(
-            "UPDATE items SET search_vector = items_rebuild_search_vector($1) WHERE id = $1",
-        )
-        .bind(item_id)
-        .execute(&self.pool)
-        .await?;
         Ok(())
     }
 
@@ -1249,7 +1149,6 @@ impl Repository {
         .await?;
 
         new_specimen.id = Some(id);
-        self.items_rebuild_search_vector(item_id).await?;
         Ok(new_specimen)
     }
 
@@ -1405,10 +1304,6 @@ impl Repository {
         .execute(&self.pool)
         .await?;
 
-        if let Some(item_id) = specimen.item_id {
-            self.items_rebuild_search_vector(item_id).await?;
-        }
-
         Ok(specimen)
     }
 
@@ -1443,10 +1338,6 @@ impl Repository {
         .bind(id)
         .execute(&self.pool)
         .await?;
-
-        if let Some(iid) = item_id {
-            self.items_rebuild_search_vector(iid).await?;
-        }
 
         Ok(())
     }
@@ -1691,99 +1582,6 @@ impl Repository {
         // Items no longer have a source_id; sources are attached to specimens.
         let _ = (old_source_ids, new_source_id);
         Ok(0)
-    }
-}
-
-#[cfg(test)]
-mod search_parser_tests {
-    use super::freesearch_to_tsquery;
-
-    fn tsq(input: &str) -> String {
-        freesearch_to_tsquery(input).unwrap_or_default()
-    }
-
-    #[test]
-    fn empty_returns_none() {
-        assert!(freesearch_to_tsquery("").is_none());
-        assert!(freesearch_to_tsquery("   ").is_none());
-    }
-
-    #[test]
-    fn single_word_becomes_prefix_term() {
-        assert_eq!(tsq("harry"), "harry:*");
-    }
-
-    #[test]
-    fn multiple_words_are_anded() {
-        assert_eq!(tsq("harry potter"), "harry:* & potter:*");
-    }
-
-    #[test]
-    fn multiple_words_lowercased() {
-        assert_eq!(tsq("Stephen King"), "stephen:* & king:*");
-    }
-
-    #[test]
-    fn quoted_phrase_uses_adjacency() {
-        assert_eq!(tsq(r#""harry potter""#), "harry <-> potter");
-    }
-
-    #[test]
-    fn single_word_phrase_is_prefix() {
-        assert_eq!(tsq(r#""wizard""#), "wizard:*");
-    }
-
-    #[test]
-    fn negation_prefix() {
-        assert_eq!(tsq("-horror"), "!horror:*");
-    }
-
-    #[test]
-    fn negation_phrase() {
-        assert_eq!(tsq(r#"-"dark arts""#), "!(dark <-> arts)");
-    }
-
-    #[test]
-    fn or_keyword() {
-        assert_eq!(tsq("cats OR dogs"), "(cats:* | dogs:*)");
-    }
-
-    #[test]
-    fn plus_is_same_as_bare_and() {
-        assert_eq!(tsq("+harry +potter"), "harry:* & potter:*");
-    }
-
-    #[test]
-    fn mixed_and_or() {
-        assert_eq!(
-            tsq("stephen king OR tolkien"),
-            "(stephen:* & king:* | tolkien:*)"
-        );
-    }
-
-    #[test]
-    fn mixed_phrase_and_word() {
-        assert_eq!(
-            tsq(r#""harry potter" magic"#),
-            "harry <-> potter & magic:*"
-        );
-    }
-
-    #[test]
-    fn special_chars_stripped_from_words() {
-        assert_eq!(tsq("c++"), "c:*");
-    }
-
-    #[test]
-    fn accented_chars_kept_for_dictionary() {
-        // Accented chars are kept in the tsquery string; the PostgreSQL
-        // dictionary (simple_unaccent) handles normalisation.
-        assert_eq!(tsq("résumé"), "résumé:*");
-    }
-
-    #[test]
-    fn apostrophe_stripped() {
-        assert_eq!(tsq("l'amour"), "lamour:*");
     }
 }
 

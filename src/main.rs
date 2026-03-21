@@ -248,6 +248,7 @@ async fn main() -> anyhow::Result<()> {
         dynamic_config.clone(),
         config.redis.clone(),
         redis_service,
+        config.meilisearch.clone(),
     )
     .await
     .expect("Failed to create services");
@@ -369,6 +370,7 @@ fn create_router(state: AppState) -> Router {
         .route("/admin/config/:section", put(api::admin_config::update_config_section))
         .route("/admin/config/:section", delete(api::admin_config::reset_config_section))
         .route("/admin/config/email/test", post(api::admin_config::test_email))
+        .route("/admin/reindex-search", post(api::admin_config::reindex_search))
         // Audit log
         .route("/audit", get(api::audit::get_audit_log))
         .route("/audit/export", get(api::audit::export_audit_log))

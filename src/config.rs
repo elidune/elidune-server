@@ -70,6 +70,10 @@ fn default_z3950_cache_ttl() -> u64 {
     7 * 24 * 3600
 }
 
+fn default_meili_index() -> String {
+    "items".to_string()
+}
+
 fn default_reminders_enabled() -> bool {
     true
 }
@@ -141,6 +145,17 @@ impl Default for AuditConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct MeilisearchConfig {
+    /// Meilisearch server URL, e.g. "http://meilisearch:7700"
+    pub url: String,
+    /// Master key / API key (optional for development without auth)
+    pub api_key: Option<String>,
+    /// Name of the Meilisearch index to use for catalog search
+    #[serde(default = "default_meili_index")]
+    pub index_name: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -152,6 +167,8 @@ pub struct AppConfig {
     pub reminders: RemindersConfig,
     #[serde(default)]
     pub audit: AuditConfig,
+    #[serde(default)]
+    pub meilisearch: Option<MeilisearchConfig>,
 }
 
 impl AppConfig {

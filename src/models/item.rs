@@ -505,6 +505,29 @@ pub struct Edition {
 }
 
 
+/// Flat document indexed in Meilisearch for catalog full-text search.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct MeiliItemDocument {
+    pub id: i64,
+    pub media_type: String,
+    pub isbn: Option<String>,
+    pub title: Option<String>,
+    pub author_names: String,
+    pub subject: Option<String>,
+    pub keywords: Vec<String>,
+    pub publisher_name: Option<String>,
+    pub series_name: Option<String>,
+    pub collection_name: Option<String>,
+    pub barcodes: Vec<String>,
+    pub call_numbers: Vec<String>,
+    pub abstract_text: Option<String>,
+    pub notes: Option<String>,
+    pub table_of_contents: Option<String>,
+    pub lang: Option<String>,
+    pub audience_type: Option<i16>,
+    pub is_archived: bool,
+}
+
 /// Item query parameters (API). Filter values are strings; use `MarcFormat` when filtering by MARC format where applicable.
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct ItemQuery {

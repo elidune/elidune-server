@@ -45,3 +45,8 @@ overridable = true
 [audit]
 retention_days = 365    # Audit log entries older than this are deleted automatically
 overridable = true
+
+[meilisearch]
+url = "http://localhost:7700"
+api_key = "changeme"           # optional — omit if running without auth
+index_name = "items"           # default: "items"

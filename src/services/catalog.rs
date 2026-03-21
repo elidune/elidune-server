@@ -1,5 +1,7 @@
 //! Catalog management service
 
+use std::sync::Arc;
+
 use crate::{
     error::{AppError, AppResult},
     models::{
@@ -8,16 +10,22 @@ use crate::{
         specimen::Specimen,
     },
     repository::Repository,
+    services::search::{MeilisearchService, SearchFilters},
 };
 
 #[derive(Clone)]
 pub struct CatalogService {
     repository: Repository,
+    search: Option<Arc<MeilisearchService>>,
 }
 
 impl CatalogService {
     pub fn new(repository: Repository) -> Self {
-        Self { repository }
+        Self { repository, search: None }
+    }
+
+    pub fn with_search(repository: Repository, search: Arc<MeilisearchService>) -> Self {
+        Self { repository, search: Some(search) }
     }
 
     // =========================================================================
@@ -67,12 +75,62 @@ impl CatalogService {
         Ok(specimens)
     }
 
+    /// Fire-and-forget: push a fresh Meilisearch document for the given item.
+    /// Errors are logged but do not propagate.
+    async fn sync_index(&self, id: i64) {
+        if let Some(ref svc) = self.search {
+            match self.repository.items_get_meili_document(id).await {
+                Ok(Some(doc)) => svc.index_document(&doc).await,
+                Ok(None) => {}
+                Err(e) => tracing::warn!("sync_index: failed to build doc for id={}: {}", id, e),
+            }
+        }
+    }
+
+    /// Fire-and-forget: remove a document from the Meilisearch index.
+    async fn sync_delete(&self, id: i64) {
+        if let Some(ref svc) = self.search {
+            svc.delete_document(id).await;
+        }
+    }
+
     // =========================================================================
     // Items
     // =========================================================================
 
-    /// Search items with filters
+    /// Search items.
+    ///
+    /// When `freesearch` is present and Meilisearch is available, delegates to
+    /// Meilisearch for full-text search (typo tolerance, ranking) and loads the
+    /// ordered `ItemShort` rows from PostgreSQL. Falls back to the PostgreSQL path
+    /// if Meilisearch is unavailable or not configured.
+    ///
+    /// When `freesearch` is absent, uses the direct PostgreSQL ILIKE filter path.
     pub async fn search_items(&self, query: &ItemQuery) -> AppResult<(Vec<ItemShort>, i64)> {
+        if let (Some(ref fs), Some(ref svc)) = (query.freesearch.as_deref(), &self.search) {
+            if !fs.trim().is_empty() {
+                let filters = SearchFilters {
+                    media_type: query.media_type.clone(),
+                    lang: query.lang.clone(),
+                    audience_type: query.audience_type,
+                    archive: query.archive,
+                };
+                let page = query.page.unwrap_or(1).max(1);
+                let per_page = query.per_page.unwrap_or(20).clamp(1, 200);
+
+                match svc.search(fs, &filters, page, per_page).await {
+                    Ok((ids, total)) => {
+                        let items = self.repository.items_get_short_by_ids_ordered(&ids).await?;
+                        return Ok((items, total));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Meilisearch search failed, falling back to PostgreSQL: {}", e);
+                    }
+                }
+            }
+        }
+
+        // PostgreSQL path (no freesearch, or Meilisearch unavailable)
         self.repository.items_search(query).await
     }
 
@@ -108,6 +166,7 @@ impl CatalogService {
                         if !item.specimens.is_empty() {
                             self.repository.items_update_marc_record_for_item(&mut item).await?;
                         }
+                        self.sync_index(existing_id).await;
                         let report = ImportReport {
                             action: ImportAction::MergedBibliographic,
                             existing_id: Some(existing_id),
@@ -146,6 +205,7 @@ impl CatalogService {
         if !item.specimens.is_empty() {
             self.repository.items_update_marc_record_for_item(&mut item).await?;
         }
+        self.sync_index(item_id).await;
 
         let report = ImportReport {
             action: ImportAction::Created,
@@ -176,13 +236,16 @@ impl CatalogService {
         if !item.specimens.is_empty() {
             self.repository.items_update_marc_record_for_item(&mut item).await?;
         }
+        self.sync_index(id).await;
 
         Ok(item)
     }
 
     /// Delete an item
     pub async fn delete_item(&self, id: i64, force: bool) -> AppResult<()> {
-        self.repository.items_delete(id, force).await
+        self.repository.items_delete(id, force).await?;
+        self.sync_delete(id).await;
+        Ok(())
     }
 
     // =========================================================================
@@ -208,9 +271,9 @@ impl CatalogService {
             self.ensure_barcode_unique(barcode, None).await?;
         }
 
-        self.repository
-            .items_create_specimen(item_id, &specimen)
-            .await
+        let result = self.repository.items_create_specimen(item_id, &specimen).await?;
+        self.sync_index(item_id).await;
+        Ok(result)
     }
 
     /// Update a specimen.
@@ -235,14 +298,18 @@ impl CatalogService {
             self.ensure_barcode_unique(barcode, Some(specimen_id)).await?;
         }
 
-        self.repository.items_update_specimen(specimen).await
+        let result = self.repository.items_update_specimen(specimen).await?;
+        self.sync_index(item_id).await;
+        Ok(result)
     }
 
     /// Delete a specimen
-    pub async fn delete_specimen(&self, _item_id: i64, specimen_id: i64, force: bool) -> AppResult<()> {
+    pub async fn delete_specimen(&self, item_id: i64, specimen_id: i64, force: bool) -> AppResult<()> {
         self.repository
             .items_delete_specimen(specimen_id, force)
-            .await
+            .await?;
+        self.sync_index(item_id).await;
+        Ok(())
     }
 
     /// List all items in a series (ordered by volume number)
@@ -250,5 +317,21 @@ impl CatalogService {
         self.repository
             .items_get_by_series(series_id)
             .await
+    }
+
+    // =========================================================================
+    // Admin / reindex
+    // =========================================================================
+
+    /// Trigger a full reindex of all catalog items in Meilisearch.
+    /// Returns `(total_items_queued, bool_meilisearch_available)`.
+    pub async fn reindex_search(&self) -> AppResult<(usize, bool)> {
+        let Some(ref svc) = self.search else {
+            return Ok((0, false));
+        };
+        let docs = self.repository.items_get_all_meili_documents().await?;
+        let count = docs.len();
+        svc.reindex_all(docs).await;
+        Ok((count, true))
     }
 }
