@@ -31,7 +31,11 @@ pub struct SourcesQuery {
     security(("bearer_auth" = [])),
     request_body = CreateSource,
     responses(
-        (status = 201, description = "Source created", body = Source)
+        (status = 201, description = "Source created", body = Source),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn create_source(
@@ -54,7 +58,11 @@ pub async fn create_source(
     security(("bearer_auth" = [])),
     params(SourcesQuery),
     responses(
-        (status = 200, description = "Sources list", body = Vec<Source>)
+        (status = 200, description = "Sources list", body = Vec<Source>),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn list_sources(
@@ -79,7 +87,11 @@ pub async fn list_sources(
     security(("bearer_auth" = [])),
     params(("id" = i32, Path, description = "Source ID")),
     responses(
-        (status = 200, description = "Source details", body = Source)
+        (status = 200, description = "Source details", body = Source),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn get_source(
@@ -101,7 +113,11 @@ pub async fn get_source(
     params(("id" = i32, Path, description = "Source ID")),
     request_body = UpdateSource,
     responses(
-        (status = 200, description = "Source updated", body = Source)
+        (status = 200, description = "Source updated", body = Source),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn update_source(
@@ -149,7 +165,11 @@ pub async fn archive_source(
     security(("bearer_auth" = [])),
     request_body = MergeSources,
     responses(
-        (status = 201, description = "New merged source created", body = Source)
+        (status = 201, description = "New merged source created", body = Source),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn merge_sources(
@@ -162,4 +182,14 @@ pub async fn merge_sources(
     let source = state.services.sources.merge(&data).await?;
     state.services.audit.log(audit::event::SOURCE_MERGED, Some(claims.user_id), Some("source"), Some(source.id), ip, Some((&data, &source)));
     Ok((StatusCode::CREATED, Json(source)))
+}
+
+/// Build the sources routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{get, post, put};
+    axum::Router::new()
+        .route("/sources", get(list_sources).post(create_source))
+        .route("/sources/merge", post(merge_sources))
+        .route("/sources/{id}", get(get_source).put(update_source))
+        .route("/sources/{id}/archive", post(archive_source))
 }

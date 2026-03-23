@@ -9,11 +9,12 @@ use redis::AsyncCommands;
 use z3950_rs::marc_rs::{ MarcFormat, Record as MarcRecord};
 use z3950_rs::{Client, QueryLanguage};
 use crate::{
-    api::z3950::{ImportSpecimen, Z3950SearchQuery},
+    api::z3950::{ImportItem, Z3950SearchQuery},
     error::{AppError, AppResult},
     models::{
+        biblio::Biblio,
         import_report::{ImportAction, ImportReport},
-        Item, ItemShort, specimen::Specimen
+        item::Item,
     },
     repository::Repository,
     services::catalog::CatalogService,
@@ -53,7 +54,8 @@ impl Z3950Service {
     }
 
     /// Search remote catalogs via Z39.50
-    pub async fn search(&self, query: &Z3950SearchQuery) -> AppResult<(Vec<Item>, i32, String)> {
+    #[tracing::instrument(skip(self), err)]
+    pub async fn search(&self, query: &Z3950SearchQuery) -> AppResult<(Vec<Biblio>, i32, String)> {
         tracing::info!("Z39.50 search started");
         tracing::debug!("Search params - query: {}", query.query);
 
@@ -103,7 +105,7 @@ impl Z3950Service {
         let max_results = query.max_results.unwrap_or(50) as usize;
         
 
-        let mut all_items = Vec::new();
+        let mut all_biblios = Vec::new();
         let mut sources = Vec::new();
         let search_start = std::time::Instant::now();
 
@@ -123,10 +125,10 @@ impl Z3950Service {
                             
                             match self.upsert_cache_record(&record).await {
                                 Ok(id) => {
-                                    tracing::debug!("Cached record as remote_item id={:?}", id);
-                                    let mut item = Item::from(record);
-                                    item.id = Some(id.parse::<i64>().unwrap_or(0));
-                                    all_items.push(item);
+                                    tracing::debug!("Cached record as remote_biblio id={:?}", id);
+                                    let mut biblio = Biblio::from(record);
+                                    biblio.id = Some(id.parse::<i64>().unwrap_or(0));
+                                    all_biblios.push(biblio);
                                 }
                                 Err(e) => {
                                     tracing::warn!("Failed to cache record {}: {}", rec_idx + 1, e);
@@ -141,17 +143,16 @@ impl Z3950Service {
             }
 
             // Stop if we have enough results
-            if all_items.len() >= max_results {
+            if all_biblios.len() >= max_results {
                 tracing::debug!("Reached max results ({}), stopping server queries", max_results);
                 break;
             }
         }
 
         let search_elapsed = search_start.elapsed();
-        tracing::info!("Z39.50 live search completed in {:?}, found {} items", search_elapsed, all_items.len());
+        tracing::info!("Z39.50 live search completed in {:?}, found {} biblios", search_elapsed, all_biblios.len());
 
-       
-        let total = all_items.len() as i32;
+        let total = all_biblios.len() as i32;
         let source = if sources.is_empty() {
             "cache".to_string()
         } else {
@@ -159,7 +160,7 @@ impl Z3950Service {
         };
 
         tracing::info!("Z39.50 search complete: {} results from {}", total, source);
-        Ok((all_items, total, source))
+        Ok((all_biblios, total, source))
     }
 
   
@@ -284,47 +285,47 @@ impl Z3950Service {
   
 
     /// Import a record from Z39.50 cache into local catalog.
-    /// Applies ISBN deduplication via CatalogService::create_item; then creates specimens when action is Created.
+    /// Applies ISBN deduplication via CatalogService::create_biblio; then creates physical items when action is Created.
+    #[tracing::instrument(skip(self), err)]
     pub async fn import_record(
         &self,
-        item_id: i64,
-        specimens: Option<Vec<ImportSpecimen>>,
+        biblio_id: i64,
+        items: Option<Vec<ImportItem>>,
         confirm_replace_existing_id: Option<i64>,
-    ) -> AppResult<(Item, ImportReport)> {
+    ) -> AppResult<(Biblio, ImportReport)> {
         let mut conn = self.redis.get_connection().await?;
 
-      
-        let redis_key = Self::get_redis_key(&item_id);
+        let redis_key = Self::get_redis_key(&biblio_id);
         let json_str: Option<String> = conn
             .get(&redis_key)
             .await
-            .map_err(|e| AppError::Internal(format!("Failed to get item from Redis: {}", e)))?;
+            .map_err(|e| AppError::Internal(format!("Failed to get biblio from Redis: {}", e)))?;
 
         let marc_record: MarcRecord = serde_json::from_str(
-            &json_str.ok_or_else(|| AppError::NotFound("Remote item not found in cache".to_string()))?
+            &json_str.ok_or_else(|| AppError::NotFound("Remote biblio not found in cache".to_string()))?
         )
-        .map_err(|e| AppError::Internal(format!("Failed to deserialize item from Redis: {}", e)))?;
+        .map_err(|e| AppError::Internal(format!("Failed to deserialize biblio from Redis: {}", e)))?;
 
-        let item: Item = marc_record.into();
-        let (mut item, report) = self
+        let biblio: Biblio = marc_record.into();
+        let (mut biblio, report) = self
             .catalog
-            .create_item(item, false, confirm_replace_existing_id)
+            .create_biblio(biblio, false, confirm_replace_existing_id)
             .await?;
 
         if report.action == ImportAction::Created {
-            if let (Some(specimens_list), Some(item_id)) = (specimens, item.id) {
-                for s in specimens_list {
-                    let specimen: Specimen = s.into();
-                    let _ = self.catalog.create_specimen(item_id, specimen).await?;
+            if let (Some(items_list), Some(created_biblio_id)) = (items, biblio.id) {
+                for s in items_list {
+                    let item: Item = s.into();
+                    let _ = self.catalog.create_item(created_biblio_id, item).await?;
                 }
-                item = self
+                biblio = self
                     .repository
-                    .items_get_by_id_or_isbn(&item_id.to_string())
+                    .biblios_get_by_id_or_isbn(&created_biblio_id.to_string())
                     .await?;
             }
         }
 
-        Ok((item, report))
+        Ok((biblio, report))
     }
 }
 

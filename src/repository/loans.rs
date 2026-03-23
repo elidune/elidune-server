@@ -1,5 +1,6 @@
 //! Loans domain methods on Repository
 
+use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use sqlx::Row;
 
@@ -7,18 +8,117 @@ use super::Repository;
 use crate::{
     error::{AppError, AppResult},
     models::{
-        item::{Isbn, ItemShort},
+        biblio::{BiblioShort, Isbn, MediaType},
+        item::ItemShort,
         loan::{CreateLoan, Loan, LoanDetails, LoanSettings},
-        specimen::SpecimenShort,
         user::{UserShort, UserShortRow},
     },
 };
 
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait LoansRepository: Send + Sync {
+    async fn loans_get_by_id(&self, id: i64) -> AppResult<Loan>;
+    async fn loans_get_by_item_identification(&self, item_identification: &str) -> AppResult<Loan>;
+    async fn loans_get_for_user(&self, user_id: i64) -> AppResult<Vec<LoanDetails>>;
+    async fn loans_archives_get_for_user(&self, user_id: i64) -> AppResult<Vec<LoanDetails>>;
+    async fn loans_create(&self, loan: &CreateLoan) -> AppResult<(i64, DateTime<Utc>)>;
+    async fn loans_return(&self, loan_id: i64) -> AppResult<LoanDetails>;
+    async fn loans_renew(&self, loan_id: i64) -> AppResult<(DateTime<Utc>, i16)>;
+    async fn loans_get_settings(&self) -> AppResult<Vec<LoanSettings>>;
+    async fn loans_count_active(&self) -> AppResult<i64>;
+    async fn loans_count_overdue(&self) -> AppResult<i64>;
+    async fn loans_count_active_for_item(&self, item_id: i64) -> AppResult<i64>;
+    async fn loans_get_active_ids_for_item(&self, item_id: i64) -> AppResult<Vec<i64>>;
+    async fn loans_get_active_ids_for_biblio(&self, biblio_id: i64) -> AppResult<Vec<i64>>;
+    async fn loans_count_active_for_biblio(&self, biblio_id: i64) -> AppResult<i64>;
+    async fn loans_count_active_for_user(&self, user_id: i64) -> AppResult<i64>;
+    async fn loans_get_overdue_for_reminders(
+        &self,
+        frequency_days: u32,
+    ) -> AppResult<Vec<OverdueLoanRow>>;
+    async fn loans_get_overdue(
+        &self,
+        page: i64,
+        per_page: i64,
+    ) -> AppResult<(Vec<OverdueLoanRow>, i64)>;
+    async fn loans_update_reminder_sent(&self, loan_ids: &[i64]) -> AppResult<()>;
+}
+
+
+
+/// Combined repository trait used by [`crate::services::loans::LoansService`].
+///
+/// Implemented by the concrete [`Repository`] via blanket impl below.
+pub trait LoansServiceRepository: LoansRepository + crate::repository::UsersRepository + Send + Sync {}
+
+impl<T: LoansRepository + crate::repository::UsersRepository + Send + Sync> LoansServiceRepository for T {}
+
+// ---------------------------------------------------------------------------
+// Trait implementation — forwards to inherent methods above.
+// ---------------------------------------------------------------------------
+
+#[async_trait::async_trait]
+impl LoansRepository for Repository {
+    async fn loans_get_by_id(&self, id: i64) -> crate::error::AppResult<Loan> {
+        Repository::loans_get_by_id(self, id).await
+    }
+    async fn loans_get_by_item_identification(&self, identification: &str) -> crate::error::AppResult<Loan> {
+        Repository::loans_get_by_item_identification(self, identification).await
+    }
+    async fn loans_get_for_user(&self, user_id: i64) -> crate::error::AppResult<Vec<LoanDetails>> {
+        Repository::loans_get_for_user(self, user_id).await
+    }
+    async fn loans_archives_get_for_user(&self, user_id: i64) -> crate::error::AppResult<Vec<LoanDetails>> {
+        Repository::loans_archives_get_for_user(self, user_id).await
+    }
+    async fn loans_create(&self, loan: &CreateLoan) -> crate::error::AppResult<(i64, chrono::DateTime<chrono::Utc>)> {
+        Repository::loans_create(self, loan).await
+    }
+    async fn loans_return(&self, loan_id: i64) -> crate::error::AppResult<LoanDetails> {
+        Repository::loans_return(self, loan_id).await
+    }
+    async fn loans_renew(&self, loan_id: i64) -> crate::error::AppResult<(chrono::DateTime<chrono::Utc>, i16)> {
+        Repository::loans_renew(self, loan_id).await
+    }
+    async fn loans_get_settings(&self) -> crate::error::AppResult<Vec<crate::models::loan::LoanSettings>> {
+        Repository::loans_get_settings(self).await
+    }
+    async fn loans_count_active(&self) -> crate::error::AppResult<i64> {
+        Repository::loans_count_active(self).await
+    }
+    async fn loans_count_overdue(&self) -> crate::error::AppResult<i64> {
+        Repository::loans_count_overdue(self).await
+    }
+    async fn loans_count_active_for_item(&self, item_id: i64) -> crate::error::AppResult<i64> {
+        Repository::loans_count_active_for_item(self, item_id).await
+    }
+    async fn loans_get_active_ids_for_item(&self, item_id: i64) -> crate::error::AppResult<Vec<i64>> {
+        Repository::loans_get_active_ids_for_item(self, item_id).await
+    }
+    async fn loans_get_active_ids_for_biblio(&self, biblio_id: i64) -> crate::error::AppResult<Vec<i64>> {
+        Repository::loans_get_active_ids_for_biblio(self, biblio_id).await
+    }
+    async fn loans_count_active_for_biblio(&self, biblio_id: i64) -> crate::error::AppResult<i64> {
+        Repository::loans_count_active_for_biblio(self, biblio_id).await
+    }
+    async fn loans_count_active_for_user(&self, user_id: i64) -> crate::error::AppResult<i64> {
+        Repository::loans_count_active_for_user(self, user_id).await
+    }
+    async fn loans_get_overdue_for_reminders(&self, frequency_days: u32) -> crate::error::AppResult<Vec<OverdueLoanRow>> {
+        Repository::loans_get_overdue_for_reminders(self, frequency_days).await
+    }
+    async fn loans_get_overdue(&self, page: i64, per_page: i64) -> crate::error::AppResult<(Vec<OverdueLoanRow>, i64)> {
+        Repository::loans_get_overdue(self, page, per_page).await
+    }
+    async fn loans_update_reminder_sent(&self, loan_ids: &[i64]) -> crate::error::AppResult<()> {
+        Repository::loans_update_reminder_sent(self, loan_ids).await
+    }
+}
+
+
 impl Repository {
     /// Resolve loan settings: (duration_days, nb_max_media, nb_max_total, nb_renews).
-    /// nb_max_media: max loans for this specific media type.
-    /// nb_max_total: max total loans across all media types.
-    /// Priority: public_type_loan_settings > public_types > loans_settings > defaults.
     async fn resolve_loan_settings(
         &self,
         user_public_type: Option<i64>,
@@ -66,14 +166,12 @@ impl Repository {
             .or_else(|| ls_row.as_ref().and_then(|r| r.get::<Option<i16>, _>("duration")))
             .unwrap_or(default_duration);
 
-        // Per-media-type limit (for this document type)
         let nb_max_media = ptls
             .as_ref()
             .and_then(|r| r.get::<Option<i16>, _>("nb_max"))
             .or_else(|| ls_row.as_ref().and_then(|r| r.get::<Option<i16>, _>("nb_max")))
             .unwrap_or(default_nb_max_media);
 
-        // Total limit (across all media types)
         let nb_max_total = pt_row
             .as_ref()
             .and_then(|r| r.get::<Option<i16>, _>("max_loans"))
@@ -97,47 +195,46 @@ impl Repository {
             .ok_or_else(|| AppError::NotFound(format!("Loan with id {} not found", id)))
     }
 
-    /// Get active loan by specimen identification
-    pub async fn loans_get_by_specimen_identification(&self, specimen_identification: &str) -> AppResult<Loan> {
+    /// Get active loan by item identification (barcode)
+    pub async fn loans_get_by_item_identification(&self, item_identification: &str) -> AppResult<Loan> {
         sqlx::query_as::<_, Loan>(
             r#"
             SELECT l.* FROM loans l
-            JOIN specimens s ON l.specimen_id = s.id
-            WHERE s.barcode = $1 AND l.returned_at IS NULL
+            JOIN items it ON l.item_id = it.id
+            WHERE it.barcode = $1 AND l.returned_at IS NULL
             ORDER BY l.id DESC LIMIT 1
             "#
         )
-        .bind(specimen_identification)
+        .bind(item_identification)
         .fetch_optional(&self.pool)
         .await?
-        .ok_or_else(|| AppError::NotFound(format!("No active loan found for specimen {}", specimen_identification)))
+        .ok_or_else(|| AppError::NotFound(format!("No active loan found for item {}", item_identification)))
     }
 
-    /// Get loans for a user
     /// Get active loans for a user
     pub async fn loans_get_for_user(&self, user_id: i64) -> AppResult<Vec<LoanDetails>> {
         let author_subquery = r#"
             (SELECT jsonb_build_object(
                 'id', a.id::text, 'lastname', a.lastname, 'firstname', a.firstname,
-                'bio', a.bio, 'notes', a.notes, 'function', ia.role
-            ) FROM item_authors ia JOIN authors a ON a.id = ia.author_id
-            WHERE ia.item_id = i.id ORDER BY ia.position LIMIT 1) as author
+                'bio', a.bio, 'notes', a.notes, 'function', ba.function
+            ) FROM biblio_authors ba JOIN authors a ON a.id = ba.author_id
+            WHERE ba.biblio_id = b.id ORDER BY ba.position LIMIT 1) as author
         "#;
 
         let sql = format!(r#"
             SELECT l.id, l.date, l.renew_at, l.nb_renews, l.issue_at,
                    l.returned_at,
-                   s.barcode as specimen_identification,
-                   s.id as specimen_id, s.barcode as specimen_barcode,
-                   s.call_number as specimen_call_number, s.borrowable as specimen_borrowable,
-                   so.name as specimen_source_name,
-                   i.id as item_id, i.media_type, i.isbn as item_isbn,
-                   i.title, i.publication_date,
+                   it.barcode as item_identification,
+                   it.id as item_copy_id, it.barcode as item_barcode,
+                   it.call_number as item_call_number, it.borrowable as item_borrowable,
+                   so.name as item_source_name,
+                   b.id as biblio_id, b.media_type, b.isbn as biblio_isbn,
+                   b.title, b.publication_date,
                    {author_subquery}
             FROM loans l
-            JOIN specimens s ON l.specimen_id = s.id
-            LEFT JOIN sources so ON s.source_id = so.id
-            JOIN items i ON s.item_id = i.id
+            JOIN items it ON l.item_id = it.id
+            LEFT JOIN sources so ON it.source_id = so.id
+            JOIN biblios b ON it.biblio_id = b.id
             WHERE l.user_id = $1 AND l.returned_at IS NULL
             ORDER BY l.issue_at
         "#);
@@ -155,25 +252,25 @@ impl Repository {
         let author_subquery = r#"
             (SELECT jsonb_build_object(
                 'id', a.id::text, 'lastname', a.lastname, 'firstname', a.firstname,
-                'bio', a.bio, 'notes', a.notes, 'function', ia.role
-            ) FROM item_authors ia JOIN authors a ON a.id = ia.author_id
-            WHERE ia.item_id = i.id ORDER BY ia.position LIMIT 1) as author
+                'bio', a.bio, 'notes', a.notes, 'function', ba.function
+            ) FROM biblio_authors ba JOIN authors a ON a.id = ba.author_id
+            WHERE ba.biblio_id = b.id ORDER BY ba.position LIMIT 1) as author
         "#;
 
         let sql = format!(r#"
             SELECT la.id, la.date, NULL::timestamptz as renew_at, la.nb_renews,
                    la.issue_at, la.returned_at,
-                   s.barcode as specimen_identification,
-                   s.id as specimen_id, s.barcode as specimen_barcode,
-                   s.call_number as specimen_call_number, s.borrowable as specimen_borrowable,
-                   so.name as specimen_source_name,
-                   i.id as item_id, i.media_type, i.isbn as item_isbn,
-                   i.title, i.publication_date,
+                   it.barcode as item_identification,
+                   it.id as item_copy_id, it.barcode as item_barcode,
+                   it.call_number as item_call_number, it.borrowable as item_borrowable,
+                   so.name as item_source_name,
+                   b.id as biblio_id, b.media_type, b.isbn as biblio_isbn,
+                   b.title, b.publication_date,
                    {author_subquery}
             FROM loans_archives la
-            JOIN specimens s ON la.specimen_id = s.id
-            LEFT JOIN sources so ON s.source_id = so.id
-            JOIN items i ON s.item_id = i.id
+            JOIN items it ON la.item_id = it.id
+            LEFT JOIN sources so ON it.source_id = so.id
+            JOIN biblios b ON it.biblio_id = b.id
             WHERE la.user_id = $1
             ORDER BY la.returned_at DESC
         "#);
@@ -194,12 +291,12 @@ impl Repository {
             let renew_at: Option<DateTime<Utc>> = row.get("renew_at");
             let returned_at: Option<DateTime<Utc>> = row.get("returned_at");
 
-            let borrowed_specimen = SpecimenShort {
-                id: row.get("specimen_id"),
-                barcode: row.get("specimen_barcode"),
-                call_number: row.get("specimen_call_number"),
-                borrowable: row.get("specimen_borrowable"),
-                source_name: row.get("specimen_source_name"),
+            let borrowed_item = ItemShort {
+                id: row.get("item_copy_id"),
+                barcode: row.get("item_barcode"),
+                call_number: row.get("item_call_number"),
+                borrowable: row.get("item_borrowable"),
+                source_name: row.get("item_source_name"),
                 availability: Some(0),
             };
 
@@ -210,11 +307,11 @@ impl Repository {
                 renewal_date: renew_at,
                 nb_renews: row.get::<Option<i16>, _>("nb_renews").unwrap_or(0),
                 returned_at,
-                item: ItemShort {
-                    id: row.get("item_id"),
+                biblio: BiblioShort {
+                    id: row.get("biblio_id"),
                     media_type: row.get("media_type"),
                     isbn: row
-                        .get::<Option<String>, _>("item_isbn")
+                        .get::<Option<String>, _>("biblio_isbn")
                         .map(Isbn::new)
                         .filter(|i| !i.is_empty()),
                     title: row.get("title"),
@@ -224,10 +321,10 @@ impl Repository {
                     archived_at: None,
                     author: row.get::<Option<serde_json::Value>, _>("author")
                         .and_then(|v| serde_json::from_value(v).ok()),
-                    specimens: vec![borrowed_specimen],
+                    items: vec![borrowed_item],
                 },
                 user: None,
-                specimen_identification: row.get("specimen_identification"),
+                item_identification: row.get("item_identification"),
                 is_overdue: returned_at.is_none() && issue_at.map(|d| d < now).unwrap_or(false),
             }
         }).collect()
@@ -237,55 +334,53 @@ impl Repository {
     pub async fn loans_create(&self, loan: &CreateLoan) -> AppResult<(i64, DateTime<Utc>)> {
         let now = Utc::now();
 
-        // Get specimen ID
-        let specimen_id = if let Some(id) = loan.specimen_id {
+        // Get item (physical copy) ID
+        let item_id = if let Some(id) = loan.item_id {
             id
-        } else if let Some(ref identification) = loan.specimen_identification {
+        } else if let Some(ref identification) = loan.item_identification {
             sqlx::query_scalar::<_, i64>(
-                "SELECT id FROM specimens WHERE barcode = $1"
+                "SELECT id FROM items WHERE barcode = $1"
             )
             .bind(identification)
             .fetch_optional(&self.pool)
             .await?
-            .ok_or_else(|| AppError::NotFound("Specimen not found".to_string()))?
+            .ok_or_else(|| AppError::NotFound("Item not found".to_string()))?
         } else {
-            return Err(AppError::BadRequest("specimen_id or specimen_identification required".to_string()));
+            return Err(AppError::BadRequest("item_id or item_identification required".to_string()));
         };
 
-        // Check if specimen is already borrowed
+        // Check if item is already borrowed
         let already_borrowed: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM loans WHERE specimen_id = $1 AND returned_at IS NULL)"
+            "SELECT EXISTS(SELECT 1 FROM loans WHERE item_id = $1 AND returned_at IS NULL)"
         )
-        .bind(specimen_id)
+        .bind(item_id)
         .fetch_one(&self.pool)
         .await?;
 
         if already_borrowed && !loan.force {
-            return Err(AppError::BusinessRule("Specimen is already borrowed".to_string()));
+            return Err(AppError::BusinessRule("Item is already borrowed".to_string()));
         }
 
-        // Get specimen info and loan settings
-        let specimen_row = sqlx::query(
+        // Get item info and loan settings
+        let item_row = sqlx::query(
             r#"
-            SELECT s.borrowable, i.media_type
-            FROM specimens s
-            JOIN items i ON s.item_id = i.id
-            WHERE s.id = $1
+            SELECT it.borrowable, b.media_type
+            FROM items it
+            JOIN biblios b ON it.biblio_id = b.id
+            WHERE it.id = $1
             "#
         )
-        .bind(specimen_id)
+        .bind(item_id)
         .fetch_one(&self.pool)
         .await?;
 
-        let borrowable: bool = specimen_row.get("borrowable");
-        let media_type: Option<String> = specimen_row.get("media_type");
+        let borrowable: bool = item_row.get("borrowable");
+        let media_type: Option<String> = item_row.get("media_type");
 
-        // Check if borrowable
         if !borrowable && !loan.force {
-            return Err(AppError::BusinessRule("Specimen is not borrowable".to_string()));
+            return Err(AppError::BusinessRule("Item is not borrowable".to_string()));
         }
 
-        // Get user's public_type for loan settings cascade
         let user_public_type: Option<i64> = sqlx::query_scalar(
             "SELECT public_type FROM users WHERE id = $1"
         )
@@ -293,14 +388,12 @@ impl Repository {
         .fetch_optional(&self.pool)
         .await?;
 
-        // Resolve duration, nb_max_media, nb_max_total, nb_renews
         let (duration_days, nb_max_media, nb_max_total, _) = self
             .resolve_loan_settings(user_public_type, media_type.as_deref())
             .await?;
 
         let issue_at = now + Duration::days(duration_days as i64);
 
-        // Check max loans: total AND per media type
         let current_loans_total: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM loans WHERE user_id = $1 AND returned_at IS NULL"
         )
@@ -312,9 +405,9 @@ impl Repository {
             sqlx::query_scalar(
                 r#"
                 SELECT COUNT(*) FROM loans l
-                JOIN specimens s ON l.specimen_id = s.id
-                JOIN items i ON s.item_id = i.id
-                WHERE l.user_id = $1 AND l.returned_at IS NULL AND i.media_type = $2
+                JOIN items it ON l.item_id = it.id
+                JOIN biblios b ON it.biblio_id = b.id
+                WHERE l.user_id = $1 AND l.returned_at IS NULL AND b.media_type = $2
                 "#
             )
             .bind(loan.user_id)
@@ -347,16 +440,15 @@ impl Repository {
             return Err(AppError::BusinessRule(msg));
         }
 
-        // Create the loan
         let loan_id = sqlx::query_scalar::<_, i64>(
             r#"
-            INSERT INTO loans (user_id, specimen_id, date, issue_at, nb_renews)
+            INSERT INTO loans (user_id, item_id, date, issue_at, nb_renews)
             VALUES ($1, $2, $3, $4, 0)
             RETURNING id
             "#
         )
         .bind(loan.user_id)
-        .bind(specimen_id)
+        .bind(item_id)
         .bind(now)
         .bind(issue_at)
         .fetch_one(&self.pool)
@@ -365,18 +457,16 @@ impl Repository {
         Ok((loan_id, issue_at))
     }
 
-    /// Return a loan (moves it to loans_archives)
+    /// Return a loan (moves it to loans_archives).
     pub async fn loans_return(&self, loan_id: i64) -> AppResult<LoanDetails> {
         let now = Utc::now();
 
-        // Get loan details before returning
         let loan = self.loans_get_by_id(loan_id).await?;
 
         if loan.returned_at.is_some() {
             return Err(AppError::BusinessRule("Loan already returned".to_string()));
         }
 
-        // Get user info for archiving
         let user_row = sqlx::query(
             "SELECT addr_city, account_type, public_type FROM users WHERE id = $1"
         )
@@ -386,11 +476,12 @@ impl Repository {
 
         let account_type: Option<String> = user_row.as_ref().and_then(|r| r.get("account_type"));
 
-        // Archive the loan
+        let mut tx = self.pool.begin().await?;
+
         sqlx::query(
             r#"
             INSERT INTO loans_archives (
-                user_id, specimen_id, date, nb_renews, issue_at, 
+                user_id, item_id, date, nb_renews, issue_at,
                 returned_at, notes, borrower_public_type,
                 addr_city, account_type
             )
@@ -398,7 +489,7 @@ impl Repository {
             "#
         )
         .bind(loan.user_id)
-        .bind(loan.specimen_id)
+        .bind(loan.item_id)
         .bind(loan.date)
         .bind(loan.nb_renews)
         .bind(loan.issue_at)
@@ -407,34 +498,34 @@ impl Repository {
         .bind(user_row.as_ref().and_then(|r| r.get::<Option<i64>, _>("public_type")))
         .bind(user_row.as_ref().and_then(|r| r.get::<Option<String>, _>("addr_city")))
         .bind(account_type)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
-        // Delete from active loans
         sqlx::query("DELETE FROM loans WHERE id = $1")
             .bind(loan_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
-        // Get item details with the returned specimen
-        let item_row = sqlx::query(
+        tx.commit().await?;
+
+        let biblio_row = sqlx::query(
             r#"
-            SELECT i.id, i.media_type, i.isbn, i.title, i.publication_date,
-                   s.barcode as specimen_identification,
-                   s.id as specimen_id, s.barcode as specimen_barcode,
-                   s.call_number as specimen_call_number, s.borrowable as specimen_borrowable,
-                   so.name as specimen_source_name
-            FROM items i
-            JOIN specimens s ON s.item_id = i.id
-            LEFT JOIN sources so ON s.source_id = so.id
-            WHERE s.id = $1
+            SELECT b.id as biblio_id, b.media_type, b.isbn, b.title, b.publication_date,
+                   it.barcode as item_identification,
+                   it.id as item_copy_id, it.barcode as item_barcode,
+                   it.call_number as item_call_number, it.borrowable as item_borrowable,
+                   so.name as item_source_name
+            FROM biblios b
+            JOIN items it ON it.biblio_id = b.id
+            LEFT JOIN sources so ON it.source_id = so.id
+            WHERE it.id = $1
             "#
         )
-        .bind(loan.specimen_id)
+        .bind(loan.item_id)
         .fetch_one(&self.pool)
         .await?;
 
-        let user_row = sqlx::query_as::<_, UserShortRow>(
+        let user_short_row = sqlx::query_as::<_, UserShortRow>(
             r#"
             SELECT u.id, u.firstname, u.lastname, u.account_type, u.public_type,
                    0::bigint as nb_loans, 0::bigint as nb_late_loans
@@ -446,15 +537,15 @@ impl Repository {
         .fetch_optional(&self.pool)
         .await?;
 
-        let user: Option<UserShort> = user_row.map(|r| r.into());
+        let user: Option<UserShort> = user_short_row.map(|r| r.into());
 
-        let specimen_short = SpecimenShort {
-            id: item_row.get("specimen_id"),
-            barcode: item_row.get("specimen_barcode"),
-            call_number: item_row.get("specimen_call_number"),
-            borrowable: item_row.get("specimen_borrowable"),
-            source_name: item_row.get("specimen_source_name"),
-            availability: Some(1), // returned = available
+        let item_short = ItemShort {
+            id: biblio_row.get("item_copy_id"),
+            barcode: biblio_row.get("item_barcode"),
+            call_number: biblio_row.get("item_call_number"),
+            borrowable: biblio_row.get("item_borrowable"),
+            source_name: biblio_row.get("item_source_name"),
+            availability: Some(1),
         };
 
         Ok(LoanDetails {
@@ -464,20 +555,20 @@ impl Repository {
             renewal_date: loan.renew_at,
             nb_renews: loan.nb_renews.unwrap_or(0),
             returned_at: Some(now),
-            item: ItemShort {
-                id: item_row.get("id"),
-                media_type: item_row.get("media_type"),
-                isbn: item_row.get("isbn"),
-                title: item_row.get("title"),
-                date: item_row.get("publication_date"),
+            biblio: BiblioShort {
+                id: biblio_row.get("biblio_id"),
+                media_type: biblio_row.get("media_type"),
+                isbn: biblio_row.get("isbn"),
+                title: biblio_row.get("title"),
+                date: biblio_row.get("publication_date"),
                 status: 0,
                 is_valid: Some(1),
                 archived_at: None,
                 author: None,
-                specimens: vec![specimen_short],
+                items: vec![item_short],
             },
             user,
-            specimen_identification: item_row.get("specimen_identification"),
+            item_identification: biblio_row.get("item_identification"),
             is_overdue: false,
         })
     }
@@ -492,15 +583,14 @@ impl Repository {
             return Err(AppError::BusinessRule("Cannot renew a returned loan".to_string()));
         }
 
-        // Get specimen media_type and user public_type
-        let specimen_row = sqlx::query(
-            "SELECT i.media_type FROM specimens s JOIN items i ON s.item_id = i.id WHERE s.id = $1"
+        let item_row = sqlx::query(
+            "SELECT b.media_type FROM items it JOIN biblios b ON it.biblio_id = b.id WHERE it.id = $1"
         )
-        .bind(loan.specimen_id)
+        .bind(loan.item_id)
         .fetch_one(&self.pool)
         .await?;
 
-        let media_type: Option<String> = specimen_row.get("media_type");
+        let media_type: Option<String> = item_row.get("media_type");
 
         let user_public_type: Option<i64> = sqlx::query_scalar(
             "SELECT public_type FROM users WHERE id = $1"
@@ -540,13 +630,10 @@ impl Repository {
 
     /// Get loan settings
     pub async fn loans_get_settings(&self) -> AppResult<Vec<LoanSettings>> {
-        let settings = sqlx::query_as::<_, LoanSettings>(
-            "SELECT * FROM loans_settings ORDER BY media_type"
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(settings)
+        sqlx::query_as::<_, LoanSettings>("SELECT * FROM loans_settings ORDER BY media_type")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(Into::into)
     }
 
     /// Count active loans
@@ -567,53 +654,53 @@ impl Repository {
         Ok(count)
     }
 
-    /// Count active (non-returned) loans for a specimen
-    pub async fn loans_count_active_for_specimen(&self, specimen_id: i64) -> AppResult<i64> {
+    /// Count active loans for a physical item (items table)
+    pub async fn loans_count_active_for_item(&self, item_id: i64) -> AppResult<i64> {
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM loans WHERE specimen_id = $1 AND returned_at IS NULL"
+            "SELECT COUNT(*) FROM loans WHERE item_id = $1 AND returned_at IS NULL"
         )
-        .bind(specimen_id)
+        .bind(item_id)
         .fetch_one(&self.pool)
         .await?;
         Ok(count)
     }
 
-    /// Get IDs of active loans for a specimen
-    pub async fn loans_get_active_ids_for_specimen(&self, specimen_id: i64) -> AppResult<Vec<i64>> {
+    /// Get IDs of active loans for a physical item
+    pub async fn loans_get_active_ids_for_item(&self, item_id: i64) -> AppResult<Vec<i64>> {
         let ids: Vec<i64> = sqlx::query_scalar(
-            "SELECT id FROM loans WHERE specimen_id = $1 AND returned_at IS NULL"
+            "SELECT id FROM loans WHERE item_id = $1 AND returned_at IS NULL"
         )
-        .bind(specimen_id)
+        .bind(item_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(ids)
     }
 
-    /// Get IDs of active loans for an item
-    pub async fn loans_get_active_ids_for_item(&self, item_id: i64) -> AppResult<Vec<i64>> {
+    /// Get IDs of active loans for a biblio (via its physical items)
+    pub async fn loans_get_active_ids_for_biblio(&self, biblio_id: i64) -> AppResult<Vec<i64>> {
         let ids: Vec<i64> = sqlx::query_scalar(
             r#"
             SELECT l.id FROM loans l
-            JOIN specimens s ON l.specimen_id = s.id
-            WHERE s.item_id = $1 AND l.returned_at IS NULL
+            JOIN items it ON l.item_id = it.id
+            WHERE it.biblio_id = $1 AND l.returned_at IS NULL
             "#
         )
-        .bind(item_id)
+        .bind(biblio_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(ids)
     }
 
-    /// Count active loans for an item (via specimens)
-    pub async fn loans_count_active_for_item(&self, item_id: i64) -> AppResult<i64> {
+    /// Count active loans for a biblio (via its physical items)
+    pub async fn loans_count_active_for_biblio(&self, biblio_id: i64) -> AppResult<i64> {
         let count: i64 = sqlx::query_scalar(
             r#"
             SELECT COUNT(*) FROM loans l
-            JOIN specimens s ON l.specimen_id = s.id
-            WHERE s.item_id = $1 AND l.returned_at IS NULL
+            JOIN items it ON l.item_id = it.id
+            WHERE it.biblio_id = $1 AND l.returned_at IS NULL
             "#
         )
-        .bind(item_id)
+        .bind(biblio_id)
         .fetch_one(&self.pool)
         .await?;
         Ok(count)
@@ -631,7 +718,6 @@ impl Repository {
     }
 
     /// Get overdue loans eligible for reminder emails.
-    /// Filters: overdue + not reminded recently (frequency_days) + user has email + opted in.
     pub async fn loans_get_overdue_for_reminders(
         &self,
         frequency_days: u32,
@@ -649,18 +735,18 @@ impl Repository {
                 u.lastname,
                 u.email as user_email,
                 u.language as user_language,
-                i.id as item_id,
-                i.title,
+                b.id as biblio_id,
+                b.title,
                 (
-                    SELECT string_agg(a.lastname || ' ' || COALESCE(a.firstname, ''), ', ' ORDER BY ia.position)
-                    FROM item_authors ia
-                    JOIN authors a ON a.id = ia.author_id
-                    WHERE ia.item_id = i.id
+                    SELECT string_agg(a.lastname || ' ' || COALESCE(a.firstname, ''), ', ' ORDER BY ba.position)
+                    FROM biblio_authors ba
+                    JOIN authors a ON a.id = ba.author_id
+                    WHERE ba.biblio_id = b.id
                 ) as authors,
-                s.barcode as specimen_barcode
+                it.barcode as item_barcode
             FROM loans l
-            JOIN specimens s ON l.specimen_id = s.id
-            JOIN items i ON s.item_id = i.id
+            JOIN items it ON l.item_id = it.id
+            JOIN biblios b ON it.biblio_id = b.id
             JOIN users u ON l.user_id = u.id
             WHERE l.returned_at IS NULL
               AND l.issue_at < NOW()
@@ -691,10 +777,10 @@ impl Repository {
                 lastname: row.get("lastname"),
                 user_email: row.get("user_email"),
                 user_language: row.get::<Option<String>, _>("user_language"),
-                item_id: row.get("item_id"),
+                biblio_id: row.get("biblio_id"),
                 title: row.get("title"),
                 authors: row.get("authors"),
-                specimen_barcode: row.get("specimen_barcode"),
+                item_barcode: row.get("item_barcode"),
             })
             .collect())
     }
@@ -726,18 +812,18 @@ impl Repository {
                 u.lastname,
                 u.email as user_email,
                 u.language as user_language,
-                i.id as item_id,
-                i.title,
+                b.id as biblio_id,
+                b.title,
                 (
-                    SELECT string_agg(a.lastname || ' ' || COALESCE(a.firstname, ''), ', ' ORDER BY ia.position)
-                    FROM item_authors ia
-                    JOIN authors a ON a.id = ia.author_id
-                    WHERE ia.item_id = i.id
+                    SELECT string_agg(a.lastname || ' ' || COALESCE(a.firstname, ''), ', ' ORDER BY ba.position)
+                    FROM biblio_authors ba
+                    JOIN authors a ON a.id = ba.author_id
+                    WHERE ba.biblio_id = b.id
                 ) as authors,
-                s.barcode as specimen_barcode
+                it.barcode as item_barcode
             FROM loans l
-            JOIN specimens s ON l.specimen_id = s.id
-            JOIN items i ON s.item_id = i.id
+            JOIN items it ON l.item_id = it.id
+            JOIN biblios b ON it.biblio_id = b.id
             JOIN users u ON l.user_id = u.id
             WHERE l.returned_at IS NULL
               AND l.issue_at < NOW()
@@ -763,10 +849,10 @@ impl Repository {
                 lastname: row.get("lastname"),
                 user_email: row.get("user_email"),
                 user_language: row.get::<Option<String>, _>("user_language"),
-                item_id: row.get("item_id"),
+                biblio_id: row.get("biblio_id"),
                 title: row.get("title"),
                 authors: row.get("authors"),
-                specimen_barcode: row.get("specimen_barcode"),
+                item_barcode: row.get("item_barcode"),
             })
             .collect();
 
@@ -806,9 +892,9 @@ pub struct OverdueLoanRow {
     pub lastname: Option<String>,
     pub user_email: Option<String>,
     pub user_language: Option<String>,
-    pub item_id: i64,
+    pub biblio_id: i64,
     pub title: Option<String>,
     pub authors: Option<String>,
-    pub specimen_barcode: Option<String>,
+    pub item_barcode: Option<String>,
 }
 

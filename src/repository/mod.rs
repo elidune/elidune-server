@@ -1,14 +1,33 @@
-//! Repository layer for database operations
+//! Repository layer for database operations.
+//!
+//! Each domain module defines its own `*Repository` trait next to the [`Repository`] inherent
+//! methods and the forwarding `impl *Repository for Repository` (see module docs in each file).
 
+pub mod biblios;
 pub mod equipment;
 pub mod events;
-pub mod public_types;
-pub mod items;
+pub mod fines;
+pub mod inventory;
 pub mod loans;
+pub mod public_types;
+pub mod reservations;
 pub mod schedules;
 pub mod sources;
 pub mod users;
 pub mod visitor_counts;
+
+pub use biblios::BibliosRepository;
+pub use equipment::EquipmentRepository;
+pub use events::{EventsRepository, EventsServiceRepository};
+pub use fines::FinesRepository;
+pub use inventory::InventoryRepository;
+pub use loans::{LoansRepository, LoansServiceRepository};
+pub use public_types::PublicTypesRepository;
+pub use reservations::ReservationsRepository;
+pub use schedules::SchedulesRepository;
+pub use sources::SourcesRepository;
+pub use users::UsersRepository;
+pub use visitor_counts::VisitorCountsRepository;
 
 use sqlx::{Pool, Postgres};
 
@@ -23,5 +42,10 @@ impl Repository {
     /// Create a new repository with the given database pool
     pub fn new(pool: Pool<Postgres>) -> Self {
         Self { pool }
+    }
+
+    /// Expose the underlying pool for callers that need to begin transactions directly.
+    pub fn pool(&self) -> &Pool<Postgres> {
+        &self.pool
     }
 }

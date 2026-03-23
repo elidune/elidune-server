@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use tokio::sync::Notify;
+use tokio::sync::{broadcast, Notify};
 
 pub mod api;
 pub mod config;
@@ -28,4 +28,6 @@ pub struct AppState {
     pub services: Arc<services::Services>,
     /// Wake handle for the reminder scheduler task (re-evaluates schedule on config change)
     pub scheduler_notify: Arc<Notify>,
+    /// Broadcast channel for real-time SSE events (loan.created, loan.returned, etc.)
+    pub event_bus: broadcast::Sender<crate::api::sse::SsePayload>,
 }

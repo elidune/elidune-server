@@ -9,8 +9,8 @@ use z3950_rs::marc_rs::record::{
 use crate::models::{
     Language, MediaType,
     author::{Author, Function},
-    item::{AudienceType, Collection, Edition, Isbn, Item, Serie},
-    specimen::Specimen,
+    biblio::{AudienceType, Collection, Edition, Isbn, Biblio, Serie},
+    item::Item,
 };
 
 impl From<z3950_rs::marc_rs::record::Relator> for Function {
@@ -187,9 +187,9 @@ where
     notes.retain(|n| !matcher(n));
 }
 
-// ── MarcRecord → Item ─────────────────────────────────────────────────────────
+// ── MarcRecord → Biblio ───────────────────────────────────────────────────────
 
-impl From<MarcRecord> for Item {
+impl From<MarcRecord> for Biblio {
     fn from(record: MarcRecord) -> Self {
         // --- ISBN ---
         // Requires `record.isbn_string()` in marc-rs (see module doc).
@@ -301,10 +301,10 @@ impl From<MarcRecord> for Item {
             }
         }
 
-        // --- Specimens ---
-        let specimens: Vec<Specimen> = record.local.specimens.iter().map(Specimen::from).collect();
+        // --- Physical items (from local MARC data) ---
+        let items: Vec<Item> = record.local.specimens.iter().map(Item::from).collect();
 
-        Item {
+        Biblio {
             id: None,
             media_type,
             isbn,
@@ -335,15 +335,15 @@ impl From<MarcRecord> for Item {
             series: series_list,
             collection,
             edition,
-            specimens,
+            items,
             marc_record: Some(record),
         }
     }
 }
 
-// ── Specimen mapping ──────────────────────────────────────────────────────────
+// ── Item (physical copy) mapping from MARC local data ────────────────────────
 
-impl From<&MarcSpecimen> for Specimen {
+impl From<&MarcSpecimen> for Item {
     fn from(s: &MarcSpecimen) -> Self {
         let notes = match (&s.section, &s.document_type) {
             (Some(sec), Some(doc)) => Some(format!("{} — {}", sec, doc)),
@@ -351,9 +351,9 @@ impl From<&MarcSpecimen> for Specimen {
             (None, Some(doc)) => Some(doc.clone()),
             (None, None) => None,
         };
-        Specimen {
+        Item {
             id: None,
-            item_id: None,
+            biblio_id: None,
             source_id: None,
             barcode: s.barcode.clone(),
             call_number: s.call_number.clone(),
@@ -372,10 +372,10 @@ impl From<&MarcSpecimen> for Specimen {
     }
 }
 
-// ── Item → MarcRecord ─────────────────────────────────────────────────────────
+// ── Biblio → MarcRecord ───────────────────────────────────────────────────────
 
-impl From<&Item> for MarcRecord {
-    fn from(item: &Item) -> Self {
+impl From<&Biblio> for MarcRecord {
+    fn from(item: &Biblio) -> Self {
         // If we already have a MARC record stored, just reuse it.
         if let Some(rec) = &item.marc_record {
             return rec.clone();
@@ -481,10 +481,10 @@ impl From<&Item> for MarcRecord {
             record.coded.original_languages.push((*lang_orig).into());
         }
 
-        // Local specimens
+        // Local items (physical copies)
         record.local = Local {
             specimens: item
-                .specimens
+                .items
                 .iter()
                 .map(|s| {
                     MarcSpecimen {

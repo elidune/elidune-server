@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::{error::AppResult, models::item::MediaType};
+use crate::{error::AppResult, models::biblio::MediaType};
 
 use super::AuthenticatedUser;
 
@@ -270,12 +270,12 @@ pub struct CatalogStatsResponse {
 /// Aggregated catalog statistics totals
 #[derive(Serialize, ToSchema)]
 pub struct CatalogStatsTotals {
-    /// Number of active specimens (not archived)
-    pub active_specimens: i64,
-    /// Number of specimens entered in the period
-    pub entered_specimens: i64,
-    /// Number of specimens archived in the period
-    pub archived_specimens: i64,
+    /// Number of active items/physical copies (not archived)
+    pub active_items: i64,
+    /// Number of items entered in the period
+    pub entered_items: i64,
+    /// Number of items archived in the period
+    pub archived_items: i64,
     /// Number of loans in the period (0 if no period specified)
     pub loans: i64,
 }
@@ -290,13 +290,13 @@ pub struct CatalogSourceStats {
     pub source_id: i64,
     /// Source name
     pub source_name: String,
-    /// Number of active specimens
-    pub active_specimens: i64,
-    /// Number of specimens entered in the period
-    pub entered_specimens: i64,
-    /// Number of specimens archived in the period
-    pub archived_specimens: i64,
-    /// Number of loans in the period (active loans attributed through specimens)
+    /// Number of active items/physical copies
+    pub active_items: i64,
+    /// Number of items entered in the period
+    pub entered_items: i64,
+    /// Number of items archived in the period
+    pub archived_items: i64,
+    /// Number of loans in the period
     pub loans: i64,
     /// Breakdown by media type (only when by_source=true AND by_media_type=true)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -311,12 +311,12 @@ pub struct CatalogSourceStats {
 pub struct CatalogBreakdownStats {
     /// Label (media type code or public type name)
     pub label: String,
-    /// Number of active specimens
-    pub active_specimens: i64,
-    /// Number of specimens entered in the period
-    pub entered_specimens: i64,
-    /// Number of specimens archived in the period
-    pub archived_specimens: i64,
+    /// Number of active items/physical copies
+    pub active_items: i64,
+    /// Number of items entered in the period
+    pub entered_items: i64,
+    /// Number of items archived in the period
+    pub archived_items: i64,
     /// Number of loans in the period
     pub loans: i64,
     /// Nested breakdown by public type (only when by_public_type=true on a media_type entry)
@@ -346,7 +346,11 @@ fn resolve_reference_date(query: &StatsQuery) -> Option<NaiveDate> {
     security(("bearer_auth" = [])),
     params(StatsQuery),
     responses(
-        (status = 200, description = "Library statistics", body = StatsResponse)
+        (status = 200, description = "Library statistics", body = StatsResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn get_stats(
@@ -551,7 +555,7 @@ pub async fn get_user_stats(
     }
 }
 
-/// Get catalog statistics (specimens: active, entered, archived) with optional breakdowns.
+/// Get catalog statistics (items/physical copies: active, entered, archived) with optional breakdowns.
 ///
 /// ## Frontend display guide
 ///
@@ -575,8 +579,8 @@ pub async fn get_user_stats(
 ///   (e.g. expandable row or indented sub-rows) showing adult/children split.
 /// - Top-level `by_media_type` and `by_public_type` are always global aggregations
 ///   (regardless of nesting inside `by_source`), useful for summary charts/pie.
-/// - Each entry at every level carries `active_specimens`, `entered_specimens`,
-///   `archived_specimens` — the parent's counts are the sum of its children.
+/// - Each entry at every level carries `active_items`, `entered_items`,
+///   `archived_items` — the parent's counts are the sum of its children.
 #[utoipa::path(
     get,
     path = "/stats/catalog",
@@ -631,4 +635,14 @@ pub async fn get_catalog_stats(
     ).await?;
 
     Ok(Json(stats))
+}
+
+/// Build the stats routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::get;
+    axum::Router::new()
+        .route("/stats", get(get_stats))
+        .route("/stats/loans", get(get_loan_stats))
+        .route("/stats/users", get(get_user_stats))
+        .route("/stats/catalog", get(get_catalog_stats))
 }

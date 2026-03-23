@@ -19,6 +19,7 @@ impl LibraryInfoService {
     }
 
     /// Get library information (always returns a record, empty if not yet set)
+    #[tracing::instrument(skip(self), err)]
     pub async fn get(&self) -> AppResult<LibraryInfo> {
         let pool = &self.repository.pool;
 
@@ -66,6 +67,7 @@ impl LibraryInfoService {
     }
 
     /// Update library information (partial update: only provided fields are changed)
+    #[tracing::instrument(skip(self), err)]
     pub async fn update(&self, req: UpdateLibraryInfoRequest) -> AppResult<LibraryInfo> {
         let pool = &self.repository.pool;
 

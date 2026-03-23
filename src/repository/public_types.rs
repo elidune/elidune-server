@@ -1,5 +1,7 @@
 //! Public types domain methods on Repository
 
+use async_trait::async_trait;
+
 use super::Repository;
 use crate::{
     error::{AppError, AppResult},
@@ -8,8 +10,69 @@ use crate::{
     },
 };
 
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait PublicTypesRepository: Send + Sync {
+    async fn public_types_list(&self) -> AppResult<Vec<PublicType>>;
+    async fn public_types_get_by_id(&self, id: i64) -> AppResult<PublicType>;
+    async fn public_types_get_loan_settings(
+        &self,
+        public_type_id: i64,
+    ) -> AppResult<Vec<PublicTypeLoanSettings>>;
+    async fn public_types_create(&self, data: &CreatePublicType) -> AppResult<PublicType>;
+    async fn public_types_update(
+        &self,
+        id: i64,
+        data: &UpdatePublicType,
+    ) -> AppResult<PublicType>;
+    async fn public_types_delete(&self, id: i64) -> AppResult<()>;
+    async fn public_types_upsert_loan_setting(
+        &self,
+        public_type_id: i64,
+        media_type: &str,
+        duration: Option<i16>,
+        nb_max: Option<i16>,
+        nb_renews: Option<i16>,
+    ) -> AppResult<PublicTypeLoanSettings>;
+    async fn public_types_delete_loan_setting(
+        &self,
+        public_type_id: i64,
+        media_type: &str,
+    ) -> AppResult<()>;
+}
+
+#[async_trait::async_trait]
+impl PublicTypesRepository for super::Repository {
+    async fn public_types_list(&self) -> crate::error::AppResult<Vec<crate::models::public_type::PublicType>> {
+        super::Repository::public_types_list(self).await
+    }
+    async fn public_types_get_by_id(&self, id: i64) -> crate::error::AppResult<crate::models::public_type::PublicType> {
+        super::Repository::public_types_get_by_id(self, id).await
+    }
+    async fn public_types_get_loan_settings(&self, public_type_id: i64) -> crate::error::AppResult<Vec<crate::models::public_type::PublicTypeLoanSettings>> {
+        super::Repository::public_types_get_loan_settings(self, public_type_id).await
+    }
+    async fn public_types_create(&self, data: &crate::models::public_type::CreatePublicType) -> crate::error::AppResult<crate::models::public_type::PublicType> {
+        super::Repository::public_types_create(self, data).await
+    }
+    async fn public_types_update(&self, id: i64, data: &crate::models::public_type::UpdatePublicType) -> crate::error::AppResult<crate::models::public_type::PublicType> {
+        super::Repository::public_types_update(self, id, data).await
+    }
+    async fn public_types_delete(&self, id: i64) -> crate::error::AppResult<()> {
+        super::Repository::public_types_delete(self, id).await
+    }
+    async fn public_types_upsert_loan_setting(&self, public_type_id: i64, media_type: &str, duration: Option<i16>, nb_max: Option<i16>, nb_renews: Option<i16>) -> crate::error::AppResult<crate::models::public_type::PublicTypeLoanSettings> {
+        super::Repository::public_types_upsert_loan_setting(self, public_type_id, media_type, duration, nb_max, nb_renews).await
+    }
+    async fn public_types_delete_loan_setting(&self, public_type_id: i64, media_type: &str) -> crate::error::AppResult<()> {
+        super::Repository::public_types_delete_loan_setting(self, public_type_id, media_type).await
+    }
+}
+
+
 impl Repository {
     /// List all public types with their loan settings overrides
+    #[tracing::instrument(skip(self), err)]
     pub async fn public_types_list(&self) -> AppResult<Vec<PublicType>> {
         Ok(sqlx::query_as::<_, PublicType>(
             "SELECT * FROM public_types ORDER BY name"
@@ -19,6 +82,7 @@ impl Repository {
     }
 
     /// Get public type by ID
+    #[tracing::instrument(skip(self), err)]
     pub async fn public_types_get_by_id(&self, id: i64) -> AppResult<PublicType> {
         sqlx::query_as::<_, PublicType>("SELECT * FROM public_types WHERE id = $1")
             .bind(id)
@@ -28,6 +92,7 @@ impl Repository {
     }
 
     /// Get loan settings overrides for a public type
+    #[tracing::instrument(skip(self), err)]
     pub async fn public_types_get_loan_settings(&self, public_type_id: i64) -> AppResult<Vec<PublicTypeLoanSettings>> {
         Ok(sqlx::query_as::<_, PublicTypeLoanSettings>(
             "SELECT * FROM public_type_loan_settings WHERE public_type_id = $1 ORDER BY media_type"
@@ -38,6 +103,7 @@ impl Repository {
     }
 
     /// Create a new public type
+    #[tracing::instrument(skip(self), err)]
     pub async fn public_types_create(&self, data: &CreatePublicType) -> AppResult<PublicType> {
         Ok(sqlx::query_as::<_, PublicType>(
             r#"
@@ -62,6 +128,7 @@ impl Repository {
     }
 
     /// Update a public type
+    #[tracing::instrument(skip(self), err)]
     pub async fn public_types_update(&self, id: i64, data: &UpdatePublicType) -> AppResult<PublicType> {
         let existing = self.public_types_get_by_id(id).await?;
 
@@ -99,6 +166,7 @@ impl Repository {
     }
 
     /// Delete a public type (fails if users reference it)
+    #[tracing::instrument(skip(self), err)]
     pub async fn public_types_delete(&self, id: i64) -> AppResult<()> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM users WHERE public_type = $1"
@@ -127,6 +195,7 @@ impl Repository {
     }
 
     /// Upsert loan settings override for a public type + media type
+    #[tracing::instrument(skip(self), err)]
     pub async fn public_types_upsert_loan_setting(
         &self,
         public_type_id: i64,
@@ -156,6 +225,7 @@ impl Repository {
     }
 
     /// Delete a loan settings override for a public type + media type
+    #[tracing::instrument(skip(self), err)]
     pub async fn public_types_delete_loan_setting(
         &self,
         public_type_id: i64,
@@ -179,3 +249,4 @@ impl Repository {
         Ok(())
     }
 }
+

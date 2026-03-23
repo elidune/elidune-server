@@ -10,7 +10,7 @@ use crate::{
     dynamic_config::DynamicConfig,
     error::AppResult,
     models::{event::{CreateEvent, Event, EventQuery, UpdateEvent}, Language},
-    repository::{events::EventAnnualStats, Repository},
+    repository::{events::EventAnnualStats, EventsServiceRepository},
     services::{
         audit::{self, AuditService},
         email::EmailService,
@@ -52,7 +52,7 @@ pub struct AnnouncementReport {
 
 #[derive(Clone)]
 pub struct EventsService {
-    repository: Repository,
+    repository: Arc<dyn EventsServiceRepository>,
     email: EmailService,
     audit: AuditService,
     dynamic_config: Arc<DynamicConfig>,
@@ -60,7 +60,7 @@ pub struct EventsService {
 
 impl EventsService {
     pub fn new(
-        repository: Repository,
+        repository: Arc<dyn EventsServiceRepository>,
         email: EmailService,
         audit: AuditService,
         dynamic_config: Arc<DynamicConfig>,
@@ -68,6 +68,7 @@ impl EventsService {
         Self { repository, email, audit, dynamic_config }
     }
 
+    #[tracing::instrument(skip(self), err)]
     pub async fn list(&self, query: &EventQuery) -> AppResult<(Vec<Event>, i64)> {
         self.repository.events_list(query).await
     }
@@ -76,6 +77,7 @@ impl EventsService {
         self.repository.events_get_by_id(id).await
     }
 
+    #[tracing::instrument(skip(self), err)]
     pub async fn create(&self, data: &CreateEvent) -> AppResult<Event> {
         self.repository.events_create(data).await
     }
@@ -84,11 +86,13 @@ impl EventsService {
         self.repository.events_update(id, data).await
     }
 
+    #[tracing::instrument(skip(self), err)]
     pub async fn delete(&self, id: i64) -> AppResult<()> {
         self.repository.events_delete(id).await
     }
 
     /// Get annual event statistics (for annual report)
+    #[tracing::instrument(skip(self), err)]
     pub async fn annual_stats(&self, year: i32) -> AppResult<EventAnnualStats> {
         self.repository.events_annual_stats(year).await
     }
@@ -98,6 +102,7 @@ impl EventsService {
     ///
     /// If the request provides `subject`/`body_plain`/`body_html`, those are used
     /// directly instead of the template.
+    #[tracing::instrument(skip(self), err)]
     pub async fn send_announcement(
         &self,
         event_id: i64,

@@ -579,6 +579,22 @@ impl UserClaims {
         }
     }
 
+    pub fn require_read_catalog(&self) -> Result<(), AppError> {
+        if self.rights.items_rights as u8 >= Rights::Read as u8 {
+            Ok(())
+        } else {
+            Err(AppError::Authorization("Insufficient rights to read catalog".to_string()))
+        }
+    }
+
+    pub fn require_read_borrows(&self) -> Result<(), AppError> {
+        if self.rights.borrows_rights as u8 >= Rights::Read as u8 {
+            Ok(())
+        } else {
+            Err(AppError::Authorization("Insufficient rights to read borrows".to_string()))
+        }
+    }
+
     pub fn require_read_loans(&self) -> Result<(), AppError> {
         if self.rights.loans_rights as u8 >= Rights::Read as u8 {
             Ok(())
@@ -614,6 +630,11 @@ impl UserClaims {
     /// Check if user is admin (account_type = "admin")
     pub fn is_admin(&self) -> bool {
         self.account_type == AccountTypeSlug::Admin
+    }
+
+    /// Check if user is librarian or admin
+    pub fn is_librarian(&self) -> bool {
+        matches!(self.account_type, AccountTypeSlug::Librarian | AccountTypeSlug::Admin)
     }
 
     /// Require admin privileges

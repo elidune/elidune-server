@@ -152,10 +152,10 @@ AUTHOR_FUNCTION_TO_DB = {
 TABLES_DROP_ORDER = [
     'audit_log',
     'loans_archives', 'loans', 'loans_settings',
-    'item_authors',
-    'item_series',
-    'specimens',
-    'items',
+    'biblio_authors',
+    'biblio_series',
+    'items',     # physical copies (formerly specimens)
+    'biblios',   # bibliographic records (formerly items)
     'z3950servers', 'fees', 'users',
     'authors', 'editions', 'collections', 'series', 'sources',
     'public_type_loan_settings', 'public_types',
@@ -624,7 +624,7 @@ def migrate_items(src, dst):
                     keywords_arr = [k.strip() for k in re.split(r'\s*,\s*', keywords) if k.strip()]
 
             dst_cur.execute("""
-                INSERT INTO items (
+                INSERT INTO biblios (
                     id, media_type, isbn, title, subject, audience_type,
                     lang, lang_orig, publication_date,
                     collection_id, collection_sequence_number, collection_volume_number,
@@ -678,52 +678,52 @@ def migrate_items(src, dst):
 
     print(f"  {total} items migrated")
 
-    print("  Migrating item_series...")
+    print("  Migrating biblio_series...")
     for i in range(0, len(item_series_batch), 500):
         for entry in item_series_batch[i:i + 500]:
             try:
                 dst_cur.execute("""
-                    INSERT INTO item_series (item_id, series_id, position, volume_number)
+                    INSERT INTO biblio_series (biblio_id, series_id, position, volume_number)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (item_id, series_id) DO NOTHING
+                    ON CONFLICT (biblio_id, series_id) DO NOTHING
                 """, entry)
             except Exception:
                 dst.rollback()
         dst.commit()
-    print(f"  {len(item_series_batch)} item_series rows migrated")
+    print(f"  {len(item_series_batch)} biblio_series rows migrated")
 
-    # Insert item_authors in batches
-    print("  Migrating item_authors...")
+    # Insert biblio_authors in batches
+    print("  Migrating biblio_authors...")
     ia_count = 0
     for i in range(0, len(item_authors_batch), 500):
         for entry in item_authors_batch[i:i + 500]:
             try:
                 dst_cur.execute("""
-                    INSERT INTO item_authors (item_id, author_id, function, author_type, position)
+                    INSERT INTO biblio_authors (biblio_id, author_id, function, author_type, position)
                     VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (item_id, author_id, function) DO NOTHING
+                    ON CONFLICT (biblio_id, author_id, function) DO NOTHING
                 """, entry)
                 ia_count += 1
             except Exception:
                 dst.rollback()
         dst.commit()
-    print(f"  {ia_count} item_authors migrated")
+    print(f"  {ia_count} biblio_authors migrated")
 
 
 def migrate_specimens(src, dst):
-    """Migrate specimens: rename columns, replace borrow_status with borrowable bool.
+    """Migrate specimens (physical copies) into the new `items` table.
 
     Source columns (legacy):
         id, id_item, source_id, identification (barcode), cote (call_number),
         place, status (borrow_status: 98=borrowable, 110=not), codestat (circulation_status),
         notes, price, update_at, is_archive, archived_at, created_at
 
-    Target columns:
-        id, item_id, source_id, barcode, call_number, place,
+    Target columns (items table):
+        id, biblio_id, source_id, barcode, call_number, place,
         borrowable (bool), circulation_status, notes, price,
         updated_at, archived_at, created_at
     """
-    print("Migrating specimens...")
+    print("Migrating specimens -> items...")
     src_cur = src.cursor()
     dst_cur = dst.cursor()
 
@@ -762,8 +762,8 @@ def migrate_specimens(src, dst):
                 archived_dt = datetime.now(tz=timezone.utc)
 
             dst_cur.execute("""
-                INSERT INTO specimens (
-                    id, item_id, source_id, barcode, call_number, place,
+                INSERT INTO items (
+                    id, biblio_id, source_id, barcode, call_number, place,
                     borrowable, circulation_status, notes, price,
                     updated_at, archived_at, created_at
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -776,9 +776,9 @@ def migrate_specimens(src, dst):
 
         dst.commit()
         offset += BATCH
-        print(f"  {min(offset, total)}/{total} specimens")
+        print(f"  {min(offset, total)}/{total} items (physical copies)")
 
-    print(f"  {total} specimens migrated")
+    print(f"  {total} items (physical copies) migrated")
 
 
 def migrate_loans(src, dst):
@@ -993,7 +993,7 @@ def reset_sequences(conn):
 
     tables = [
         'users', 'authors', 'editions', 'collections', 'series', 'sources',
-        'items', 'item_authors', 'item_series', 'specimens',
+        'biblios', 'biblio_authors', 'biblio_series', 'items',
         'loans', 'loans_archives', 'loans_settings', 'z3950servers',
         'public_types', 'public_type_loan_settings',
         'visitor_counts', 'schedule_periods', 'schedule_slots', 'schedule_closures',

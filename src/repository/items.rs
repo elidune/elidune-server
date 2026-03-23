@@ -116,6 +116,7 @@ impl Repository {
     // =========================================================================
 
     /// Get item by numeric ID or by ISBN.
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_get_by_id_or_isbn(&self, id_or_isbn: &str) -> AppResult<Item> {
 
         let query = r#"
@@ -259,16 +260,17 @@ impl Repository {
         Ok(())
     }
 
-    /// Replace `item_series` rows for this item.
-    async fn sync_item_series(
+    /// Replace `item_series` rows for this item within an open transaction.
+    async fn sync_item_series_tx(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         item_id: i64,
         series_ids: &[i64],
         volumes: &[Option<i16>],
     ) -> AppResult<()> {
         sqlx::query("DELETE FROM item_series WHERE item_id = $1")
             .bind(item_id)
-            .execute(&self.pool)
+            .execute(&mut **tx)
             .await?;
 
         for (pos, &sid) in series_ids.iter().enumerate() {
@@ -283,13 +285,15 @@ impl Repository {
             .bind(sid)
             .bind((pos + 1) as i16)
             .bind(vol)
-            .execute(&self.pool)
+            .execute(&mut **tx)
             .await?;
         }
         Ok(())
     }
 
+
     /// Get a short item representation by ID (includes author + specimens).
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_get_short_by_id(&self, id: i64) -> AppResult<ItemShort> {
         let row: ItemShortRow = sqlx::query_as(
             r#"
@@ -332,6 +336,7 @@ impl Repository {
     /// Search items with parameterized field filters. All non-freesearch ItemQuery fields
     /// are handled here. When freesearch is present, the CatalogService routes through
     /// Meilisearch instead; this path handles field-only filters and Meilisearch fallback.
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_search(&self, query: &ItemQuery) -> AppResult<(Vec<ItemShort>, i64)> {
         let page = query.page.unwrap_or(1).max(1);
         let per_page = query.per_page.unwrap_or(20).clamp(1, 200);
@@ -565,6 +570,7 @@ impl Repository {
     }
 
     /// List all items belonging to a series
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_get_by_series(&self, series_id: i64) -> AppResult<Vec<ItemShort>> {
         let rows: Vec<ItemShortRow> = sqlx::query_as(
             r#"
@@ -614,6 +620,7 @@ impl Repository {
     // =========================================================================
 
     /// Build a single Meilisearch document for the given item ID using a single JOIN query.
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_get_meili_document(&self, id: i64) -> AppResult<Option<MeiliItemDocument>> {
         let doc = sqlx::query_as::<_, MeiliItemDocument>(
             r#"
@@ -668,6 +675,7 @@ impl Repository {
     }
 
     /// Build Meilisearch documents for all items (used for full reindex).
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_get_all_meili_documents(&self) -> AppResult<Vec<MeiliItemDocument>> {
         let docs = sqlx::query_as::<_, MeiliItemDocument>(
             r#"
@@ -721,6 +729,7 @@ impl Repository {
     }
 
     /// Load ItemShort rows for the given IDs, preserving the input order (Meilisearch ranking).
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_get_short_by_ids_ordered(&self, ids: &[i64]) -> AppResult<Vec<ItemShort>> {
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -777,15 +786,25 @@ impl Repository {
     // CREATE
     // =========================================================================
 
-    /// Create a new item
+    /// Create a new item.
+    ///
+    /// External entity resolution (series, collection, edition, author upserts) happens
+    /// outside the transaction because those upserts are idempotent and safe to keep even
+    /// on rollback.  The item row, series links, author links, and MARC record update are
+    /// all committed atomically.
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_create<'a>(&self, item: &'a mut Item) -> AppResult<&'a mut Item> {
         let now = Utc::now();
 
         item.updated_at = Some(now);
         item.created_at = Some(now);
+
+        // Resolve external entities before opening the transaction.
         self.resolve_series_ids_from_item(item).await?;
         item.collection_id = self.process_collection(&item.collection).await?;
         item.edition_id = self.process_edition(&item.edition).await?;
+
+        let mut tx = self.pool.begin().await?;
 
         let id = sqlx::query_scalar::<_, i64>(
             r#"
@@ -828,15 +847,27 @@ impl Repository {
         .bind(&item.edition_id)
         .bind(&item.created_at)
         .bind(&item.updated_at)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
 
         item.id = Some(id);
-        self.sync_item_series(id, &item.series_ids, &item.series_volume_numbers)
+
+        self.sync_item_series_tx(&mut tx, id, &item.series_ids, &item.series_volume_numbers)
             .await?;
+        self.sync_item_authors_tx(&mut tx, id, &item.authors).await?;
+
+        // Build the MARC record from the current item state and persist it in the same tx.
+        item.marc_record = Some(crate::marc::MarcRecord::from(&*item));
+        sqlx::query("UPDATE items SET marc_record = $1 WHERE id = $2")
+            .bind(serde_json::to_value(&item.marc_record).unwrap_or_default())
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        // Post-commit: re-load series links (for volume_number hydration).
         self.load_item_series(id, item).await?;
-        self.sync_item_authors(id, &item.authors).await?;
-        self.items_update_marc_record_for_item(item).await?;
 
         Ok(item)
     }
@@ -845,19 +876,26 @@ impl Repository {
     // UPDATE
     // =========================================================================
 
-    /// Update an existing item
+    /// Update an existing item.
+    ///
+    /// The item row update, series sync, author sync, and MARC record update are wrapped
+    /// in a single transaction so a partial failure cannot leave inconsistent linked data.
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_update<'a>(&self, id: i64, item: &'a mut Item) -> AppResult<&'a mut Item> {
-
         item.updated_at = Some(Utc::now());
+        item.id = Some(id);
+
+        // Resolve external entities before the transaction.
         self.resolve_series_ids_from_item(item).await?;
         item.collection_id = self.process_collection(&item.collection).await?;
         item.edition_id = self.process_edition(&item.edition).await?;
-        item.id = Some(id);
+
+        let mut tx = self.pool.begin().await?;
 
         sqlx::query(
             r#"
             UPDATE items SET
-                media_type = COALESCE($1::text, media_type),    
+                media_type = COALESCE($1::text, media_type),
                 isbn = COALESCE($2::text, isbn),
                 title = COALESCE($3::text, title),
                 collection_id = $4,
@@ -877,24 +915,35 @@ impl Repository {
         .bind(&item.edition_id)
         .bind(&item.updated_at)
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
-        self.sync_item_series(id, &item.series_ids, &item.series_volume_numbers)
+        self.sync_item_series_tx(&mut tx, id, &item.series_ids, &item.series_volume_numbers)
             .await?;
-        self.load_item_series(id, item).await?;
 
         if !item.authors.is_empty() {
-            self.sync_item_authors(id, &item.authors).await?;
+            self.sync_item_authors_tx(&mut tx, id, &item.authors).await?;
         }
 
-        self.items_update_marc_record_for_item(item).await?;
+        // Re-derive the MARC record from the updated item and persist it.
+        item.marc_record = Some(crate::marc::MarcRecord::from(&*item));
+        sqlx::query("UPDATE items SET marc_record = $1 WHERE id = $2")
+            .bind(serde_json::to_value(&item.marc_record).unwrap_or_default())
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        // Post-commit: re-load hydrated series.
+        self.load_item_series(id, item).await?;
 
         Ok(item)
     }
 
  
     /// Update marc record for an item.
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_update_marc_record_for_item(&self, item: &mut Item) -> AppResult<()> {
         
         if item.marc_record.is_none() {
@@ -926,6 +975,7 @@ impl Repository {
     // =========================================================================
 
     /// Delete an item (soft delete — sets archived_at)
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_delete(&self, id: i64, force: bool) -> AppResult<()> {
         let now = Utc::now();
 
@@ -967,19 +1017,28 @@ impl Repository {
     // AUTHORS (item_authors junction)
     // =========================================================================
 
-    /// Replace all authors for an item: delete existing rows then insert new ones.
-    async fn sync_item_authors(
+    /// Replace all authors for an item within an open transaction.
+    /// Author rows are first resolved/created via the pool (idempotent upserts),
+    /// then the junction rows are written through the transaction.
+    async fn sync_item_authors_tx(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         item_id: i64,
         authors: &[Author],
     ) -> AppResult<()> {
+        // Resolve/create author records using the pool (outside the tx scope) so that
+        // author data is never rolled back even if the item write fails later.
+        let mut author_ids: Vec<Option<i64>> = Vec::with_capacity(authors.len());
+        for author in authors {
+            author_ids.push(self.ensure_author(author).await?);
+        }
+
         sqlx::query("DELETE FROM item_authors WHERE item_id = $1")
             .bind(item_id)
-            .execute(&self.pool)
+            .execute(&mut **tx)
             .await?;
 
-        for (idx, author) in authors.iter().enumerate() {
-            let author_id = self.ensure_author(author).await?;
+        for (idx, (author, author_id)) in authors.iter().zip(author_ids.iter()).enumerate() {
             let Some(author_id) = author_id else { continue };
 
             sqlx::query(
@@ -992,16 +1051,16 @@ impl Repository {
             .bind(item_id)
             .bind(author_id)
             .bind(&author.function)
-            .bind(0i16) // personal by default
+            .bind(0i16)
             .bind((idx + 1) as i16)
-            .execute(&self.pool)
+            .execute(&mut **tx)
             .await?;
         }
 
         Ok(())
     }
 
-    /// Insert author if new, or return existing id.
+    /// Insert author if new, or return existing id (uses pool, idempotent).
     async fn ensure_author(&self, author: &Author) -> AppResult<Option<i64>> {
         if author.id != 0 {
             return Ok(Some(author.id));
@@ -1156,6 +1215,7 @@ impl Repository {
     // =========================================================================
 
     /// Get specimens for an item (excludes archived specimens)
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_get_specimens(&self, item_id: i64) -> AppResult<Vec<Specimen>> {
         let specimens = sqlx::query_as::<_, Specimen>(
             r#"
@@ -1178,6 +1238,7 @@ impl Repository {
     }
 
     /// Get SpecimenShort for many items (excludes archived). Used to attach specimens to ItemShort lists.
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_get_specimens_short_by_item_ids(
         &self,
         item_ids: &[i64],
@@ -1210,6 +1271,7 @@ impl Repository {
     }
 
     /// Create a specimen
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_create_specimen(&self, item_id: i64, specimen: &Specimen) -> AppResult<Specimen> {
         let now = Utc::now();
         let mut new_specimen = specimen.clone();
@@ -1248,6 +1310,7 @@ impl Repository {
     }
 
     /// Upsert a specimen
+    #[tracing::instrument(skip(self), err)]
     pub async fn upsert_specimen<'a>(&self, specimen: &'a mut Specimen) -> AppResult<&'a mut Specimen> {
         let now = Utc::now();
         specimen.updated_at = Some(now);
@@ -1368,6 +1431,7 @@ impl Repository {
     }
 
     /// Update a specimen
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_update_specimen<'a>(&self, specimen: &'a mut Specimen) -> AppResult<&'a mut Specimen> {
         let now = Utc::now();
         specimen.updated_at = Some(now);
@@ -1403,6 +1467,7 @@ impl Repository {
     }
 
     /// Delete a specimen (soft delete — sets archived_at)
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_delete_specimen(&self, id: i64, force: bool) -> AppResult<()> {
         let now = Utc::now();
 
@@ -1438,6 +1503,7 @@ impl Repository {
     }
 
     /// Check if specimen barcode already exists
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_specimen_barcode_exists(
         &self,
         barcode: &str,
@@ -1459,6 +1525,7 @@ impl Repository {
     }
 
     /// Get specimen id and archived_at by barcode
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_get_specimen_by_barcode(&self, barcode: &str) -> AppResult<Option<(i64, bool)>> {
         let row: Option<(i64, Option<chrono::DateTime<Utc>>)> = sqlx::query_as(
             "SELECT id, archived_at FROM specimens WHERE barcode = $1",
@@ -1470,6 +1537,7 @@ impl Repository {
     }
 
     /// Reactivate an archived specimen and update its fields.
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_reactivate_specimen(
         &self,
         specimen_id: i64,
@@ -1534,6 +1602,7 @@ impl Repository {
 
     /// Find an active (non-archived) item that has the given ISBN,
     /// optionally excluding a specific item id (useful during updates).
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_find_active_by_isbn(&self, isbn: &str, exclude_id: Option<i64>) -> AppResult<Option<i64>> {
         let row: Option<i64> = if let Some(eid) = exclude_id {
             sqlx::query_scalar(
@@ -1556,6 +1625,7 @@ impl Repository {
 
     /// Find an existing specimen by barcode and return its short representation,
     /// optionally excluding a specific specimen id (useful during updates).
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_find_specimen_short_by_barcode(
         &self,
         barcode: &str,
@@ -1602,6 +1672,7 @@ impl Repository {
 
     /// Find an existing item by ISBN for import deduplication.
     /// Includes archived items. Returns the best candidate (non-archived first).
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_find_by_isbn_for_import(&self, isbn: &str) -> AppResult<Option<DuplicateCandidate>> {
         let row: Option<(i64, Option<chrono::DateTime<Utc>>, i64)> = sqlx::query_as(
             r#"
@@ -1626,6 +1697,7 @@ impl Repository {
     }
 
     /// Check if ISBN already exists
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_isbn_exists(&self, isbn: &str, exclude_id: Option<i64>) -> AppResult<bool> {
         let exists: bool = if let Some(id) = exclude_id {
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM items WHERE isbn = $1 AND id != $2)")
@@ -1644,6 +1716,7 @@ impl Repository {
     }
 
     /// Count non-archived specimens for a source (items domain owns specimens)
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_count_specimens_for_source(&self, source_id: i64) -> AppResult<i64> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM specimens WHERE source_id = $1 AND archived_at IS NULL",
@@ -1655,6 +1728,7 @@ impl Repository {
     }
 
     /// Reassign specimens from given source IDs to a new source
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_reassign_specimens_source(
         &self,
         old_source_ids: &[i64],
@@ -1669,6 +1743,7 @@ impl Repository {
     }
 
     /// Reassign items from given source IDs to a new source
+    #[tracing::instrument(skip(self), err)]
     pub async fn items_reassign_items_source(
         &self,
         old_source_ids: &[i64],
@@ -1680,3 +1755,88 @@ impl Repository {
     }
 }
 
+
+#[async_trait::async_trait]
+impl crate::repository::ItemsRepository for Repository {
+    async fn items_get_by_id_or_isbn(&self, id_or_isbn: &str) -> crate::error::AppResult<crate::models::item::Item> {
+        Repository::items_get_by_id_or_isbn(self, id_or_isbn).await
+    }
+    async fn items_get_short_by_id(&self, id: i64) -> crate::error::AppResult<crate::models::item::ItemShort> {
+        Repository::items_get_short_by_id(self, id).await
+    }
+    async fn items_search(&self, query: &crate::models::item::ItemQuery) -> crate::error::AppResult<(Vec<crate::models::item::ItemShort>, i64)> {
+        Repository::items_search(self, query).await
+    }
+    async fn items_get_by_series(&self, series_id: i64) -> crate::error::AppResult<Vec<crate::models::item::ItemShort>> {
+        Repository::items_get_by_series(self, series_id).await
+    }
+    async fn items_get_meili_document(&self, id: i64) -> crate::error::AppResult<Option<crate::models::item::MeiliItemDocument>> {
+        Repository::items_get_meili_document(self, id).await
+    }
+    async fn items_get_all_meili_documents(&self) -> crate::error::AppResult<Vec<crate::models::item::MeiliItemDocument>> {
+        Repository::items_get_all_meili_documents(self).await
+    }
+    async fn items_get_short_by_ids_ordered(&self, ids: &[i64]) -> crate::error::AppResult<Vec<crate::models::item::ItemShort>> {
+        Repository::items_get_short_by_ids_ordered(self, ids).await
+    }
+    async fn items_create<'a>(&self, item: &'a mut crate::models::item::Item) -> crate::error::AppResult<&'a mut crate::models::item::Item> {
+        Repository::items_create(self, item).await
+    }
+    async fn items_update<'a>(&self, id: i64, item: &'a mut crate::models::item::Item) -> crate::error::AppResult<&'a mut crate::models::item::Item> {
+        Repository::items_update(self, id, item).await
+    }
+    async fn items_delete(&self, id: i64, force: bool) -> crate::error::AppResult<()> {
+        Repository::items_delete(self, id, force).await
+    }
+    async fn items_get_specimens(&self, item_id: i64) -> crate::error::AppResult<Vec<crate::models::specimen::Specimen>> {
+        Repository::items_get_specimens(self, item_id).await
+    }
+    async fn items_get_specimens_short_by_item_ids(&self, item_ids: &[i64]) -> crate::error::AppResult<std::collections::HashMap<i64, Vec<crate::models::specimen::SpecimenShort>>> {
+        Repository::items_get_specimens_short_by_item_ids(self, item_ids).await
+    }
+    async fn items_create_specimen(&self, item_id: i64, specimen: &crate::models::specimen::Specimen) -> crate::error::AppResult<crate::models::specimen::Specimen> {
+        Repository::items_create_specimen(self, item_id, specimen).await
+    }
+    async fn upsert_specimen<'a>(&self, specimen: &'a mut crate::models::specimen::Specimen) -> crate::error::AppResult<&'a mut crate::models::specimen::Specimen> {
+        Repository::upsert_specimen(self, specimen).await
+    }
+    async fn items_update_specimen<'a>(&self, specimen: &'a mut crate::models::specimen::Specimen) -> crate::error::AppResult<&'a mut crate::models::specimen::Specimen> {
+        Repository::items_update_specimen(self, specimen).await
+    }
+    async fn items_delete_specimen(&self, id: i64, force: bool) -> crate::error::AppResult<()> {
+        Repository::items_delete_specimen(self, id, force).await
+    }
+    async fn items_specimen_barcode_exists(&self, barcode: &str, exclude_specimen_id: Option<i64>) -> crate::error::AppResult<bool> {
+        Repository::items_specimen_barcode_exists(self, barcode, exclude_specimen_id).await
+    }
+    async fn items_get_specimen_by_barcode(&self, barcode: &str) -> crate::error::AppResult<Option<(i64, bool)>> {
+        Repository::items_get_specimen_by_barcode(self, barcode).await
+    }
+    async fn items_reactivate_specimen(&self, specimen_id: i64, item_id: i64, specimen: &crate::models::specimen::Specimen) -> crate::error::AppResult<crate::models::specimen::Specimen> {
+        Repository::items_reactivate_specimen(self, specimen_id, item_id, specimen).await
+    }
+    async fn items_find_active_by_isbn(&self, isbn: &str, exclude_id: Option<i64>) -> crate::error::AppResult<Option<i64>> {
+        Repository::items_find_active_by_isbn(self, isbn, exclude_id).await
+    }
+    async fn items_find_specimen_short_by_barcode(&self, barcode: &str, exclude_specimen_id: Option<i64>) -> crate::error::AppResult<Option<crate::models::specimen::SpecimenShort>> {
+        Repository::items_find_specimen_short_by_barcode(self, barcode, exclude_specimen_id).await
+    }
+    async fn items_find_by_isbn_for_import(&self, isbn: &str) -> crate::error::AppResult<Option<crate::models::import_report::DuplicateCandidate>> {
+        Repository::items_find_by_isbn_for_import(self, isbn).await
+    }
+    async fn items_update_marc_record_for_item(&self, item: &mut crate::models::item::Item) -> crate::error::AppResult<()> {
+        Repository::items_update_marc_record_for_item(self, item).await
+    }
+    async fn items_isbn_exists(&self, isbn: &str, exclude_id: Option<i64>) -> crate::error::AppResult<bool> {
+        Repository::items_isbn_exists(self, isbn, exclude_id).await
+    }
+    async fn items_count_specimens_for_source(&self, source_id: i64) -> crate::error::AppResult<i64> {
+        Repository::items_count_specimens_for_source(self, source_id).await
+    }
+    async fn items_reassign_specimens_source(&self, old_source_ids: &[i64], new_source_id: i64) -> crate::error::AppResult<i64> {
+        Repository::items_reassign_specimens_source(self, old_source_ids, new_source_id).await
+    }
+    async fn items_reassign_items_source(&self, old_source_ids: &[i64], new_source_id: i64) -> crate::error::AppResult<i64> {
+        Repository::items_reassign_items_source(self, old_source_ids, new_source_id).await
+    }
+}

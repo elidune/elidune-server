@@ -40,6 +40,7 @@ impl UsersService {
 
     /// Authenticate user by login and return JWT token
     /// Returns (token, user) if 2FA is not enabled, or (None, user) if 2FA is required
+    #[tracing::instrument(skip(self), err)]
     pub async fn authenticate(&self, login: &str, password: &str, device_id: Option<&str>) -> AppResult<(Option<String>, User)> {
         // Authenticate by login (primary method)
         let user = self.repository.users_get_by_login(login)
@@ -100,6 +101,7 @@ impl UsersService {
     }
 
     /// Verify 2FA code and return JWT token
+    #[tracing::instrument(skip(self), err)]
     pub async fn verify_2fa(&self, user_id: i64, code: &str, device_id: Option<&str>, trust_device: bool) -> AppResult<String> {
         let user = self.repository.users_get_by_id(user_id).await?;
 
@@ -148,6 +150,7 @@ impl UsersService {
     }
 
     /// Verify recovery code and return JWT token
+    #[tracing::instrument(skip(self), err)]
     pub async fn verify_recovery_code(&self, user_id: i64, code: &str) -> AppResult<String> {
         let user = self.repository.users_get_by_id(user_id).await?;
 
@@ -250,6 +253,7 @@ impl UsersService {
     }
 
     /// Enable 2FA for a user
+    #[tracing::instrument(skip(self), err)]
     pub async fn enable_2fa(
         &self,
         user_id: i64,
@@ -283,6 +287,7 @@ impl UsersService {
     }
 
     /// Disable 2FA for a user
+    #[tracing::instrument(skip(self), err)]
     pub async fn disable_2fa(&self, user_id: i64) -> AppResult<()> {
         self.repository.users_update_2fa_settings(user_id, false, None, None, None).await?;
 
@@ -314,6 +319,7 @@ impl UsersService {
     }
 
     /// Get user by ID
+    #[tracing::instrument(skip(self), err)]
     pub async fn get_by_id(&self, id: i64) -> AppResult<User> {
         self.repository.users_get_by_id(id).await
     }
@@ -324,6 +330,7 @@ impl UsersService {
     }
 
     /// Create a new user
+    #[tracing::instrument(skip(self), err)]
     pub async fn create_user(&self, mut user: UserPayload) -> AppResult<User> {
         let login = user
             .login
@@ -356,6 +363,7 @@ impl UsersService {
     }
 
     /// Update an existing user
+    #[tracing::instrument(skip(self), err)]
     pub async fn update_user(&self, id: i64, user: UserPayload) -> AppResult<User> {
         // Check if user exists
         self.repository.users_get_by_id(id).await?;
@@ -379,11 +387,13 @@ impl UsersService {
     }
 
     /// Delete a user
+    #[tracing::instrument(skip(self), err)]
     pub async fn delete_user(&self, id: i64, force: bool) -> AppResult<()> {
         self.repository.users_delete(id, force).await
     }
 
     /// Update user's own profile (name, password)
+    #[tracing::instrument(skip(self), err)]
     pub async fn update_profile(&self, user_id: i64, profile: UpdateProfile) -> AppResult<User> {
         // Get current user
         let user = self.repository.users_get_by_id(user_id).await?;
@@ -418,6 +428,7 @@ impl UsersService {
     }
 
     /// Update user's account type (admin only)
+    #[tracing::instrument(skip(self), err)]
     pub async fn update_account_type(&self, user_id: i64, account_type: &AccountTypeSlug) -> AppResult<User> {
         // Check if user exists
         self.repository.users_get_by_id(user_id).await?;
@@ -429,6 +440,7 @@ impl UsersService {
 
     /// Request password reset by login or email.
     /// Returns destination email, reset token, and user language for email template.
+    #[tracing::instrument(skip(self), err)]
     pub async fn request_password_reset(
         &self,
         identifier: &str,
@@ -467,6 +479,7 @@ impl UsersService {
     }
 
     /// Reset password using a reset token and a new password.
+    #[tracing::instrument(skip(self), err)]
     pub async fn reset_password(&self, token: &str, new_password: &str) -> AppResult<()> {
         let token_data = decode::<PasswordResetClaims>(
             token,
@@ -482,6 +495,29 @@ impl UsersService {
 
         let hash = self.hash_password(new_password)?;
         self.repository.users_update_password(claims.user_id, &hash).await
+    }
+
+    /// Get a user's GDPR history preference
+    #[tracing::instrument(skip(self), err)]
+    pub async fn get_history_preference(&self, user_id: i64) -> AppResult<bool> {
+        let enabled: Option<bool> = sqlx::query_scalar(
+            "SELECT history_enabled FROM users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(self.repository.pool())
+        .await?;
+        Ok(enabled.unwrap_or(true))
+    }
+
+    /// Update a user's GDPR history preference
+    #[tracing::instrument(skip(self), err)]
+    pub async fn set_history_preference(&self, user_id: i64, enabled: bool) -> AppResult<()> {
+        sqlx::query("UPDATE users SET history_enabled = $1 WHERE id = $2")
+            .bind(enabled)
+            .bind(user_id)
+            .execute(self.repository.pool())
+            .await?;
+        Ok(())
     }
 }
 

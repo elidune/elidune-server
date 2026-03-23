@@ -5,7 +5,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{admin_config, audit, auth, equipment, events, health, items, library_info, loans, public_types, schedules, settings, sources, stats, users, visitor_counts, z3950};
+use crate::api::{admin_config, audit, auth, biblios, equipment, events, health, library_info, loans, public_types, schedules, settings, sources, stats, users, visitor_counts, z3950};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -33,18 +33,18 @@ use crate::api::{admin_config, audit, auth, equipment, events, health, items, li
         auth::reset_password,
         auth::setup_2fa,
         auth::disable_2fa,
-        // Items
-        items::list_items,
-        items::get_item,
-        items::create_item,
-        items::upload_unimarc,
-        items::import_marc_batch,
-        items::update_item,
-        items::delete_item,
-        items::list_specimens,
-        items::create_specimen,
-        items::update_specimen,
-        items::delete_specimen,
+        // Biblios and physical items
+        biblios::list_biblios,
+        biblios::get_biblio,
+        biblios::create_biblio,
+        biblios::upload_unimarc,
+        biblios::import_marc_batch,
+        biblios::update_biblio,
+        biblios::delete_biblio,
+        biblios::list_items,
+        biblios::create_item,
+        biblios::update_item,
+        biblios::delete_item,
         // Users
         users::list_users,
         users::get_user,
@@ -58,8 +58,8 @@ use crate::api::{admin_config, audit, auth, equipment, events, health, items, li
         loans::create_loan,
         loans::return_loan,
         loans::renew_loan,
-        loans::return_loan_by_specimen,
-        loans::renew_loan_by_specimen,
+        loans::return_loan_by_item,
+        loans::renew_loan_by_item,
         loans::get_overdue_loans,
         loans::send_overdue_reminders,
         // Z39.50
@@ -141,17 +141,19 @@ use crate::api::{admin_config, audit, auth, equipment, events, health, items, li
             auth::ResetPasswordRequest,
             auth::Setup2FARequest,
             auth::Setup2FAResponse,
-            // Items
+            // Biblios (bibliographic records)
+            crate::models::biblio::Biblio,
+            crate::models::biblio::BiblioShort,
+            crate::models::biblio::BiblioQuery,
+            crate::models::biblio::Serie,
+            crate::models::biblio::Collection,
+            crate::models::biblio::Edition,
+            // Items (physical copies)
             crate::models::item::Item,
             crate::models::item::ItemShort,
-            crate::models::item::ItemQuery,
-            crate::models::item::Serie,
-            crate::models::item::Collection,
-            crate::models::item::Edition,
-            crate::models::specimen::Specimen,
             // Pagination
-            items::PaginatedResponse<crate::models::item::ItemShort>,
-            items::PaginatedResponse<crate::models::user::UserShort>,
+            biblios::PaginatedResponse<crate::models::biblio::BiblioShort>,
+            biblios::PaginatedResponse<crate::models::user::UserShort>,
             // Users
             crate::models::user::User,
             crate::models::user::UserShort,
@@ -176,14 +178,14 @@ use crate::api::{admin_config, audit, auth, equipment, events, health, items, li
             z3950::Z3950SearchResponse,
             z3950::Z3950ImportRequest,
             z3950::Z3950ImportResponse,
-            z3950::ImportSpecimen,
+            z3950::ImportItem,
             // Import report
             crate::models::import_report::ImportReport,
             crate::models::import_report::ImportAction,
             crate::models::import_report::DuplicateConfirmationRequired,
-            crate::models::import_report::DuplicateSpecimenBarcodeRequired,
-            // Items
-            items::CreateItemResponse,
+            crate::models::import_report::DuplicateItemBarcodeRequired,
+            // Biblios
+            biblios::CreateBiblioResponse,
             // Stats
             stats::StatsResponse,
             stats::StatsQuery,
@@ -267,7 +269,7 @@ use crate::api::{admin_config, audit, auth, equipment, events, health, items, li
     tags(
         (name = "health", description = "Health check endpoints"),
         (name = "auth", description = "Authentication endpoints"),
-        (name = "items", description = "Catalog item management"),
+        (name = "biblios", description = "Bibliographic record management"),
         (name = "users", description = "User management"),
         (name = "loans", description = "Loan management"),
         (name = "z3950", description = "Z39.50 catalog search"),

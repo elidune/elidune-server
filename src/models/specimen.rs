@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use sqlx::FromRow;
 use utoipa::ToSchema;
+use validator::Validate;
 
 fn default_borrowable() -> bool {
     true
@@ -13,7 +14,7 @@ fn default_borrowable() -> bool {
 /// Full specimen model from database.
 /// Soft delete is tracked solely via `archived_at` (NULL = active, set = archived).
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema, Validate)]
 pub struct Specimen {
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
@@ -25,8 +26,11 @@ pub struct Specimen {
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub source_id: Option<i64>,
+    #[validate(length(max = 100, message = "Barcode must be at most 100 characters"))]
     pub barcode: Option<String>,
+    #[validate(length(max = 200, message = "Call number must be at most 200 characters"))]
     pub call_number: Option<String>,
+    #[validate(length(max = 100, message = "Volume designation must be at most 100 characters"))]
     pub volume_designation: Option<String>,
     pub place: Option<i16>,
     #[serde(default = "default_borrowable")]

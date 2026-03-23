@@ -1,0 +1,647 @@
+//! Biblio (catalog) and Item (physical copy) endpoints
+
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use axum_extra::extract::Multipart;
+use serde::{Deserialize, Serialize};
+use serde_with::{serde_as, DisplayFromStr};
+use utoipa::ToSchema;
+
+use crate::{
+    error::{AppError, AppResult},
+    models::{
+        biblio::{Biblio, BiblioQuery, BiblioShort},
+        import_report::ImportReport,
+        item::Item,
+    },
+    services::{
+        audit::{self},
+        marc::{EnqueueResult, MarcBatchImportReport},
+    },
+};
+
+use super::{AuthenticatedUser, ClientIp, ValidatedJson};
+
+#[derive(Debug, Deserialize, Default)]
+pub struct GetBiblioQuery {
+    /// If true, include the full MARC record (marc_record JSONB) in the response
+    #[serde(default)]
+    pub full_record: bool,
+}
+
+/// Generic paginated response wrapper returned by list endpoints.
+///
+/// All list endpoints return this envelope so clients have a consistent way
+/// to read pagination metadata without inspecting headers.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PaginatedResponse<T>
+where
+    T: for<'a> ToSchema<'a>,
+{
+    /// Page contents
+    pub items: Vec<T>,
+    /// Total number of matching records across all pages
+    pub total: i64,
+    /// Current 1-based page number
+    pub page: i64,
+    /// Maximum records per page
+    pub per_page: i64,
+    /// Total number of pages (`ceil(total / per_page)`)
+    pub page_count: i64,
+}
+
+impl<T: for<'a> ToSchema<'a>> PaginatedResponse<T> {
+    /// Construct a paginated response, calculating `page_count` automatically.
+    pub fn new(items: Vec<T>, total: i64, page: i64, per_page: i64) -> Self {
+        let page_count = if per_page > 0 {
+            (total + per_page - 1) / per_page
+        } else {
+            0
+        };
+        Self { items, total, page, per_page, page_count }
+    }
+}
+
+/// List biblios with search and pagination
+#[utoipa::path(
+    get,
+    path = "/biblios",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("media_type" = Option<String>, Query, description = "Filter by media type"),
+        ("title" = Option<String>, Query, description = "Search in title"),
+        ("author" = Option<String>, Query, description = "Search by author"),
+        ("isbn" = Option<String>, Query, description = "Search by ISBN/ISSN"),
+        ("freesearch" = Option<String>, Query, description = "Full-text search"),
+        ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
+        ("per_page" = Option<i64>, Query, description = "Items per page (default: 20)")
+    ),
+    responses(
+        (status = 200, description = "List of bibliographic records", body = PaginatedResponse<BiblioShort>),
+        (status = 401, description = "Not authenticated")
+    )
+)]
+pub async fn list_biblios(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    Query(query): Query<BiblioQuery>,
+) -> AppResult<Json<PaginatedResponse<BiblioShort>>> {
+    claims.require_read_items()?;
+
+    let (biblios, total) = state.services.catalog.search_biblios(&query).await?;
+    let page = query.page.unwrap_or(1);
+    let per_page = query.per_page.unwrap_or(20);
+
+    Ok(Json(PaginatedResponse::new(biblios, total, page, per_page)))
+}
+
+/// Get biblio details by ID
+#[utoipa::path(
+    get,
+    path = "/biblios/{id}",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i64, Path, description = "Biblio ID"),
+        ("full_record" = Option<bool>, Query, description = "If true, include full MARC record data")
+    ),
+    responses(
+        (status = 200, description = "Bibliographic record details", body = Biblio),
+        (status = 404, description = "Biblio not found")
+    )
+)]
+pub async fn get_biblio(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    Path(id): Path<i64>,
+    Query(_query): Query<GetBiblioQuery>,
+) -> AppResult<Json<Biblio>> {
+    claims.require_read_items()?;
+
+    let biblio = state.services.catalog.get_biblio(id).await?;
+    Ok(Json(biblio))
+}
+
+/// Query params for create biblio
+#[serde_as]
+#[derive(Debug, Deserialize, Default, ToSchema)]
+pub struct CreateBiblioQuery {
+    /// If true, allow creating a biblio even when another has the same ISBN
+    #[serde(default)]
+    pub allow_duplicate_isbn: bool,
+    /// Set to the existing biblio ID to confirm replacement of a duplicate
+    pub confirm_replace_existing_id: Option<i64>,
+}
+
+/// Response body for biblio creation (biblio + optional dedup report)
+#[derive(Serialize, ToSchema)]
+pub struct CreateBiblioResponse {
+    pub biblio: Biblio,
+    pub import_report: ImportReport,
+}
+
+/// Query params for UNIMARC upload
+#[derive(Debug, Deserialize)]
+pub struct UploadUnimarcQuery {}
+
+/// Query params for MARC batch import
+#[serde_as]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ImportMarcBatchQuery {
+    /// Source ID
+    #[serde_as(as = "DisplayFromStr")]
+    #[schema(value_type = String)]
+    pub source_id: i64,
+    /// Batch identifier returned by upload_unimarc
+    #[serde_as(as = "DisplayFromStr")]
+    #[schema(value_type = String)]
+    pub batch_id: i64,
+    /// Optional record id inside the batch (e.g. "1", "2", ...)
+    pub record_id: Option<usize>,
+}
+
+/// Create a new bibliographic record (with ISBN deduplication)
+#[utoipa::path(
+    post,
+    path = "/biblios",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("allow_duplicate_isbn" = Option<bool>, Query, description = "Allow duplicate ISBN (default: false)"),
+        ("confirm_replace_existing_id" = Option<i64>, Query, description = "Confirm replacement of duplicate biblio")
+    ),
+    request_body = Biblio,
+    responses(
+        (status = 201, description = "Biblio created or merged", body = CreateBiblioResponse),
+        (status = 400, description = "Invalid input"),
+        (status = 409, description = "Duplicate ISBN requires confirmation", body = crate::models::import_report::DuplicateConfirmationRequired)
+    )
+)]
+pub async fn create_biblio(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Query(query): Query<CreateBiblioQuery>,
+    Json(biblio): Json<Biblio>,
+) -> AppResult<(StatusCode, Json<CreateBiblioResponse>)> {
+    claims.require_write_items()?;
+    let (biblio, import_report) = state
+        .services
+        .catalog
+        .create_biblio(biblio, query.allow_duplicate_isbn, query.confirm_replace_existing_id)
+        .await?;
+
+    state.services.audit.log(
+        audit::event::ITEM_CREATED,
+        Some(claims.user_id),
+        Some("biblio"),
+        biblio.id,
+        ip,
+        Some(&biblio),
+    );
+
+    Ok((StatusCode::CREATED, Json(CreateBiblioResponse { biblio, import_report })))
+}
+
+/// Upload a UNIMARC file and return parsed biblios with linked items (995/952).
+#[utoipa::path(
+    post,
+    path = "/biblios/upload-unimarc",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("source_id" = i64, Query, description = "Source ID associated to this MARC batch")
+    ),
+    responses(
+        (status = 200, description = "Parsed biblios with physical items", body = EnqueueResult),
+        (status = 400, description = "Missing file or invalid UNIMARC"),
+        (status = 401, description = "Not authenticated")
+    )
+)]
+pub async fn upload_unimarc(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    mut multipart: Multipart,
+) -> AppResult<Json<EnqueueResult>> {
+    claims.require_read_items()?;
+
+    let mut data = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Multipart error: {}", e)))?
+    {
+        if field.name().as_deref() == Some("file") {
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Failed to read field: {}", e)))?;
+            data = bytes.to_vec();
+            break;
+        }
+    }
+    if data.is_empty() {
+        return Err(AppError::BadRequest(
+            "Missing 'file' field in multipart form".to_string(),
+        ));
+    }
+
+    let enqueue_result = state.services.marc.enqueue_unimarc_batch(&data).await?;
+
+    Ok(Json(enqueue_result))
+}
+
+/// Import cached MARC records from a batch into the catalog.
+#[utoipa::path(
+    post,
+    path = "/biblios/import-marc-batch",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("batch_id" = String, Query, description = "MARC batch identifier returned by upload_unimarc"),
+        ("record_id" = Option<String>, Query, description = "Optional record id inside batch; if omitted, import all records")
+    ),
+    responses(
+        (status = 200, description = "MARC batch import report", body = MarcBatchImportReport),
+        (status = 401, description = "Not authenticated")
+    )
+)]
+pub async fn import_marc_batch(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Query(params): Query<ImportMarcBatchQuery>,
+) -> AppResult<Json<MarcBatchImportReport>> {
+    claims.require_write_items()?;
+    let report = state
+        .services
+        .marc
+        .import_from_batch(params.batch_id, params.source_id, params.record_id)
+        .await?;
+
+    state.services.audit.log(
+        audit::event::IMPORT_MARC_BATCH,
+        Some(claims.user_id),
+        None,
+        None,
+        ip,
+        Some(&params),
+    );
+
+    Ok(Json(report))
+}
+
+/// Update an existing bibliographic record
+#[utoipa::path(
+    put,
+    path = "/biblios/{id}",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i64, Path, description = "Biblio ID"),
+        ("allow_duplicate_isbn" = Option<bool>, Query, description = "Allow duplicate ISBN (default: false)")
+    ),
+    request_body = Biblio,
+    responses(
+        (status = 200, description = "Biblio updated", body = Biblio),
+        (status = 404, description = "Biblio not found"),
+        (status = 409, description = "Duplicate ISBN requires confirmation")
+    )
+)]
+pub async fn update_biblio(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Path(id): Path<i64>,
+    Query(query): Query<UpdateBiblioQuery>,
+    Json(biblio): Json<Biblio>,
+) -> AppResult<Json<Biblio>> {
+    claims.require_write_items()?;
+    let updated = state.services.catalog.update_biblio(id, biblio, query.allow_duplicate_isbn).await?;
+
+    state.services.audit.log(
+        audit::event::ITEM_UPDATED,
+        Some(claims.user_id),
+        Some("biblio"),
+        Some(id),
+        ip,
+        Some((id, &updated)),
+    );
+
+    Ok(Json(updated))
+}
+
+#[derive(Debug, Deserialize, Default, ToSchema)]
+pub struct UpdateBiblioQuery {
+    #[serde(default)]
+    pub allow_duplicate_isbn: bool,
+}
+
+/// Delete a bibliographic record
+#[utoipa::path(
+    delete,
+    path = "/biblios/{id}",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i64, Path, description = "Biblio ID"),
+        ("force" = Option<bool>, Query, description = "Force delete even if physical items are borrowed")
+    ),
+    responses(
+        (status = 204, description = "Biblio deleted"),
+        (status = 404, description = "Biblio not found"),
+        (status = 409, description = "Biblio has borrowed items")
+    )
+)]
+pub async fn delete_biblio(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Path(id): Path<i64>,
+    Query(params): Query<DeleteBiblioParams>,
+) -> AppResult<StatusCode> {
+    claims.require_write_items()?;
+    state
+        .services
+        .catalog
+        .delete_biblio(id, params.force.unwrap_or(false))
+        .await?;
+
+    state.services.audit.log(
+        audit::event::ITEM_DELETED,
+        Some(claims.user_id),
+        Some("biblio"),
+        Some(id),
+        ip,
+        Some(serde_json::json!({ "id": id, "force": params.force.unwrap_or(false) })),
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct DeleteBiblioParams {
+    pub force: Option<bool>,
+}
+
+/// List physical items for a bibliographic record
+#[utoipa::path(
+    get,
+    path = "/biblios/{id}/items",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i64, Path, description = "Biblio ID")
+    ),
+    responses(
+        (status = 200, description = "List of physical items (copies)", body = Vec<Item>),
+        (status = 404, description = "Biblio not found")
+    )
+)]
+pub async fn list_items(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    Path(biblio_id): Path<i64>,
+) -> AppResult<Json<Vec<Item>>> {
+    claims.require_read_items()?;
+
+    let items = state.services.catalog.get_items(biblio_id).await?;
+    Ok(Json(items))
+}
+
+/// Create a new physical item for a bibliographic record
+#[utoipa::path(
+    post,
+    path = "/biblios/{id}/items",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i64, Path, description = "Biblio ID")
+    ),
+    request_body = Item,
+    responses(
+        (status = 201, description = "Physical item created", body = Item),
+        (status = 404, description = "Biblio not found"),
+        (status = 409, description = "An item with this barcode already exists", body = crate::models::import_report::DuplicateItemBarcodeRequired)
+    )
+)]
+pub async fn create_item(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Path(biblio_id): Path<i64>,
+    ValidatedJson(item): ValidatedJson<Item>,
+) -> AppResult<(StatusCode, Json<Item>)> {
+    claims.require_write_items()?;
+    let created = state
+        .services
+        .catalog
+        .create_item(biblio_id, item)
+        .await?;
+
+    state.services.audit.log(
+        audit::event::SPECIMEN_CREATED,
+        Some(claims.user_id),
+        Some("item"),
+        created.id,
+        ip,
+        Some((biblio_id, &created)),
+    );
+
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// Update a physical item
+#[utoipa::path(
+    put,
+    path = "/biblios/{biblio_id}/items/{item_id}",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("biblio_id" = i64, Path, description = "Biblio ID"),
+        ("item_id" = i64, Path, description = "Physical item ID")
+    ),
+    request_body = Item,
+    responses(
+        (status = 200, description = "Physical item updated", body = Item),
+        (status = 404, description = "Biblio or item not found"),
+        (status = 409, description = "An item with this barcode already exists")
+    )
+)]
+pub async fn update_item(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Path(biblio_id): Path<i64>,
+    ValidatedJson(mut item): ValidatedJson<Item>,
+) -> AppResult<Json<Item>> {
+    claims.require_write_items()?;
+    let item_id = item.id;
+    state
+        .services
+        .catalog
+        .update_item(biblio_id, &mut item)
+        .await?;
+
+    state.services.audit.log(
+        audit::event::SPECIMEN_UPDATED,
+        Some(claims.user_id),
+        Some("item"),
+        item_id,
+        ip,
+        Some((biblio_id, &item)),
+    );
+
+    Ok(Json(item))
+}
+
+/// Delete a physical item
+#[utoipa::path(
+    delete,
+    path = "/biblios/{biblio_id}/items/{item_id}",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("biblio_id" = i64, Path, description = "Biblio ID"),
+        ("item_id" = i64, Path, description = "Physical item ID"),
+        ("force" = Option<bool>, Query, description = "Force delete even if borrowed")
+    ),
+    responses(
+        (status = 204, description = "Physical item deleted"),
+        (status = 404, description = "Item not found"),
+        (status = 409, description = "Item is borrowed")
+    )
+)]
+pub async fn delete_item(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Path((biblio_id, item_id)): Path<(i64, i64)>,
+    Query(params): Query<DeleteItemParams>,
+) -> AppResult<StatusCode> {
+    claims.require_write_items()?;
+    state
+        .services
+        .catalog
+        .delete_item(biblio_id, item_id, params.force.unwrap_or(false))
+        .await?;
+
+    state.services.audit.log(
+        audit::event::SPECIMEN_DELETED,
+        Some(claims.user_id),
+        Some("item"),
+        Some(item_id),
+        ip,
+        Some(serde_json::json!({
+            "biblio_id": biblio_id,
+            "item_id": item_id,
+            "force": params.force.unwrap_or(false),
+        })),
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct DeleteItemParams {
+    pub force: Option<bool>,
+}
+
+/// Export catalog as CSV
+///
+/// Returns a UTF-8 CSV file with all bibliographic records matching the query.
+/// Streams all pages — does not paginate. Use the same query params as `GET /biblios`.
+#[utoipa::path(
+    get,
+    path = "/biblios/export.csv",
+    tag = "biblios",
+    security(("bearer_auth" = [])),
+    params(
+        ("title" = Option<String>, Query, description = "Filter by title"),
+        ("author" = Option<String>, Query, description = "Filter by author"),
+        ("media_type" = Option<String>, Query, description = "Filter by media type")
+    ),
+    responses(
+        (status = 200, description = "CSV file", content_type = "text/csv"),
+        (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse)
+    )
+)]
+pub async fn export_biblios_csv(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    Query(mut query): Query<BiblioQuery>,
+) -> AppResult<axum::response::Response> {
+    claims.require_read_catalog()?;
+
+    query.page = Some(1);
+    query.per_page = Some(10_000);
+
+    let (biblios, _) = state.services.catalog.search_biblios(&query).await?;
+
+    let mut csv = String::from("id,isbn,title,author,media_type,date,items\n");
+    for biblio in &biblios {
+        let author_name = biblio
+            .author
+            .as_ref()
+            .map(|a| {
+                format!(
+                    "{} {}",
+                    a.firstname.as_deref().unwrap_or(""),
+                    a.lastname.as_deref().unwrap_or("")
+                )
+                .trim()
+                .to_string()
+            })
+            .unwrap_or_default();
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{}\n",
+            biblio.id,
+            escape_csv(biblio.isbn.as_ref().map(|i| i.as_str()).unwrap_or("")),
+            escape_csv(biblio.title.as_deref().unwrap_or("")),
+            escape_csv(&author_name),
+            escape_csv(biblio.media_type.as_db_str()),
+            escape_csv(biblio.date.as_deref().unwrap_or("")),
+            biblio.items.len(),
+        ));
+    }
+
+    use axum::http::header;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"catalog.csv\"",
+            ),
+        ],
+        csv,
+    )
+        .into_response())
+}
+
+fn escape_csv(s: &str) -> String {
+    if s.contains([',', '"', '\n']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Build the biblios and items routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, post};
+    axum::Router::new()
+        .route("/biblios", get(list_biblios).post(create_biblio))
+        .route("/biblios/export.csv", get(export_biblios_csv))
+        .route("/biblios/upload-unimarc", post(upload_unimarc))
+        .route("/biblios/import-marc-batch", post(import_marc_batch))
+        .route("/biblios/{id}", get(get_biblio).put(update_biblio).delete(delete_biblio))
+        .route("/biblios/{id}/items", get(list_items).post(create_item).put(update_item))
+        .route("/biblios/{biblio_id}/items/{item_id}", delete(delete_item))
+}

@@ -11,7 +11,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use crate::config::MeilisearchConfig;
-pub use crate::models::item::MeiliItemDocument;
+pub use crate::models::biblio::MeiliBiblioDocument;
 
 /// Optional filter parameters applied alongside the free-text query.
 #[derive(Debug, Default)]
@@ -50,6 +50,7 @@ impl MeilisearchService {
     ///
     /// Sets searchable attributes (ranked by relevance), filterable attributes
     /// (for sidebar filters / query-time filters), and ranking rules.
+    #[tracing::instrument(skip(self))]
     pub async fn ensure_index(&self) {
         let index = self.client.index(&self.index_name);
 
@@ -96,6 +97,7 @@ impl MeilisearchService {
     /// Full-text search. Returns `(ordered_item_ids, total_hits)`.
     ///
     /// `page` and `per_page` are 1-based / count-based, matching the API convention.
+    #[tracing::instrument(skip(self), err)]
     pub async fn search(
         &self,
         query: &str,
@@ -132,7 +134,8 @@ impl MeilisearchService {
     }
 
     /// Index (create or replace) a single document.
-    pub async fn index_document(&self, doc: &MeiliItemDocument) {
+    #[tracing::instrument(skip(self))]
+    pub async fn index_document(&self, doc: &MeiliBiblioDocument) {
         let index = self.client.index(&self.index_name);
         if let Err(e) = index.add_or_replace(&[doc], Some("id")).await {
             warn!("Meilisearch index_document failed for id={}: {}", doc.id, e);
@@ -140,6 +143,7 @@ impl MeilisearchService {
     }
 
     /// Remove a document by item ID.
+    #[tracing::instrument(skip(self))]
     pub async fn delete_document(&self, id: i64) {
         let index = self.client.index(&self.index_name);
         if let Err(e) = index.delete_document(&id).await {
@@ -150,7 +154,8 @@ impl MeilisearchService {
     /// Replace all documents in the index with the provided batch.
     ///
     /// The documents are pushed in chunks to avoid hitting request-size limits.
-    pub async fn reindex_all(&self, docs: Vec<MeiliItemDocument>) {
+    #[tracing::instrument(skip(self))]
+    pub async fn reindex_all(&self, docs: Vec<MeiliBiblioDocument>) {
         let index = self.client.index(&self.index_name);
 
         if let Err(e) = index.delete_all_documents().await {

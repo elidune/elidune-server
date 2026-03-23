@@ -12,9 +12,9 @@ use utoipa::{IntoParams, ToSchema};
 use crate::{
     error::AppResult,
     models::{
+        biblio::Biblio,
         import_report::ImportReport,
-        item::{Item, ItemShort},
-        specimen::Specimen,
+        item::Item,
     },
 };
 
@@ -35,8 +35,8 @@ pub struct Z3950SearchQuery {
 pub struct Z3950SearchResponse {
     /// Total results found
     pub total: i32,
-    /// List of found items
-    pub items: Vec<Item>,
+    /// List of found bibliographic records
+    pub biblios: Vec<Biblio>,
     /// Source server name
     pub source: String,
 }
@@ -45,22 +45,22 @@ pub struct Z3950SearchResponse {
 #[serde_as]
 #[derive(Deserialize, ToSchema)]
 pub struct Z3950ImportRequest {
-    /// Remote item ID to import
+    /// Remote biblio ID to import
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
-    pub item_id: i64,
-    /// Specimens to create for the imported item
-    pub specimens: Option<Vec<ImportSpecimen>>,
-    /// Set to the existing item ID to confirm replacement of a duplicate
+    pub biblio_id: i64,
+    /// Physical items (copies) to create for the imported biblio
+    pub items: Option<Vec<ImportItem>>,
+    /// Set to the existing biblio ID to confirm replacement of a duplicate
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub confirm_replace_existing_id: Option<i64>,
 }
 
 #[serde_as]
-#[derive(Deserialize, ToSchema)]
-pub struct ImportSpecimen {
-    /// Specimen barcode (must be unique when provided)
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ImportItem {
+    /// Item barcode (must be unique when provided)
     pub barcode: Option<String>,
     /// Shelf location / call number
     pub call_number: Option<String>,
@@ -78,17 +78,17 @@ pub struct ImportSpecimen {
     pub source_id: Option<i64>,
 }
 
-impl From<ImportSpecimen> for Specimen {
-    fn from(s: ImportSpecimen) -> Self {
+impl From<ImportItem> for Item {
+    fn from(s: ImportItem) -> Self {
         let borrowable = s
             .status
             .as_ref()
             .and_then(|st| st.parse::<i16>().ok())
             .map(|v| v == 98)
             .unwrap_or(true);
-        Specimen {
+        Item {
             id: None,
-            item_id: None,
+            biblio_id: None,
             source_id: s.source_id,
             barcode: s.barcode,
             call_number: s.call_number,
@@ -107,11 +107,11 @@ impl From<ImportSpecimen> for Specimen {
     }
 }
 
-/// Response body for Z39.50 import (item + dedup report)
+/// Response body for Z39.50 import (biblio + dedup report)
 #[derive(Serialize, ToSchema)]
 pub struct Z3950ImportResponse {
-    /// The imported or updated item
-    pub item: Item,
+    /// The imported or updated bibliographic record
+    pub biblio: Biblio,
     /// Deduplication report
     pub import_report: ImportReport,
 }
@@ -140,11 +140,11 @@ pub async fn search(
 ) -> AppResult<Json<Z3950SearchResponse>> {
     claims.require_read_items()?;
 
-    let (items, total, source) = state.services.z3950.search(&query).await?;
+    let (biblios, total, source) = state.services.z3950.search(&query).await?;
 
     Ok(Json(Z3950SearchResponse {
         total,
-        items,
+        biblios,
         source,
     }))
 }
@@ -171,15 +171,23 @@ pub async fn import_record(
     claims.require_write_items()?;
 
     
-    let (item, import_report) = state
+    let (biblio, import_report) = state
         .services
         .z3950
         .import_record(
-            request.item_id,
-            request.specimens,
+            request.biblio_id,
+            request.items,
             request.confirm_replace_existing_id,
         )
         .await?;
 
-    Ok((StatusCode::CREATED, Json(Z3950ImportResponse { item, import_report })))
+    Ok((StatusCode::CREATED, Json(Z3950ImportResponse { biblio, import_report })))
+}
+
+/// Build the Z39.50 routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route("/z3950/search", get(search))
+        .route("/z3950/import", post(import_record))
 }

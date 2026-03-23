@@ -105,6 +105,24 @@ pub mod event {
     pub const IMPORT_MARC_BATCH: &str = "import.marc_batch";
     pub const IMPORT_Z3950_RECORD: &str = "import.z3950_record";
 
+    // History / GDPR
+    pub const HISTORY_OPT_IN: &str = "history.opt_in";
+    pub const HISTORY_OPT_OUT: &str = "history.opt_out";
+
+    // Reservations
+    pub const RESERVATION_CREATED: &str = "reservation.created";
+    pub const RESERVATION_CANCELLED: &str = "reservation.cancelled";
+    pub const RESERVATION_FULFILLED: &str = "reservation.fulfilled";
+
+    // Fines
+    pub const FINE_CREATED: &str = "fine.created";
+    pub const FINE_PAID: &str = "fine.paid";
+    pub const FINE_WAIVED: &str = "fine.waived";
+
+    // Inventory
+    pub const INVENTORY_SESSION_CREATED: &str = "inventory.session_created";
+    pub const INVENTORY_SESSION_CLOSED: &str = "inventory.session_closed";
+
     // System
     pub const SYSTEM_STARTUP: &str = "system.startup";
     pub const SYSTEM_REMINDERS_BATCH_COMPLETED: &str = "system.reminders_batch_completed";
@@ -205,6 +223,7 @@ impl AuditService {
     }
 
     /// Query audit log entries with filters and pagination.
+    #[tracing::instrument(skip(self), err)]
     pub async fn query(&self, params: AuditQueryParams) -> AppResult<AuditLogPage> {
         let page = params.page.unwrap_or(1).max(1);
         let per_page = params.per_page.unwrap_or(50).clamp(1, 500);
@@ -297,6 +316,7 @@ impl AuditService {
     }
 
     /// Export audit log entries for a date range (unbounded, for CSV/JSON export).
+    #[tracing::instrument(skip(self), err)]
     pub async fn export(
         &self,
         from_date: Option<DateTime<Utc>>,
@@ -349,6 +369,7 @@ impl AuditService {
 
     /// Delete audit log entries older than `retention_days` days.
     /// Returns the number of deleted rows.
+    #[tracing::instrument(skip(self), err)]
     pub async fn cleanup(&self, retention_days: u32) -> AppResult<u64> {
         let deleted = sqlx::query_scalar::<_, i64>(
             "WITH deleted AS (DELETE FROM audit_log WHERE created_at < NOW() - ($1 || ' days')::INTERVAL RETURNING id) SELECT COUNT(*) FROM deleted"

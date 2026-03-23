@@ -130,3 +130,11 @@ pub async fn export_audit_log(
         Ok(Json(entries).into_response())
     }
 }
+
+/// Build the audit routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::get;
+    axum::Router::new()
+        .route("/audit", get(get_audit_log))
+        .route("/audit/export", get(export_audit_log))
+}

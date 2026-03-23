@@ -13,7 +13,7 @@ use crate::{
     services::audit,
 };
 
-use super::{items::PaginatedResponse, AuthenticatedUser, ClientIp};
+use super::{biblios::PaginatedResponse, AuthenticatedUser, ClientIp, ValidatedJson};
 
 /// List users with search and pagination
 #[utoipa::path(
@@ -40,13 +40,10 @@ pub async fn list_users(
     claims.require_read_users()?;
 
     let (users, total) = state.services.users.search_users(&query).await?;
+    let page = query.page.unwrap_or(1);
+    let per_page = query.per_page.unwrap_or(20);
 
-    Ok(Json(PaginatedResponse {
-        items: users,
-        total,
-        page: query.page.unwrap_or(1),
-        per_page: query.per_page.unwrap_or(20),
-    }))
+    Ok(Json(PaginatedResponse::new(users, total, page, per_page)))
 }
 
 /// Get user details by ID
@@ -91,7 +88,7 @@ pub async fn create_user(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
-    Json(user): Json<UserPayload>,
+    ValidatedJson(user): ValidatedJson<UserPayload>,
 ) -> AppResult<(StatusCode, Json<User>)> {
     claims.require_write_users()?;
     let created = state.services.users.create_user(user).await?;
@@ -128,7 +125,7 @@ pub async fn update_user(
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
-    Json(user): Json<UserPayload>,
+    ValidatedJson(user): ValidatedJson<UserPayload>,
 ) -> AppResult<Json<User>> {
     claims.require_write_users()?;
     let audit_payload = user.clone();
@@ -209,7 +206,7 @@ pub struct DeleteUserParams {
 pub async fn update_my_profile(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
-    Json(profile): Json<UpdateProfile>,
+    ValidatedJson(profile): ValidatedJson<UpdateProfile>,
 ) -> AppResult<Json<User>> {
     let updated = state.services.users.update_profile(claims.user_id, profile).await?;
     Ok(Json(updated))
@@ -251,4 +248,14 @@ pub async fn update_account_type(
     );
 
     Ok(Json(updated))
+}
+
+/// Build the users routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, put};
+    axum::Router::new()
+        .route("/users", get(list_users).post(create_user))
+        .route("/users/{id}", get(get_user).put(update_user).delete(delete_user))
+        .route("/users/{id}/account-type", put(update_account_type))
+        .route("/users/{id}/loans", get(super::loans::get_user_loans))
 }

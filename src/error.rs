@@ -8,35 +8,26 @@ use axum::{
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::models::biblio::BiblioShort;
 use crate::models::item::ItemShort;
-use crate::models::specimen::SpecimenShort;
 
-/// Application error codes matching the original C implementation
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum ErrorCode {
-    Success = 0,
-    Failure = 1,
-    NotAuthorized = 2,
-    DbFailure = 3,
-    NoSuchUser = 4,
-    NoSuchItem = 5,
-    ServerMemoryFailure = 6,
-    ItemNotAvailable = 7,
-    Duplicate = 8,
-    Z3950Failure = 9,
-    Z3950Timeout = 10,
-    MaxBorrowsReached = 11,
-    NotBorrowable = 12,
-    SpecimenBorrowed = 13,
-    ItemIdentificationMissing = 14,
-    SpecimenIdentificationMissing = 15,
-    ItemAlreadyExists = 16,
-    SpecimenAlreadyExists = 17,
-    BadValue = 18,
-    UserIdentificationAlreadyExists = 19,
-    NoSuchData = 20,
-    UserHasBorrowedSpecimens = 21,
+/// Machine-readable string error codes used in API responses.
+///
+/// Using string codes instead of legacy integers makes the API self-documenting
+/// and avoids tight coupling with a specific numbering scheme.
+pub mod error_code {
+    pub const AUTHENTICATION: &str = "authentication_failed";
+    pub const AUTHORIZATION: &str = "authorization_failed";
+    pub const NOT_FOUND: &str = "not_found";
+    pub const VALIDATION: &str = "validation_error";
+    pub const DATABASE: &str = "database_error";
+    pub const CONFLICT: &str = "conflict";
+    pub const BAD_REQUEST: &str = "bad_request";
+    pub const INTERNAL: &str = "internal_error";
+    pub const Z3950: &str = "z3950_error";
+    pub const BUSINESS_RULE: &str = "business_rule_violation";
+    pub const DUPLICATE_ISBN: &str = "duplicate_isbn_needs_confirmation";
+    pub const DUPLICATE_BARCODE: &str = "duplicate_barcode_needs_confirmation";
 }
 
 /// Main application error type
@@ -75,91 +66,116 @@ pub enum AppError {
     #[error("Duplicate ISBN requires confirmation")]
     DuplicateNeedsConfirmation {
         existing_id: i64,
-        existing_item: ItemShort,
+        existing_item: BiblioShort,
         message: String,
     },
 
     #[error("Duplicate barcode requires confirmation")]
     DuplicateBarcodeNeedsConfirmation {
         existing_id: i64,
-        existing_specimen: SpecimenShort,
+        existing_item: ItemShort,
         message: String,
     },
 }
 
-/// Error response body
+/// Error response body returned for all API errors.
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct ErrorResponse {
-    pub code: u32,
+    /// Machine-readable error code (e.g. `"not_found"`, `"validation_error"`)
+    pub code: String,
+    /// Human-readable error category
     pub error: String,
+    /// Detailed error message
     pub message: String,
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            AppError::Authentication(msg) => {
-                (StatusCode::UNAUTHORIZED, ErrorCode::NotAuthorized, msg.clone())
-            }
-            AppError::Authorization(msg) => {
-                (StatusCode::FORBIDDEN, ErrorCode::NotAuthorized, msg.clone())
-            }
+        use error_code as ec;
+
+        let (status, code, error_label, message) = match &self {
+            AppError::Authentication(msg) => (
+                StatusCode::UNAUTHORIZED,
+                ec::AUTHENTICATION,
+                "Unauthorized",
+                msg.clone(),
+            ),
+            AppError::Authorization(msg) => (
+                StatusCode::FORBIDDEN,
+                ec::AUTHORIZATION,
+                "Forbidden",
+                msg.clone(),
+            ),
             AppError::NotFound(msg) => {
-                (StatusCode::NOT_FOUND, ErrorCode::NoSuchItem, msg.clone())
+                (StatusCode::NOT_FOUND, ec::NOT_FOUND, "Not Found", msg.clone())
             }
-            AppError::Validation(msg) => {
-                (StatusCode::BAD_REQUEST, ErrorCode::BadValue, msg.clone())
-            }
+            AppError::Validation(msg) => (
+                StatusCode::BAD_REQUEST,
+                ec::VALIDATION,
+                "Validation Error",
+                msg.clone(),
+            ),
             AppError::Database(e) => {
                 tracing::error!("Database error: {:?}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    ErrorCode::DbFailure,
-                    "Database error".to_string(),
+                    ec::DATABASE,
+                    "Internal Server Error",
+                    "A database error occurred".to_string(),
                 )
             }
             AppError::Conflict(msg) => {
-                (StatusCode::CONFLICT, ErrorCode::Duplicate, msg.clone())
+                (StatusCode::CONFLICT, ec::CONFLICT, "Conflict", msg.clone())
             }
-            AppError::BadRequest(msg) => {
-                (StatusCode::BAD_REQUEST, ErrorCode::BadValue, msg.clone())
-            }
+            AppError::BadRequest(msg) => (
+                StatusCode::BAD_REQUEST,
+                ec::BAD_REQUEST,
+                "Bad Request",
+                msg.clone(),
+            ),
             AppError::Internal(msg) => {
                 tracing::error!("Internal error: {}", msg);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    ErrorCode::Failure,
-                    "Internal server error".to_string(),
+                    ec::INTERNAL,
+                    "Internal Server Error",
+                    "An unexpected error occurred".to_string(),
                 )
             }
-            AppError::Z3950(msg) => {
-                (StatusCode::BAD_GATEWAY, ErrorCode::Z3950Failure, msg.clone())
-            }
-            AppError::BusinessRule(msg) => {
-                (StatusCode::UNPROCESSABLE_ENTITY, ErrorCode::Failure, msg.clone())
-            }
+            AppError::Z3950(msg) => (
+                StatusCode::BAD_GATEWAY,
+                ec::Z3950,
+                "Z39.50 Error",
+                msg.clone(),
+            ),
+            AppError::BusinessRule(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                ec::BUSINESS_RULE,
+                "Business Rule Violation",
+                msg.clone(),
+            ),
             AppError::DuplicateNeedsConfirmation {
                 existing_id,
                 existing_item,
                 ref message,
             } => {
                 let body = Json(crate::models::import_report::DuplicateConfirmationRequired {
-                    code: "duplicate_isbn_needs_confirmation".to_string(),
+                    code: ec::DUPLICATE_ISBN.to_string(),
                     existing_id: *existing_id,
-                    existing_item: existing_item.clone(),
+                    existing_biblio: existing_item.clone(),
                     message: message.clone(),
                 });
                 return (StatusCode::CONFLICT, body).into_response();
             }
             AppError::DuplicateBarcodeNeedsConfirmation {
                 existing_id,
-                existing_specimen,
+                existing_item,
                 ref message,
             } => {
-                let body = Json(crate::models::import_report::DuplicateSpecimenBarcodeRequired {
-                    code: "duplicate_barcode_needs_confirmation".to_string(),
+                let body = Json(crate::models::import_report::DuplicateItemBarcodeRequired {
+                    code: ec::DUPLICATE_BARCODE.to_string(),
                     existing_id: *existing_id,
-                    existing_specimen: existing_specimen.clone(),
+                    existing_item: existing_item.clone(),
                     message: message.clone(),
                 });
                 return (StatusCode::CONFLICT, body).into_response();
@@ -167,8 +183,8 @@ impl IntoResponse for AppError {
         };
 
         let body = Json(ErrorResponse {
-            code: code as u32,
-            error: format!("{:?}", code),
+            code: code.to_string(),
+            error: error_label.to_string(),
             message,
         });
 

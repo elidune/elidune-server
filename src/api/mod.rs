@@ -3,17 +3,25 @@
 pub mod admin_config;
 pub mod audit;
 pub mod auth;
+pub mod batch;
+pub mod biblios;
+pub mod covers;
 pub mod equipment;
 pub mod events;
-pub mod library_info;
-pub mod public_types;
+pub mod fines;
 pub mod health;
-pub mod items;
+pub mod history;
+pub mod inventory;
+pub mod library_info;
 pub mod loans;
 pub mod openapi;
+pub mod opac;
+pub mod public_types;
+pub mod reservations;
 pub mod schedules;
 pub mod settings;
 pub mod sources;
+pub mod sse;
 pub mod stats;
 pub mod users;
 pub mod visitor_counts;
@@ -23,9 +31,12 @@ use std::net::SocketAddr;
 
 use axum::{
     async_trait,
-    extract::{ConnectInfo, FromRequestParts},
+    extract::{ConnectInfo, FromRequest, FromRequestParts, Request},
     http::{header::AUTHORIZATION, request::Parts},
 };
+use serde::de::DeserializeOwned;
+use validator::Validate;
+
 use crate::{error::AppError, models::user::UserClaims, AppState};
 
 /// Resolved client IP for audit: proxy headers first, then `ConnectInfo` peer address.
@@ -49,6 +60,80 @@ where
         )))
     }
 }
+
+// ============================================================================
+// ValidatedJson extractor
+// ============================================================================
+
+/// Axum extractor that parses a JSON body **and** runs `validator::Validate`
+/// on the resulting value, returning `400 Validation` on failure.
+pub struct ValidatedJson<T>(pub T);
+
+#[async_trait]
+impl<T, S> FromRequest<S> for ValidatedJson<T>
+where
+    T: DeserializeOwned + Validate,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = axum::body::Bytes::from_request(req, state)
+            .await
+            .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+        let value: T = serde_json::from_slice(&bytes)
+            .map_err(|e| AppError::Validation(format!("Invalid JSON body: {e}")))?;
+
+        value
+            .validate()
+            .map_err(|e| AppError::Validation(e.to_string()))?;
+
+        Ok(Self(value))
+    }
+}
+
+// ============================================================================
+// RBAC typed extractors
+// ============================================================================
+
+/// Extractor that succeeds only for admin users (account_type = "admin").
+/// Returns 403 otherwise.
+pub struct AdminUser(pub UserClaims);
+
+#[async_trait]
+impl FromRequestParts<AppState> for AdminUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let AuthenticatedUser(claims) = AuthenticatedUser::from_request_parts(parts, state).await?;
+        if !claims.is_admin() {
+            return Err(AppError::Authorization("Admin access required".to_string()));
+        }
+        Ok(Self(claims))
+    }
+}
+
+/// Extractor that succeeds for librarian or admin users.
+/// Returns 403 for guests / plain readers.
+pub struct StaffUser(pub UserClaims);
+
+#[async_trait]
+impl FromRequestParts<AppState> for StaffUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let AuthenticatedUser(claims) = AuthenticatedUser::from_request_parts(parts, state).await?;
+        if !claims.is_admin() && !claims.is_librarian() {
+            return Err(AppError::Authorization("Staff access required".to_string()));
+        }
+        Ok(Self(claims))
+    }
+}
+
+// ============================================================================
+// AuthenticatedUser extractor
+// ============================================================================
 
 /// Extractor for authenticated user from JWT token
 pub struct AuthenticatedUser(pub UserClaims);

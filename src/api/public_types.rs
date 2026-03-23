@@ -32,7 +32,11 @@ pub struct UpsertLoanSettingRequest {
     tag = "public_types",
     security(("bearer_auth" = [])),
     responses(
-        (status = 200, description = "List of public types", body = Vec<PublicType>)
+        (status = 200, description = "List of public types", body = Vec<PublicType>),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn list_public_types(
@@ -201,4 +205,14 @@ pub async fn delete_loan_setting(
         .await?;
     state.services.audit.log(audit::event::PUBLIC_TYPE_LOAN_SETTING_DELETED, Some(claims.user_id), Some("public_type"), Some(id), ip, Some(serde_json::json!({ "id": id, "media_type": media_type })));
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Build the public-types routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, post, put};
+    axum::Router::new()
+        .route("/public-types", get(list_public_types).post(create_public_type))
+        .route("/public-types/{id}", get(get_public_type).put(update_public_type).delete(delete_public_type))
+        .route("/public-types/{id}/loan-settings", put(upsert_loan_setting))
+        .route("/public-types/{id}/loan-settings/{media_type}", delete(delete_loan_setting))
 }

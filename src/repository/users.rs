@@ -1,5 +1,6 @@
 //! Users domain methods on Repository
 
+use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::Row;
 
@@ -9,8 +10,142 @@ use crate::{
     models::user::{AccountTypeSlug, Rights, UpdateProfile, User, UserPayload, UserQuery, UserRights, UserShort, UserStatus},
 };
 
+
+/// Minimal user info used for bulk email targeting
+#[derive(Debug, sqlx::FromRow)]
+pub struct UserEmailTarget {
+    pub id: i64,
+    pub email: Option<String>,
+    pub firstname: Option<String>,
+    pub lastname: Option<String>,
+    pub language: Option<String>,
+}
+
+// Note: not `mockall::automock` — several methods use `Option<&str>` which mockall cannot derive for.
+#[async_trait]
+pub trait UsersRepository: Send + Sync {
+    async fn users_get_by_id(&self, id: i64) -> AppResult<User>;
+    async fn users_get_by_login(&self, login: &str) -> AppResult<Option<User>>;
+    async fn users_get_by_email(&self, email: &str) -> AppResult<Option<User>>;
+    async fn users_update_password(&self, id: i64, password_hash: &str) -> AppResult<()>;
+    async fn users_email_exists(&self, email: &str, exclude_id: Option<i64>) -> AppResult<bool>;
+    async fn users_login_exists(&self, login: &str, exclude_id: Option<i64>) -> AppResult<bool>;
+    async fn users_get_rights(&self, account_type: &AccountTypeSlug) -> AppResult<UserRights>;
+    async fn users_search(&self, query: &UserQuery) -> AppResult<(Vec<UserShort>, i64)>;
+    async fn users_create(
+        &self,
+        user: &UserPayload,
+        password: Option<String>,
+    ) -> AppResult<User>;
+    async fn users_update(
+        &self,
+        id: i64,
+        user: &UserPayload,
+        password: Option<String>,
+    ) -> AppResult<User>;
+    async fn users_delete(&self, id: i64, force: bool) -> AppResult<()>;
+    async fn users_block(&self, id: i64) -> AppResult<User>;
+    async fn users_unblock(&self, id: i64) -> AppResult<User>;
+    async fn users_update_profile(
+        &self,
+        id: i64,
+        profile: &UpdateProfile,
+        password: Option<String>,
+    ) -> AppResult<User>;
+    async fn users_update_account_type(
+        &self,
+        id: i64,
+        account_type: &AccountTypeSlug,
+    ) -> AppResult<User>;
+    async fn users_update_2fa_settings(
+        &self,
+        id: i64,
+        enabled: bool,
+        method: Option<&str>,
+        totp_secret: Option<&str>,
+        recovery_codes: Option<&str>,
+    ) -> AppResult<()>;
+    async fn users_mark_recovery_code_used(&self, id: i64, used_codes: &str) -> AppResult<()>;
+    async fn users_get_emails_by_public_type(
+        &self,
+        public_type: Option<i64>,
+    ) -> AppResult<Vec<UserEmailTarget>>;
+}
+
+// ---------------------------------------------------------------------------
+// Trait implementation — forwards to inherent methods above.
+// ---------------------------------------------------------------------------
+
+#[async_trait::async_trait]
+impl UsersRepository for Repository {
+    async fn users_get_by_id(&self, id: i64) -> crate::error::AppResult<User> {
+        Repository::users_get_by_id(self, id).await
+    }
+    async fn users_get_by_login(&self, login: &str) -> crate::error::AppResult<Option<User>> {
+        Repository::users_get_by_login(self, login).await
+    }
+    async fn users_get_by_email(&self, email: &str) -> crate::error::AppResult<Option<User>> {
+        Repository::users_get_by_email(self, email).await
+    }
+    async fn users_update_password(&self, id: i64, password_hash: &str) -> crate::error::AppResult<()> {
+        Repository::users_update_password(self, id, password_hash).await
+    }
+    async fn users_email_exists(&self, email: &str, exclude_id: Option<i64>) -> crate::error::AppResult<bool> {
+        Repository::users_email_exists(self, email, exclude_id).await
+    }
+    async fn users_login_exists(&self, login: &str, exclude_id: Option<i64>) -> crate::error::AppResult<bool> {
+        Repository::users_login_exists(self, login, exclude_id).await
+    }
+    async fn users_get_rights(&self, account_type: &crate::models::user::AccountTypeSlug) -> crate::error::AppResult<crate::models::user::UserRights> {
+        Repository::users_get_rights(self, account_type).await
+    }
+    async fn users_search(&self, query: &crate::models::user::UserQuery) -> crate::error::AppResult<(Vec<crate::models::user::UserShort>, i64)> {
+        Repository::users_search(self, query).await
+    }
+    async fn users_create(&self, user: &crate::models::user::UserPayload, password: Option<String>) -> crate::error::AppResult<User> {
+        Repository::users_create(self, user, password).await
+    }
+    async fn users_update(&self, id: i64, user: &crate::models::user::UserPayload, password: Option<String>) -> crate::error::AppResult<User> {
+        Repository::users_update(self, id, user, password).await
+    }
+    async fn users_delete(&self, id: i64, force: bool) -> crate::error::AppResult<()> {
+        Repository::users_delete(self, id, force).await
+    }
+    async fn users_block(&self, id: i64) -> crate::error::AppResult<User> {
+        Repository::users_block(self, id).await
+    }
+    async fn users_unblock(&self, id: i64) -> crate::error::AppResult<User> {
+        Repository::users_unblock(self, id).await
+    }
+    async fn users_update_profile(&self, id: i64, profile: &crate::models::user::UpdateProfile, password: Option<String>) -> crate::error::AppResult<User> {
+        Repository::users_update_profile(self, id, profile, password).await
+    }
+    async fn users_update_account_type(&self, id: i64, account_type: &crate::models::user::AccountTypeSlug) -> crate::error::AppResult<User> {
+        Repository::users_update_account_type(self, id, account_type).await
+    }
+    async fn users_update_2fa_settings(
+        &self,
+        id: i64,
+        enabled: bool,
+        method: Option<&str>,
+        totp_secret: Option<&str>,
+        recovery_codes: Option<&str>,
+    ) -> crate::error::AppResult<()> {
+        Repository::users_update_2fa_settings(self, id, enabled, method, totp_secret, recovery_codes).await
+    }
+    async fn users_mark_recovery_code_used(&self, id: i64, used_codes: &str) -> crate::error::AppResult<()> {
+        Repository::users_mark_recovery_code_used(self, id, used_codes).await
+    }
+    async fn users_get_emails_by_public_type(&self, public_type: Option<i64>) -> crate::error::AppResult<Vec<UserEmailTarget>> {
+        Repository::users_get_emails_by_public_type(self, public_type).await
+    }
+}
+
+
+
 impl Repository {
     /// Get user by ID
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_get_by_id(&self, id: i64) -> AppResult<User> {
         use crate::models::user::UserRow;
         let user_row = sqlx::query_as::<_, UserRow>(
@@ -27,6 +162,7 @@ impl Repository {
     }
 
     /// Get user by login (primary authentication method)
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_get_by_login(&self, login: &str) -> AppResult<Option<User>> {
         use crate::models::user::UserRow;
         let user_row = sqlx::query_as::<_, UserRow>(
@@ -42,6 +178,7 @@ impl Repository {
     }
 
     /// Get user by email (primary authentication method)
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_get_by_email(&self, email: &str) -> AppResult<Option<User>> {
         use crate::models::user::UserRow;
         let user_row = sqlx::query_as::<_, UserRow>(
@@ -57,6 +194,7 @@ impl Repository {
     }
 
     /// Update user password directly (used for password reset flow)
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_update_password(&self, id: i64, password_hash: &str) -> AppResult<()> {
         let result = sqlx::query(
             "UPDATE users SET password = $1, update_at = NOW() WHERE id = $2"
@@ -74,6 +212,7 @@ impl Repository {
     }
 
     /// Check if email already exists
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_email_exists(&self, email: &str, exclude_id: Option<i64>) -> AppResult<bool> {
         let exists: bool = if let Some(id) = exclude_id {
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) AND id != $2)")
@@ -91,6 +230,7 @@ impl Repository {
     }
 
     /// Check if login already exists
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_login_exists(&self, login: &str, exclude_id: Option<i64>) -> AppResult<bool> {
         let exists: bool = if let Some(id) = exclude_id {
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(login) = LOWER($1) AND id != $2)")
@@ -108,6 +248,7 @@ impl Repository {
     }
 
     /// Get user rights from account type
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_get_rights(&self, account_type: &AccountTypeSlug) -> AppResult<UserRights> {
         let row = sqlx::query(
             r#"
@@ -133,6 +274,7 @@ impl Repository {
     }
 
     /// Search users with pagination
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_search(&self, query: &UserQuery) -> AppResult<(Vec<UserShort>, i64)> {
         let page = query.page.unwrap_or(1);
         let per_page = query.per_page.unwrap_or(20);
@@ -207,6 +349,7 @@ impl Repository {
     }
 
     /// Create a new user
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_create(&self, user: &UserPayload, password: Option<String>) -> AppResult<User> {
         let now = Utc::now();
 
@@ -270,6 +413,7 @@ impl Repository {
     }
 
     /// Update an existing user
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_update(&self, id: i64, user: &UserPayload, password: Option<String>) -> AppResult<User> {
         let now = Utc::now();
 
@@ -390,6 +534,7 @@ impl Repository {
     }
 
     /// Delete a user (soft delete: anonymize data and set status to deleted)
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_delete(&self, id: i64, force: bool) -> AppResult<()> {
         let active_loans = self.loans_count_active_for_user(id).await?;
 
@@ -426,6 +571,7 @@ impl Repository {
     }
     
     /// Block a user
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_block(&self, id: i64) -> AppResult<User> {
         let now = Utc::now();
 
@@ -440,6 +586,7 @@ impl Repository {
     }
     
     /// Unblock a user
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_unblock(&self, id: i64) -> AppResult<User> {
         let now = Utc::now();
 
@@ -454,6 +601,7 @@ impl Repository {
     }
 
     /// Update user's own profile (firstname, lastname, password)
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_update_profile(&self, id: i64, profile: &UpdateProfile, password: Option<String>) -> AppResult<User> {
         let now = Utc::now();
 
@@ -525,6 +673,7 @@ impl Repository {
     }
 
     /// Update user's account type (admin only)
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_update_account_type(&self, id: i64, account_type: &AccountTypeSlug) -> AppResult<User> {
         let now = Utc::now();
 
@@ -539,6 +688,7 @@ impl Repository {
     }
     
     /// Update 2FA settings for a user
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_update_2fa_settings(
         &self,
         id: i64,
@@ -570,6 +720,7 @@ impl Repository {
     }
 
     /// Mark a recovery code as used
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_mark_recovery_code_used(&self, id: i64, used_codes: &str) -> AppResult<()> {
         sqlx::query(
             "UPDATE users SET recovery_codes_used = $1, update_at = NOW() WHERE id = $2",
@@ -584,6 +735,7 @@ impl Repository {
 
     /// Fetch all active users with a non-empty email, optionally filtered by public_type.
     /// If `public_type` is None, all users with an email are returned (no filter).
+    #[tracing::instrument(skip(self), err)]
     pub async fn users_get_emails_by_public_type(
         &self,
         public_type: Option<i64>,
@@ -616,14 +768,3 @@ impl Repository {
         Ok(rows)
     }
 }
-
-/// Minimal user info used for bulk email targeting
-#[derive(Debug, sqlx::FromRow)]
-pub struct UserEmailTarget {
-    pub id: i64,
-    pub email: Option<String>,
-    pub firstname: Option<String>,
-    pub lastname: Option<String>,
-    pub language: Option<String>,
-}
-

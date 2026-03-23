@@ -13,7 +13,10 @@ use z3950_rs::marc_rs::{Encoding, MarcFormat, parse_records};
 use crate::{
     error::{AppError, AppResult},
     marc::MarcRecord,
-    models::item::{Item, ItemShort},
+    models::{
+        biblio::{Biblio, BiblioShort},
+        item::Item,
+    },
 };
 
 use super::{catalog::CatalogService, redis::RedisService};
@@ -63,7 +66,7 @@ pub struct EnqueueResult {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub batch_id: i64,
-    pub items: Vec<ItemShort>,
+    pub biblios: Vec<BiblioShort>,
 }
 
 impl MarcService {
@@ -82,6 +85,7 @@ impl MarcService {
     /// - `source_id`: identifier of the logical source to attach to this batch.
     ///
     /// Returns the generated `batch_id` and the list of preview items.
+    #[tracing::instrument(skip(self), err)]
     pub async fn enqueue_unimarc_batch(
         &self,
         data: &[u8],
@@ -95,13 +99,11 @@ impl MarcService {
 
         let mut conn = self.redis.get_connection().await?;
 
-        let mut items_short = Vec::with_capacity(records.len());
-
+        let mut biblios_short = Vec::with_capacity(records.len());
 
         for (idx, record) in records.into_iter().enumerate() {
             let key = Self::redis_key(batch_id, idx);
 
-         
             let json_str: String = serde_json::to_string(&record)
                 .map_err(|e| AppError::Internal(format!("Failed to serialize MARC record: {}", e)))?;
 
@@ -113,17 +115,16 @@ impl MarcService {
             .query_async::<_, ()>(&mut conn)
             .await
             .map_err(|e| AppError::Internal(format!("Failed to store MARC record in Redis: {}", e)))?;
-        
-          
-            // Build preview item from MARC record.
-            let mut item: Item = record.into();
-            item.id.replace(idx as i64);
 
-            let short = ItemShort::from(item);
-            items_short.push(short);
+            // Build preview biblio from MARC record.
+            let mut biblio: Biblio = record.into();
+            biblio.id.replace(idx as i64);
+
+            let short = BiblioShort::from(biblio);
+            biblios_short.push(short);
         }
 
-        Ok(EnqueueResult { batch_id, items: items_short })
+        Ok(EnqueueResult { batch_id, biblios: biblios_short })
     }
 
     /// Import MARC records from a cached batch into the catalog.
@@ -133,6 +134,7 @@ impl MarcService {
     ///
     /// On error for a given record, the error is captured in the report and
     /// processing continues with the next record.
+    #[tracing::instrument(skip(self), err)]
     pub async fn import_from_batch(
         &self,
         batch_id: i64,
@@ -184,15 +186,14 @@ impl MarcService {
                 }
             };
 
-            let mut item: Item = record.into();
-            for specimen in &mut item.specimens {
-                specimen.source_id = Some(source_id);
+            let mut biblio: Biblio = record.into();
+            for item in &mut biblio.items {
+                item.source_id = Some(source_id);
             }
 
-            match self.catalog.create_item(item, false, None).await {
-                Ok((item, report)) => {
+            match self.catalog.create_biblio(biblio, false, None).await {
+                Ok((_biblio, _report)) => {
                     imported += 1;
-                   
                 }
                 Err(e) => {
                     failed.push(MarcBatchImportError {

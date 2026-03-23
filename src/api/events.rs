@@ -34,7 +34,11 @@ pub struct EventsListResponse {
     security(("bearer_auth" = [])),
     params(EventQuery),
     responses(
-        (status = 200, description = "Events list", body = EventsListResponse)
+        (status = 200, description = "Events list", body = EventsListResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn list_events(
@@ -55,7 +59,11 @@ pub async fn list_events(
     security(("bearer_auth" = [])),
     params(("id" = i32, Path, description = "Event ID")),
     responses(
-        (status = 200, description = "Event details", body = Event)
+        (status = 200, description = "Event details", body = Event),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn get_event(
@@ -76,7 +84,11 @@ pub async fn get_event(
     security(("bearer_auth" = [])),
     request_body = CreateEvent,
     responses(
-        (status = 201, description = "Event created", body = Event)
+        (status = 201, description = "Event created", body = Event),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn create_event(
@@ -100,7 +112,11 @@ pub async fn create_event(
     params(("id" = i32, Path, description = "Event ID")),
     request_body = UpdateEvent,
     responses(
-        (status = 200, description = "Event updated", body = Event)
+        (status = 200, description = "Event updated", body = Event),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn update_event(
@@ -124,7 +140,11 @@ pub async fn update_event(
     security(("bearer_auth" = [])),
     params(("id" = i32, Path, description = "Event ID")),
     responses(
-        (status = 204, description = "Event deleted")
+        (status = 204, description = "Event deleted"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn delete_event(
@@ -153,7 +173,11 @@ pub async fn delete_event(
     params(("id" = i64, Path, description = "Event ID")),
     request_body = SendAnnouncementRequest,
     responses(
-        (status = 200, description = "Announcement report", body = AnnouncementReport)
+        (status = 200, description = "Announcement report", body = AnnouncementReport),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn send_event_announcement(
@@ -170,4 +194,13 @@ pub async fn send_event_announcement(
         .send_announcement(id, &payload, Some(claims.user_id), ip)
         .await?;
     Ok(Json(report))
+}
+
+/// Build the events routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, post, put};
+    axum::Router::new()
+        .route("/events", get(list_events).post(create_event))
+        .route("/events/{id}", get(get_event).put(update_event).delete(delete_event))
+        .route("/events/{id}/send-announcement", post(send_event_announcement))
 }

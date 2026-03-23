@@ -30,16 +30,16 @@ pub struct CreateLoanRequest {
     pub user_id: i64,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
-    pub specimen_id: Option<i64>,
-    pub specimen_identification: Option<String>,
+    pub item_id: Option<i64>,
+    pub item_identification: Option<String>,
     pub force: Option<bool>,
 }
 
 #[derive(Serialize)]
 struct LoanCreatedAudit {
     user_id: i64,
-    specimen_id: Option<i64>,
-    specimen_identification: Option<String>,
+    item_id: Option<i64>,
+    item_identification: Option<String>,
     force: bool,
     issue_at: DateTime<Utc>,
 }
@@ -51,8 +51,8 @@ struct RenewLoanAudit {
 }
 
 #[derive(Serialize)]
-struct RenewLoanBySpecimenAudit {
-    specimen_identification: String,
+struct RenewLoanByItemAudit {
+    item_identification: String,
     new_issue_at: DateTime<Utc>,
     renew_count: i16,
 }
@@ -156,8 +156,8 @@ pub async fn create_loan(
     claims.require_write_borrows()?;
     let loan = CreateLoan {
         user_id: request.user_id,
-        specimen_id: request.specimen_id,
-        specimen_identification: request.specimen_identification.clone(),
+        item_id: request.item_id,
+        item_identification: request.item_identification.clone(),
         force: request.force.unwrap_or(false),
     };
 
@@ -171,8 +171,8 @@ pub async fn create_loan(
         ip,
         Some(LoanCreatedAudit {
             user_id: request.user_id,
-            specimen_id: request.specimen_id,
-            specimen_identification: request.specimen_identification.clone(),
+            item_id: request.item_id,
+            item_identification: request.item_identification.clone(),
             force: request.force.unwrap_or(false),
             issue_at,
         }),
@@ -263,27 +263,27 @@ pub async fn renew_loan(
     }))
 }
 
-/// Return a borrowed item by specimen ID
+/// Return a borrowed item by item identification (barcode or call number)
 #[utoipa::path(
     post,
-    path = "/loans/specimens/{specimen_id}/return",
+    path = "/loans/items/{item_id}/return",
     tag = "loans",
     security(("bearer_auth" = [])),
-    params(("specimen_id" = String, Path, description = "Specimen barcode")),
+    params(("item_id" = String, Path, description = "Item barcode or call number")),
     responses(
         (status = 200, description = "Item returned", body = ReturnResponse),
-        (status = 404, description = "Specimen or active loan not found"),
+        (status = 404, description = "Item or active loan not found"),
         (status = 409, description = "Already returned")
     )
 )]
-pub async fn return_loan_by_specimen(
+pub async fn return_loan_by_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
-    Path(specimen_id): Path<String>,
+    Path(item_id): Path<String>,
 ) -> AppResult<Json<ReturnResponse>> {
     claims.require_write_borrows()?;
-    let loan = state.services.loans.return_loan_by_specimen(&specimen_id).await?;
+    let loan = state.services.loans.return_loan_by_item(&item_id).await?;
     let loan_id = loan.id;
 
     state.services.audit.log(
@@ -292,36 +292,36 @@ pub async fn return_loan_by_specimen(
         Some("loan"),
         Some(loan_id),
         ip,
-        Some((specimen_id.as_str(), &loan)),
+        Some((item_id.as_str(), &loan)),
     );
 
     Ok(Json(ReturnResponse { status: "returned".to_string(), loan }))
 }
 
-/// Renew a loan by specimen ID
+/// Renew a loan by item identification (barcode or call number)
 #[utoipa::path(
     post,
-    path = "/loans/specimens/{specimen_id}/renew",
+    path = "/loans/items/{item_id}/renew",
     tag = "loans",
     security(("bearer_auth" = [])),
-    params(("specimen_id" = String, Path, description = "Specimen barcode")),
+    params(("item_id" = String, Path, description = "Item barcode or call number")),
     responses(
         (status = 200, description = "Loan renewed", body = LoanResponse),
-        (status = 404, description = "Specimen or active loan not found"),
+        (status = 404, description = "Item or active loan not found"),
         (status = 409, description = "Max renewals reached or already returned")
     )
 )]
-pub async fn renew_loan_by_specimen(
+pub async fn renew_loan_by_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
-    Path(specimen_id): Path<String>,
+    Path(item_id): Path<String>,
 ) -> AppResult<Json<LoanResponse>> {
     claims.require_write_borrows()?;
     let (loan_id, new_issue_date, renew_count) = state
         .services
         .loans
-        .renew_loan_by_specimen(&specimen_id)
+        .renew_loan_by_item(&item_id)
         .await?;
 
     state.services.audit.log(
@@ -330,8 +330,8 @@ pub async fn renew_loan_by_specimen(
         Some("loan"),
         Some(loan_id),
         ip,
-        Some(RenewLoanBySpecimenAudit {
-            specimen_identification: specimen_id,
+        Some(RenewLoanByItemAudit {
+            item_identification: item_id,
             new_issue_at: new_issue_date,
             renew_count,
         }),
@@ -420,4 +420,17 @@ pub async fn send_overdue_reminders(
     }
 
     Ok(Json(report))
+}
+
+/// Build the loans routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route("/loans", post(create_loan))
+        .route("/loans/overdue", get(get_overdue_loans))
+        .route("/loans/send-overdue-reminders", post(send_overdue_reminders))
+        .route("/loans/{id}/return", post(return_loan))
+        .route("/loans/{id}/renew", post(renew_loan))
+        .route("/loans/items/{item_id}/return", post(return_loan_by_item))
+        .route("/loans/items/{item_id}/renew", post(renew_loan_by_item))
 }

@@ -1,710 +1,87 @@
-//! Item (catalog entry) model and related types.
+//! Item (physical copy) model and related types.
 //!
-//! All structures are aligned with [marc-rs](https://docs.rs/marc-rs) data models.
-//! Persistence (DB) uses the associated char/int/string representations; conversions
-//! from marc-rs types are provided where applicable.
+//! An Item is one borrowable physical copy of a bibliographic record (Biblio).
+//! Soft delete is tracked solely via `archived_at` (NULL = active, set = archived).
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use sqlx::FromRow;
-use utoipa::{IntoParams, ToSchema};
-use crate::models::{Author, Language};
-use crate::models::specimen::SpecimenShort;
+use utoipa::ToSchema;
+use validator::Validate;
 
-use super::specimen::Specimen;
-
-// Re-exports: canonical MARC data types from marc-rs (via z3950-rs).
-pub use crate::marc::{MarcFormat, MarcRecord};
-
-/// Normalized ISBN/identifier stored without any special characters.
-///
-/// Construction from a string strips all non-ASCII alphanumeric characters
-/// and uppercases ASCII letters (so `x` becomes `X`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, ToSchema)]
-#[schema(value_type = String)]
-pub struct Isbn(String);
-
-#[derive(Debug, Clone, Copy)]
-pub struct IsbnParseError;
-
-impl std::fmt::Display for IsbnParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "invalid isbn")
-    }
+fn default_borrowable() -> bool {
+    true
 }
 
-impl std::error::Error for IsbnParseError {}
-
-impl Isbn {
-    pub fn new(raw: impl AsRef<str>) -> Self {
-        let s = raw
-            .as_ref()
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric())
-            .map(|c| c.to_ascii_uppercase())
-            .collect::<String>();
-        Self(s)
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl std::fmt::Display for Isbn {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl std::str::FromStr for Isbn {
-    type Err = IsbnParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::new(s))
-    }
-}
-
-impl From<String> for Isbn {
-    fn from(s: String) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<&str> for Isbn {
-    fn from(s: &str) -> Self {
-        Self::new(s)
-    }
-}
-
-impl AsRef<str> for Isbn {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl Serialize for Isbn {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for Isbn {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        Ok(Isbn::new(s))
-    }
-}
-
-impl sqlx::Type<sqlx::Postgres> for Isbn {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <String as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
-        <String as sqlx::Type<sqlx::Postgres>>::compatible(ty)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for Isbn {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + 'static + Send + Sync>> {
-        let s: String = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(Isbn::new(s))
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for Isbn {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> sqlx::encode::IsNull {
-        <String as sqlx::Encode<sqlx::Postgres>>::encode(self.0.clone(), buf)
-    }
-}
-
-/// Item operational status (independent of archival)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[repr(i16)]
-pub enum ItemStatus {
-    Active = 0,
-    Unavailable = 1,
-}
-
-impl From<i16> for ItemStatus {
-    fn from(v: i16) -> Self {
-        match v {
-            1 => ItemStatus::Unavailable,
-            _ => ItemStatus::Active,
-        }
-    }
-}
-
-impl Default for ItemStatus {
-    fn default() -> Self {
-        ItemStatus::Active
-    }
-}
-
-/// Audience type codes for catalog items, mirroring `marc_rs::record::TargetAudience`.
-///
-/// DB encoding: camelCase strings (e.g. `"juvenile"`, `"general"`, `"unknown"`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum AudienceType {
-    Juvenile,
-    Preschool,
-    Primary,
-    Children,
-    YoungAdult,
-    AdultSerious,
-    Adult,
-    General,
-    Specialized,
-    Unknown,
-    Other(String),
-}
-
-impl AudienceType {
-    /// Canonical camelCase string stored in the DB column.
-    pub fn as_db_str(&self) -> &str {
-        match self {
-            AudienceType::Juvenile => "juvenile",
-            AudienceType::Preschool => "preschool",
-            AudienceType::Primary => "primary",
-            AudienceType::Children => "children",
-            AudienceType::YoungAdult => "youngAdult",
-            AudienceType::AdultSerious => "adultSerious",
-            AudienceType::Adult => "adult",
-            AudienceType::General => "general",
-            AudienceType::Specialized => "specialized",
-            AudienceType::Unknown => "unknown",
-            AudienceType::Other(s) => s.as_str(),
-        }
-    }
-
-    /// Parse from the DB string, returning `None` for unrecognised values.
-    pub fn from_db_str(s: &str) -> Option<Self> {
-        match s {
-            "juvenile" => Some(AudienceType::Juvenile),
-            "preschool" => Some(AudienceType::Preschool),
-            "primary" => Some(AudienceType::Primary),
-            "children" => Some(AudienceType::Children),
-            "youngAdult" => Some(AudienceType::YoungAdult),
-            "adultSerious" => Some(AudienceType::AdultSerious),
-            "adult" => Some(AudienceType::Adult),
-            "general" => Some(AudienceType::General),
-            "specialized" => Some(AudienceType::Specialized),
-            "unknown" => Some(AudienceType::Unknown),
-            other => Some(AudienceType::Other(other.to_string())),
-        }
-    }
-}
-
-impl sqlx::Type<sqlx::Postgres> for AudienceType {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <String as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
-        <String as sqlx::Type<sqlx::Postgres>>::compatible(ty)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for AudienceType {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + 'static + Send + Sync>> {
-        let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(AudienceType::from_db_str(&s).unwrap_or(AudienceType::Unknown))
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for AudienceType {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> sqlx::encode::IsNull {
-        <String as sqlx::Encode<sqlx::Postgres>>::encode(self.as_db_str().to_string(), buf)
-    }
-}
-
-/// Media type codes for catalog items.
-/// Maps from MARC Leader position 6 (record type) via `record_type_to_media_type_db` (see repository).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum MediaType {
-    All,
-    Unknown,
-    PrintedText,
-    Multimedia,
-    Comics,
-    Periodic,
-    Video,
-    VideoTape,
-    VideoDvd,
-    Audio,
-    AudioMusic,
-    AudioMusicTape,
-    AudioMusicCd,
-    AudioNonMusic,
-    AudioNonMusicTape,
-    AudioNonMusicCd,
-    CdRom,
-    Images,
-}
-
-impl MediaType {
-    /// Return the legacy string code for this media type
-    pub fn as_code(&self) -> &'static str {
-        match self {
-            MediaType::All => "",
-            MediaType::Unknown => "u",
-            MediaType::PrintedText => "b",
-            MediaType::Multimedia => "m",
-            MediaType::Comics => "bc",
-            MediaType::Periodic => "p",
-            MediaType::Video => "v",
-            MediaType::VideoTape => "vt",
-            MediaType::VideoDvd => "vd",
-            MediaType::Audio => "a",
-            MediaType::AudioMusic => "am",
-            MediaType::AudioMusicTape => "amt",
-            MediaType::AudioMusicCd => "amc",
-            MediaType::AudioNonMusic => "an",
-            MediaType::AudioNonMusicTape => "ant",
-            MediaType::AudioNonMusicCd => "anc",
-            MediaType::CdRom => "c",
-            MediaType::Images => "i",
-        }
-    }
-
-    /// Canonical DB/API string representation (camelCase).
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            MediaType::All => "all",
-            MediaType::Unknown => "unknown",
-            MediaType::PrintedText => "printedText",
-            MediaType::Multimedia => "multimedia",
-            MediaType::Comics => "comics",
-            MediaType::Periodic => "periodic",
-            MediaType::Video => "video",
-            MediaType::VideoTape => "videoTape",
-            MediaType::VideoDvd => "videoDvd",
-            MediaType::Audio => "audio",
-            MediaType::AudioMusic => "audioMusic",
-            MediaType::AudioMusicTape => "audioMusicTape",
-            MediaType::AudioMusicCd => "audioMusicCd",
-            MediaType::AudioNonMusic => "audioNonMusic",
-            MediaType::AudioNonMusicTape => "audioNonMusicTape",
-            MediaType::AudioNonMusicCd => "audioNonMusicCd",
-            MediaType::CdRom => "cdRom",
-            MediaType::Images => "images",
-        }
-    }
-}
-
-impl From<&str> for MediaType {
-    fn from(s: &str) -> Self {
-        match s {
-            // Legacy codes
-            "" => MediaType::All,
-            "u" => MediaType::Unknown,
-            "b" => MediaType::PrintedText,
-            "m" => MediaType::Multimedia,
-            "bc" => MediaType::Comics,
-            "p" => MediaType::Periodic,
-            "v" => MediaType::Video,
-            "vt" => MediaType::VideoTape,
-            "vd" => MediaType::VideoDvd,
-            "a" => MediaType::Audio,
-            "am" => MediaType::AudioMusic,
-            "amt" => MediaType::AudioMusicTape,
-            "amc" => MediaType::AudioMusicCd,
-            "an" => MediaType::AudioNonMusic,
-            "ant" => MediaType::AudioNonMusicTape,
-            "anc" => MediaType::AudioNonMusicCd,
-            "c" => MediaType::CdRom,
-            "i" => MediaType::Images,
-            // New camelCase strings
-            "all" => MediaType::All,
-            "unknown" => MediaType::Unknown,
-            "printedText" => MediaType::PrintedText,
-            "multimedia" => MediaType::Multimedia,
-            "comics" => MediaType::Comics,
-            "periodic" => MediaType::Periodic,
-            "video" => MediaType::Video,
-            "videoTape" => MediaType::VideoTape,
-            "videoDvd" => MediaType::VideoDvd,
-            "audio" => MediaType::Audio,
-            "audioMusic" => MediaType::AudioMusic,
-            "audioMusicTape" => MediaType::AudioMusicTape,
-            "audioMusicCd" => MediaType::AudioMusicCd,
-            "audioNonMusic" => MediaType::AudioNonMusic,
-            "audioNonMusicTape" => MediaType::AudioNonMusicTape,
-            "audioNonMusicCd" => MediaType::AudioNonMusicCd,
-            "cdRom" => MediaType::CdRom,
-            "images" => MediaType::Images,
-            _ => MediaType::Unknown,
-        }
-    }
-}
-
-
-
-
-
-
-impl std::fmt::Display for MediaType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_db_str())
-    }
-}
-
-impl std::str::FromStr for MediaType {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(MediaType::from(s))
-    }
-}
-
-impl sqlx::Type<sqlx::Postgres> for MediaType {
-    fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <String as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
-        <String as sqlx::Type<sqlx::Postgres>>::compatible(ty)
-    }
-}
-
-impl<'r> sqlx::Decode<'r, sqlx::Postgres> for MediaType {
-    fn decode(
-        value: sqlx::postgres::PgValueRef<'r>,
-    ) -> Result<Self, Box<dyn std::error::Error + 'static + Send + Sync>> {
-        let s: String = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Ok(MediaType::from(s.as_str()))
-    }
-}
-
-impl sqlx::Encode<'_, sqlx::Postgres> for MediaType {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> sqlx::encode::IsNull {
-        <String as sqlx::Encode<sqlx::Postgres>>::encode(self.to_string(), buf)
-    }
-}
-
-impl sqlx::postgres::PgHasArrayType for MediaType {
-    fn array_type_info() -> sqlx::postgres::PgTypeInfo {
-        <String as sqlx::postgres::PgHasArrayType>::array_type_info()
-    }
-}
-
-
-
-/// Full item model (DB + API). Data aligns with marc-rs `Record`: title, author, edition,
-/// ISBNs, classifications, language codes, specimens, etc. Built from MARC via the translator.
+/// Full item (physical copy) model from database.
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema, Validate)]
 pub struct Item {
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     #[serde(default)]
     pub id: Option<i64>,
-    pub media_type: MediaType,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
-    pub isbn: Option<Isbn>,
-    pub title: Option<String>,
-    pub subject: Option<String>,
-    pub audience_type: Option<AudienceType>,
-    pub lang: Option<Language>,
-    pub lang_orig: Option<Language>,
-    pub publication_date: Option<String>,
-    pub page_extent: Option<String>,
-    pub format: Option<String>,
-    pub table_of_contents: Option<String>,
-    pub accompanying_material: Option<String>,
-    pub abstract_: Option<String>,
+    pub biblio_id: Option<i64>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    pub source_id: Option<i64>,
+    #[validate(length(max = 100, message = "Barcode must be at most 100 characters"))]
+    pub barcode: Option<String>,
+    #[validate(length(max = 200, message = "Call number must be at most 200 characters"))]
+    pub call_number: Option<String>,
+    #[validate(length(max = 100, message = "Volume designation must be at most 100 characters"))]
+    pub volume_designation: Option<String>,
+    pub place: Option<i16>,
+    #[serde(default = "default_borrowable")]
+    pub borrowable: bool,
+    pub circulation_status: Option<i16>,
     pub notes: Option<String>,
-    pub keywords: Option<Vec<String>>,
-    pub is_valid: Option<i16>,
-    /// Resolved series IDs (same order as `series_volume_numbers` and `series`).
-    #[serde_as(as = "Vec<DisplayFromStr>")]
-    #[schema(value_type = Vec<String>)]
-    #[serde(default)]
-    pub series_ids: Vec<i64>,
-    /// Volume within each series for this item (parallel to `series_ids`).
-    #[serde(default)]
-    pub series_volume_numbers: Vec<Option<i16>>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub edition_id: Option<i64>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub collection_id: Option<i64>,
-    #[serde(default)]
-    pub collection_sequence_number: Option<i16>,
-    #[serde(default)]
-    pub collection_volume_number: Option<i16>,
+    pub price: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub archived_at: Option<DateTime<Utc>>,
-    // Relations (loaded separately)
-    #[sqlx(skip)]
     #[serde(default)]
-    pub authors: Vec<Author>,
-    #[sqlx(skip)]
+    pub source_name: Option<String>,
     #[serde(default)]
-    pub series: Vec<Serie>,
-    #[sqlx(skip)]
-    #[serde(default)]
-    pub collection: Option<Collection>,
-    #[sqlx(skip)]
-    #[serde(default)]
-    pub edition: Option<Edition>,
-    #[sqlx(skip)]
-    #[serde(default)]
-    pub specimens: Vec<Specimen>,
-    #[sqlx(skip)]
-    #[serde(default, skip)]
-    pub marc_record: Option<MarcRecord>,
+    pub availability: Option<i64>,
 }
 
+impl Item {
+    pub fn is_available(&self) -> bool {
+        self.archived_at.is_none() && self.availability.unwrap_or(0) > 0
+    }
 
-/// Short item representation for lists
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
+    }
+}
+
+/// Short item (physical copy) representation for lists
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct ItemShort {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub id: i64,
-    pub media_type: MediaType,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub isbn: Option<Isbn>,
-    pub title: Option<String>,
-    pub date: Option<String>,
-    pub status: i16,
-    pub is_valid: Option<i16>,
-    pub archived_at: Option<DateTime<Utc>>,
-    pub author: Option<Author>,
-    pub specimens: Vec<SpecimenShort>,
-   
+    pub barcode: Option<String>,
+    pub call_number: Option<String>,
+    pub borrowable: bool,
+    pub source_name: Option<String>,
+    pub availability: Option<i64>,
 }
-
-
-
 
 impl From<Item> for ItemShort {
     fn from(item: Item) -> Self {
         Self {
             id: item.id.unwrap_or(0),
-            media_type: item.media_type,
-            isbn: item.isbn,
-            title: item.title,
-            date: item.publication_date,
-            status: 0,
-            is_valid: item.is_valid,
-            archived_at: item.archived_at,
-            author: item.authors.first().cloned(),
-            specimens: item.specimens.into_iter().map(SpecimenShort::from).collect(),
+            barcode: item.barcode,
+            call_number: item.call_number,
+            borrowable: item.borrowable,
+            source_name: item.source_name,
+            availability: item.availability,
         }
-    }
-}
-/// Serie model. Persistence shape for MARC series (440/490/225); source: marc-rs `SeriesStatementData` (statement → name, issn).
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
-pub struct Serie {
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    #[serde(default)]
-    pub id: Option<i64>,
-    pub key: Option<String>,
-    pub name: Option<String>,
-    pub issn: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<DateTime<Utc>>,
-    /// Volume of this item in the series (only meaningful in item context; not stored on `series` rows).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[sqlx(skip)]
-    pub volume_number: Option<i16>,
-}
-
-
-
-/// Collection model. Persistence shape for MARC linking (e.g. 410); source: marc-rs `LinkingData` (title → primary_title, issn).
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
-pub struct Collection {
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    #[serde(default)]
-    pub id: Option<i64>,
-    pub key: Option<String>,
-    pub primary_title: Option<String>,
-    pub secondary_title: Option<String>,
-    pub tertiary_title: Option<String>,
-    pub issn: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<DateTime<Utc>>,
-}
-
-
-
-/// Edition (publisher) model. Persistence shape for MARC publication (260/264/210); source: marc-rs `EditionInfo` or `PublicationData`.
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
-pub struct Edition {
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    #[serde(default)]
-    pub id: Option<i64>,
-    pub publisher_name: Option<String>,
-    pub place_of_publication: Option<String>,
-    pub date: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub created_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub updated_at: Option<DateTime<Utc>>,
-}
-
-
-/// Flat document indexed in Meilisearch for catalog full-text search.
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct MeiliItemDocument {
-    pub id: i64,
-    pub media_type: String,
-    pub isbn: Option<String>,
-    pub title: Option<String>,
-    pub author_names: String,
-    pub subject: Option<String>,
-    pub keywords: Vec<String>,
-    pub publisher_name: Option<String>,
-    pub series_name: Option<String>,
-    pub collection_name: Option<String>,
-    pub barcodes: Vec<String>,
-    pub call_numbers: Vec<String>,
-    pub abstract_text: Option<String>,
-    pub notes: Option<String>,
-    pub table_of_contents: Option<String>,
-    pub lang: Option<String>,
-    pub audience_type: Option<String>,
-    pub is_archived: bool,
-}
-
-/// Item query parameters (API). Filter values are strings; use `MarcFormat` when filtering by MARC format where applicable.
-#[derive(Debug, Deserialize, IntoParams, ToSchema)]
-pub struct ItemQuery {
-    pub media_type: Option<String>,
-    pub isbn: Option<Isbn>,
-    pub barcode: Option<String>,
-    pub author: Option<String>,
-    pub title: Option<String>,
-    pub editor: Option<String>,
-    pub lang: Option<String>,
-    pub subject: Option<String>,
-    pub content: Option<String>,
-    pub keywords: Option<String>,
-    pub freesearch: Option<String>,
-    pub audience_type: Option<String>,
-    pub archive: Option<bool>,
-    pub page: Option<i64>,
-    pub per_page: Option<i64>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{AudienceType, Isbn, ItemShort, MediaType};
-    use serde_json;
-    use z3950_rs::marc_rs::record::TargetAudience;
-
-    #[test]
-    fn audience_type_from_marc_rs_round_trip() {
-        assert_eq!(AudienceType::from(TargetAudience::General), AudienceType::General);
-        assert_eq!(AudienceType::from(TargetAudience::Juvenile), AudienceType::Juvenile);
-        assert_eq!(AudienceType::from(TargetAudience::YoungAdult), AudienceType::YoungAdult);
-        assert_eq!(AudienceType::from(TargetAudience::Specialized), AudienceType::Specialized);
-        assert_eq!(AudienceType::from(TargetAudience::Unknown), AudienceType::Unknown);
-        assert_eq!(AudienceType::from(TargetAudience::Preschool), AudienceType::Preschool);
-        assert_eq!(AudienceType::from(TargetAudience::Children), AudienceType::Children);
-        assert_eq!(AudienceType::from(TargetAudience::Adult), AudienceType::Adult);
-        assert_eq!(
-            AudienceType::from(TargetAudience::Other("x".to_string())),
-            AudienceType::Other("x".to_string()),
-        );
-    }
-
-    #[test]
-    fn audience_type_db_encoding() {
-        assert_eq!(AudienceType::General.as_db_str(), "general");
-        assert_eq!(AudienceType::Adult.as_db_str(), "adult");
-        assert_eq!(AudienceType::AdultSerious.as_db_str(), "adultSerious");
-        assert_eq!(AudienceType::YoungAdult.as_db_str(), "youngAdult");
-        assert_eq!(AudienceType::Specialized.as_db_str(), "specialized");
-        assert_eq!(AudienceType::Juvenile.as_db_str(), "juvenile");
-        assert_eq!(AudienceType::Preschool.as_db_str(), "preschool");
-        assert_eq!(AudienceType::Primary.as_db_str(), "primary");
-        assert_eq!(AudienceType::Children.as_db_str(), "children");
-        assert_eq!(AudienceType::Unknown.as_db_str(), "unknown");
-        assert_eq!(AudienceType::Other("custom".to_string()).as_db_str(), "custom");
-    }
-
-    #[test]
-    fn audience_type_from_db_str() {
-        assert_eq!(AudienceType::from_db_str("general"), Some(AudienceType::General));
-        assert_eq!(AudienceType::from_db_str("juvenile"), Some(AudienceType::Juvenile));
-        assert_eq!(AudienceType::from_db_str("unknown"), Some(AudienceType::Unknown));
-        assert_eq!(
-            AudienceType::from_db_str("custom"),
-            Some(AudienceType::Other("custom".to_string())),
-        );
-    }
-
-    #[test]
-    fn item_short_id_serializes_as_string() {
-        let item = ItemShort {
-            id: 12345,
-            media_type: MediaType::Unknown,
-            isbn: None,
-            title: Some("Test".to_string()),
-            date: None,
-            status: 0,
-            is_valid: None,
-            archived_at: None,
-            author: None,
-            specimens: Vec::new(),
-        };
-        let json = serde_json::to_string(&item).unwrap();
-        assert!(json.contains("\"id\":\"12345\""), "id should be string in JSON, got: {}", json);
-    }
-
-    #[test]
-    fn item_short_id_deserializes_from_string() {
-        let json = r#"{"id":"12345","media_type":"unknown","isbn":null,"title":"Test","date":null,"status":0,"is_valid":null,"archived_at":null,"author":null,"specimens":[]}"#;
-        let item: ItemShort = serde_json::from_str(json).unwrap();
-        assert_eq!(item.id, 12345);
-    }
-
-    #[test]
-    fn isbn_strips_special_chars_and_uppercases() {
-        let isbn = Isbn::new("978-2-07-040850-4");
-        assert_eq!(isbn.as_str(), "9782070408504");
-
-        let isbn = Isbn::new(" 2 07 040850 x ");
-        assert_eq!(isbn.as_str(), "207040850X");
-
-        let isbn = Isbn::new("isbn: 978_2_07");
-        assert_eq!(isbn.as_str(), "ISBN978207");
     }
 }

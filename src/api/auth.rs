@@ -595,3 +595,18 @@ pub async fn disable_2fa(
 
     Ok(Json(serde_json::json!({"message": "2FA disabled successfully"})))
 }
+
+/// Build the auth routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{get, post, put};
+    axum::Router::new()
+        .route("/auth/login", post(login))
+        .route("/auth/me", get(me))
+        .route("/auth/profile", put(super::users::update_my_profile))
+        .route("/auth/verify-2fa", post(verify_2fa))
+        .route("/auth/verify-recovery", post(verify_recovery))
+        .route("/auth/request-password-reset", post(request_password_reset))
+        .route("/auth/reset-password", post(reset_password))
+        .route("/auth/setup-2fa", post(setup_2fa))
+        .route("/auth/disable-2fa", post(disable_2fa))
+}

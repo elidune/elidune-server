@@ -1,33 +1,36 @@
 //! Data models for Elidune
 
 pub mod author;
+pub mod biblio;
+pub mod biblio_author;
 pub mod enums;
 pub mod equipment;
 pub mod event;
+pub mod fine;
 pub mod import_report;
+pub mod inventory;
 pub mod item;
-pub mod item_author;
 pub mod loan;
 pub mod public_type;
+pub mod reservation;
 pub mod schedule;
 pub mod source;
-pub mod specimen;
 pub mod user;
 pub mod visitor_count;
 
 // Re-export commonly used types
 pub use author::Author;
+pub use biblio::{Biblio, BiblioShort, MediaType};
+pub use biblio_author::BiblioAuthor;
 pub use enums::{Genre, Lang, Occupation, Sex, StaffType, EquipmentType, EquipmentStatus, EventType};
-pub use import_report::{ImportReport, ImportAction, DuplicateCandidate, DuplicateConfirmationRequired, DuplicateSpecimenBarcodeRequired};
-pub use item_author::ItemAuthor;
+pub use import_report::{ImportReport, ImportAction, DuplicateCandidate, DuplicateConfirmationRequired, DuplicateItemBarcodeRequired};
 pub use equipment::Equipment;
 pub use event::Event;
-pub use item::{Item, ItemShort, MediaType};
+pub use item::{Item, ItemShort};
 pub use loan::{Loan, LoanDetails};
 pub use schedule::{SchedulePeriod, ScheduleSlot, ScheduleClosure};
 use serde::{Deserialize, Serialize};
 pub use source::Source;
-pub use specimen::Specimen;
 pub use user::{User, UserShort};
 use utoipa::ToSchema;
 pub use visitor_count::VisitorCount;
@@ -175,8 +178,6 @@ impl From<&str> for Language {
         }
     }
 }
-
-
 
 impl std::fmt::Display for Language {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

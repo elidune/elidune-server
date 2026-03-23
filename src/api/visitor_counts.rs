@@ -24,7 +24,11 @@ use super::{AuthenticatedUser, ClientIp};
     security(("bearer_auth" = [])),
     params(VisitorCountQuery),
     responses(
-        (status = 200, description = "Visitor counts list", body = Vec<VisitorCount>)
+        (status = 200, description = "Visitor counts list", body = Vec<VisitorCount>),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn list_visitor_counts(
@@ -51,7 +55,11 @@ pub async fn list_visitor_counts(
     security(("bearer_auth" = [])),
     request_body = CreateVisitorCount,
     responses(
-        (status = 201, description = "Visitor count created", body = VisitorCount)
+        (status = 201, description = "Visitor count created", body = VisitorCount),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn create_visitor_count(
@@ -74,7 +82,11 @@ pub async fn create_visitor_count(
     security(("bearer_auth" = [])),
     params(("id" = i32, Path, description = "Visitor count ID")),
     responses(
-        (status = 204, description = "Visitor count deleted")
+        (status = 204, description = "Visitor count deleted"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn delete_visitor_count(
@@ -87,4 +99,12 @@ pub async fn delete_visitor_count(
     state.services.visitor_counts.delete(id).await?;
     state.services.audit.log(audit::event::VISITOR_COUNT_DELETED, Some(claims.user_id), Some("visitor_count"), Some(id), ip, Some(json!({ "id": id })));
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Build the visitor-counts routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, post};
+    axum::Router::new()
+        .route("/visitor-counts", get(list_visitor_counts).post(create_visitor_count))
+        .route("/visitor-counts/{id}", delete(delete_visitor_count))
 }

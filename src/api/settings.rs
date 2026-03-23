@@ -6,13 +6,13 @@ use serde_with::{serde_as, DisplayFromStr};
 use utoipa::ToSchema;
 
 use crate::error::AppResult;
-use crate::models::item::MediaType;
+use crate::models::biblio::MediaType;
 use crate::services::audit;
 
 use super::{AuthenticatedUser, ClientIp};
 
 /// Loan settings by media type
-#[derive(Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct LoanSettings {
     /// Media type
     pub media_type: MediaType,
@@ -35,7 +35,7 @@ pub struct SettingsResponse {
 
 /// Z39.50 server configuration
 #[serde_as]
-#[derive(Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct Z3950ServerConfig {
     /// Server ID
     #[serde_as(as = "DisplayFromStr")]
@@ -67,7 +67,7 @@ fn default_z3950_encoding() -> String {
 }
 
 /// Update settings request
-#[derive(Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct UpdateSettingsRequest {
     /// Loan settings to update
     pub loan_settings: Option<Vec<LoanSettings>>,
@@ -126,4 +126,11 @@ pub async fn update_settings(
     );
 
     Ok(Json(settings))
+}
+
+/// Build the settings routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{get, put};
+    axum::Router::new()
+        .route("/settings", get(get_settings).put(update_settings))
 }

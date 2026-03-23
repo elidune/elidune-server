@@ -15,7 +15,7 @@ use crate::{
     dynamic_config::DynamicConfig,
     error::AppResult,
     models::Language,
-    repository::Repository,
+    repository::LoansRepository,
     services::{
         audit::{self, AuditService},
         email::EmailService,
@@ -62,10 +62,10 @@ pub struct OverdueLoanInfo {
     pub firstname: Option<String>,
     pub lastname: Option<String>,
     pub user_email: Option<String>,
-    pub item_id: i64,
+    pub biblio_id: i64,
     pub title: Option<String>,
     pub authors: Option<String>,
-    pub specimen_barcode: Option<String>,
+    pub item_barcode: Option<String>,
     pub loan_date: DateTime<Utc>,
     pub issue_at: Option<DateTime<Utc>>,
     pub last_reminder_sent_at: Option<DateTime<Utc>>,
@@ -82,7 +82,7 @@ pub struct OverdueLoansPage {
 
 #[derive(Clone)]
 pub struct RemindersService {
-    repository: Repository,
+    repository: Arc<dyn LoansRepository>,
     email: EmailService,
     audit: AuditService,
     dynamic_config: Arc<DynamicConfig>,
@@ -90,7 +90,7 @@ pub struct RemindersService {
 
 impl RemindersService {
     pub fn new(
-        repository: Repository,
+        repository: Arc<dyn LoansRepository>,
         email: EmailService,
         audit: AuditService,
         dynamic_config: Arc<DynamicConfig>,
@@ -99,6 +99,7 @@ impl RemindersService {
     }
 
     /// Get paginated overdue loans for the admin dashboard.
+    #[tracing::instrument(skip(self), err)]
     pub async fn get_overdue_loans(&self, page: i64, per_page: i64) -> AppResult<OverdueLoansPage> {
         let page = page.max(1);
         let per_page = per_page.clamp(1, 200);
@@ -112,10 +113,10 @@ impl RemindersService {
                 firstname: r.firstname,
                 lastname: r.lastname,
                 user_email: r.user_email,
-                item_id: r.item_id,
+                biblio_id: r.biblio_id,
                 title: r.title,
                 authors: r.authors,
-                specimen_barcode: r.specimen_barcode,
+                item_barcode: r.item_barcode,
                 loan_date: r.loan_date,
                 issue_at: r.issue_at,
                 last_reminder_sent_at: r.last_reminder_sent_at,
@@ -128,6 +129,7 @@ impl RemindersService {
 
     /// Send overdue reminder emails.
     /// If `dry_run` is true, builds the report but does NOT send emails or update the DB.
+    #[tracing::instrument(skip(self), err)]
     pub async fn send_overdue_reminders(
         &self,
         dry_run: bool,

@@ -10,13 +10,14 @@ use crate::{
         UserStatsSortBy,
     },
     error::AppResult,
-    models::item::MediaType,
+    models::biblio::MediaType,
     repository::Repository,
     services::Services,
 };
 
 /// Filter for GET /stats (optional year, time interval, public_type, media_type).
 /// When set, item stats are computed as of reference_date and filtered by public_type/media_type.
+#[derive(Debug)]
 pub struct StatsFilter {
     /// Holdings as of this date (e.g. 31/12 for a given year).
     pub reference_date: Option<NaiveDate>,
@@ -36,9 +37,9 @@ impl StatsService {
         Self { repository }
     }
 
-    /// Build WHERE clause for specimen-based queries.
-    /// Specimens are joined with items via `s` (specimens) and `i` (items) aliases.
-    fn specimen_where_clause(filter: &Option<StatsFilter>) -> (String, Vec<String>) {
+    /// Build WHERE clause for item-based queries.
+    /// Items (physical copies) are joined with biblios via `s` (items) and `i` (biblios) aliases.
+    fn item_where_clause(filter: &Option<StatsFilter>) -> (String, Vec<String>) {
         let f = match filter {
             None => {
                 return (
@@ -70,15 +71,16 @@ impl StatsService {
     }
 
     /// Get library statistics, optionally filtered by year, date range, public_type, media_type.
-    /// Counts are based on active specimens (joined with items for media_type/public_type).
+    /// Counts are based on active items/physical copies (joined with biblios for media_type/public_type).
+    #[tracing::instrument(skip(self), err)]
     pub async fn get_stats(&self, filter: Option<StatsFilter>) -> AppResult<StatsResponse> {
         let pool = &self.repository.pool;
-        let (spec_where, _param_order) = Self::specimen_where_clause(&filter);
+        let (spec_where, _param_order) = Self::item_where_clause(&filter);
 
         // Specimen stats (with optional filter)
         let total_items: i64 = {
             let q = format!(
-                "SELECT COUNT(*) FROM specimens s JOIN items i ON s.item_id = i.id WHERE {}",
+                "SELECT COUNT(*) FROM items s JOIN biblios i ON s.biblio_id = i.id WHERE {}",
                 spec_where
             );
             let mut query = sqlx::query_scalar::<_, i64>(&q);
@@ -99,7 +101,7 @@ impl StatsService {
         let items_by_media_type = {
             let q = format!(
                 r#"SELECT COALESCE(i.media_type, 'unknown') as label, COUNT(*) as value
-                   FROM specimens s JOIN items i ON s.item_id = i.id
+                   FROM items s JOIN biblios i ON s.biblio_id = i.id
                    WHERE {} GROUP BY i.media_type ORDER BY value DESC"#,
                 spec_where
             );
@@ -130,7 +132,7 @@ impl StatsService {
             let q = format!(
                 r#"SELECT COALESCE(i.audience_type, 'unknown') as label,
                           COUNT(*) as value
-                   FROM specimens s JOIN items i ON s.item_id = i.id
+                   FROM items s JOIN biblios i ON s.biblio_id = i.id
                    WHERE {} GROUP BY i.audience_type ORDER BY value DESC"#,
                 spec_where
             );
@@ -209,8 +211,8 @@ impl StatsService {
             r#"
             SELECT COALESCE(i.media_type, 'unknown') as label, COUNT(*) as value
             FROM loans l
-            JOIN specimens s ON l.specimen_id = s.id
-            JOIN items i ON s.item_id = i.id
+            JOIN items s ON l.item_id = s.id
+            JOIN biblios i ON s.biblio_id = i.id
             WHERE l.returned_at IS NULL
             GROUP BY i.media_type
             ORDER BY value DESC
@@ -226,7 +228,7 @@ impl StatsService {
         .collect();
 
         // Acquisitions and withdrawals (only when a reference date / year is set)
-        // Based on specimens table joined with items for media_type/public_type filters.
+        // Based on items table joined with biblios for media_type/public_type filters.
         let (acquisitions, acquisitions_by_media_type, withdrawals, withdrawals_by_media_type) = if let Some(ref f) = filter {
             if let Some(ref_date) = f.reference_date {
                 let year_start = chrono::NaiveDate::from_ymd_opt(ref_date.year(), 1, 1).unwrap();
@@ -247,7 +249,7 @@ impl StatsService {
 
                 // Acquisitions total
                 let acq_q = format!(
-                    "SELECT COUNT(*) FROM specimens s JOIN items i ON s.item_id = i.id WHERE s.created_at >= $1 AND s.created_at <= $2 AND s.archived_at IS NULL{}",
+                    "SELECT COUNT(*) FROM items s JOIN biblios i ON s.biblio_id = i.id WHERE s.created_at >= $1 AND s.created_at <= $2 AND s.archived_at IS NULL{}",
                     extra_cond
                 );
                 let mut acq_builder = sqlx::query_scalar::<_, i64>(&acq_q)
@@ -259,7 +261,7 @@ impl StatsService {
 
                 // Acquisitions by media type
                 let acq_mt_q = format!(
-                    "SELECT COALESCE(i.media_type, 'unknown') as label, COUNT(*) as value FROM specimens s JOIN items i ON s.item_id = i.id WHERE s.created_at >= $1 AND s.created_at <= $2 AND s.archived_at IS NULL{} GROUP BY i.media_type ORDER BY value DESC",
+                    "SELECT COALESCE(i.media_type, 'unknown') as label, COUNT(*) as value FROM items s JOIN biblios i ON s.biblio_id = i.id WHERE s.created_at >= $1 AND s.created_at <= $2 AND s.archived_at IS NULL{} GROUP BY i.media_type ORDER BY value DESC",
                     extra_cond
                 );
                 let mut acq_mt_builder = sqlx::query(&acq_mt_q)
@@ -272,7 +274,7 @@ impl StatsService {
 
                 // Withdrawals total
                 let wd_q = format!(
-                    "SELECT COUNT(*) FROM specimens s JOIN items i ON s.item_id = i.id WHERE s.archived_at >= $1 AND s.archived_at <= $2{}",
+                    "SELECT COUNT(*) FROM items s JOIN biblios i ON s.biblio_id = i.id WHERE s.archived_at >= $1 AND s.archived_at <= $2{}",
                     extra_cond
                 );
                 let mut wd_builder = sqlx::query_scalar::<_, i64>(&wd_q)
@@ -284,7 +286,7 @@ impl StatsService {
 
                 // Withdrawals by media type
                 let wd_mt_q = format!(
-                    "SELECT COALESCE(i.media_type, 'unknown') as label, COUNT(*) as value FROM specimens s JOIN items i ON s.item_id = i.id WHERE s.archived_at >= $1 AND s.archived_at <= $2{} GROUP BY i.media_type ORDER BY value DESC",
+                    "SELECT COALESCE(i.media_type, 'unknown') as label, COUNT(*) as value FROM items s JOIN biblios i ON s.biblio_id = i.id WHERE s.archived_at >= $1 AND s.archived_at <= $2{} GROUP BY i.media_type ORDER BY value DESC",
                     extra_cond
                 );
                 let mut wd_mt_builder = sqlx::query(&wd_mt_q)
@@ -328,6 +330,7 @@ impl StatsService {
     }
 
     /// Get per-user loan statistics (total, active, overdue)
+    #[tracing::instrument(skip(self), err)]
     pub async fn get_user_stats(
         &self,
         sort_by: UserStatsSortBy,
@@ -396,6 +399,7 @@ impl StatsService {
     }
 
     /// Get advanced loan statistics with time series
+    #[tracing::instrument(skip(self), err)]
     pub async fn get_loan_stats(
         &self,
         start_date: Option<DateTime<Utc>>,
@@ -453,8 +457,8 @@ impl StatsService {
                 TO_CHAR({}, '{}') as period,
                 COUNT(*) as count
             FROM loans l
-            JOIN specimens s ON l.specimen_id = s.id
-            JOIN items i ON s.item_id = i.id
+            JOIN items s ON l.item_id = s.id
+            JOIN biblios i ON s.biblio_id = i.id
             WHERE {}
             GROUP BY {}
             ORDER BY period
@@ -500,8 +504,8 @@ impl StatsService {
                 TO_CHAR({}, '{}') as period,
                 COUNT(*) as count
             FROM loans_archives la
-            JOIN specimens s ON la.specimen_id = s.id
-            JOIN items i ON s.item_id = i.id
+            JOIN items s ON la.item_id = s.id
+            JOIN biblios i ON s.biblio_id = i.id
             WHERE {}
             GROUP BY {}
             ORDER BY period
@@ -548,8 +552,8 @@ impl StatsService {
                 TO_CHAR({}, '{}') as period,
                 COUNT(*) as count
             FROM loans_archives la
-            JOIN specimens s ON la.specimen_id = s.id
-            JOIN items i ON s.item_id = i.id
+            JOIN items s ON la.item_id = s.id
+            JOIN biblios i ON s.biblio_id = i.id
             WHERE {}
             GROUP BY {}
             ORDER BY period
@@ -606,8 +610,8 @@ impl StatsService {
                 COALESCE(i.media_type, 'unknown') as label,
                 COUNT(*) as value
             FROM loans l
-            JOIN specimens s ON l.specimen_id = s.id
-            JOIN items i ON s.item_id = i.id
+            JOIN items s ON l.item_id = s.id
+            JOIN biblios i ON s.biblio_id = i.id
             WHERE {}
             GROUP BY i.media_type
             ORDER BY value DESC
@@ -634,6 +638,7 @@ impl StatsService {
     }
 
     /// Get aggregated user statistics for a period (new users, active borrowers)
+    #[tracing::instrument(skip(self), err)]
     pub async fn get_user_aggregates(
         &self,
         start_date: Option<DateTime<Utc>>,
@@ -825,8 +830,9 @@ impl StatsService {
         })
     }
 
-    /// Get catalog statistics: active specimens, entered specimens, archived specimens
+    /// Get catalog statistics: active items, entered items, archived items
     /// with optional breakdowns by source, media_type, public_type.
+    #[tracing::instrument(skip(self), err)]
     pub async fn get_catalog_stats(
         &self,
         start_date: Option<DateTime<Utc>>,
@@ -842,8 +848,8 @@ impl StatsService {
 
         // --- Totals ---
         
-        let active_specimens: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM specimens WHERE created_at < $1 AND (archived_at IS NULL OR archived_at > $2) "
+        let active_items: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM items WHERE created_at < $1 AND (archived_at IS NULL OR archived_at > $2) "
         )
         .bind(end)
         .bind(end_date.unwrap_or(start))
@@ -851,9 +857,9 @@ impl StatsService {
         .await?;
 
         // Entered specimens in period
-        let entered_specimens: i64 = 
+        let entered_items: i64 = 
             sqlx::query_scalar(
-                "SELECT COUNT(*) FROM specimens WHERE created_at >= $1 AND created_at <= $2"
+                "SELECT COUNT(*) FROM items WHERE created_at >= $1 AND created_at <= $2"
             )
             .bind(start)
             .bind(end)
@@ -861,9 +867,9 @@ impl StatsService {
             .await?;
 
         // Archived specimens in period
-        let archived_specimens: i64 = 
+        let archived_items: i64 = 
             sqlx::query_scalar(
-                "SELECT COUNT(*) FROM specimens WHERE archived_at >= $1 AND archived_at <= $2"
+                "SELECT COUNT(*) FROM items WHERE archived_at >= $1 AND archived_at <= $2"
             )
             .bind(start)
             .bind(end)
@@ -885,9 +891,9 @@ impl StatsService {
             .await?;
 
         let totals = crate::api::stats::CatalogStatsTotals {
-            active_specimens,
-            entered_specimens,
-            archived_specimens,
+            active_items,
+            entered_items,
+            archived_items,
             loans: total_loans,
         };
 
@@ -906,10 +912,10 @@ impl StatsService {
                             COALESCE(src.name, 'unknown') as source_name,
                             COALESCE(i.media_type, 'unknown') as media_type_label,
                             COALESCE(i.audience_type, 'unknown') as public_type_label,
-                            COUNT(*) FILTER (WHERE (sp.archived_at IS NULL OR sp.archived_at > $3)) as active_specimens,
-                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_specimens,
-                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_specimens
-                        FROM specimens sp
+                            COUNT(*) FILTER (WHERE (sp.archived_at IS NULL OR sp.archived_at > $3)) as active_items,
+                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_items,
+                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_items
+                        FROM items sp
                         LEFT JOIN sources src ON sp.source_id = src.id
                         JOIN items i ON sp.item_id = i.id
                         GROUP BY src.id, src.name, i.media_type, i.audience_type
@@ -928,9 +934,9 @@ impl StatsService {
                     let sname: String = row.get("source_name");
                     let mt: String = row.get("media_type_label");
                     let pt: String = row.get("public_type_label");
-                    let a: i64 = row.get("active_specimens");
-                    let e: i64 = row.get("entered_specimens");
-                    let ar: i64 = row.get("archived_specimens");
+                    let a: i64 = row.get("active_items");
+                    let e: i64 = row.get("entered_items");
+                    let ar: i64 = row.get("archived_items");
                     let source_entry = source_map.entry(sid).or_insert_with(|| (sname, HashMap::new()));
                     let mt_entry = source_entry.1.entry(mt).or_default();
                     let pt_entry = mt_entry.entry(pt).or_insert((0, 0, 0));
@@ -942,17 +948,17 @@ impl StatsService {
                 let mut result: Vec<crate::api::stats::CatalogSourceStats> = source_map.into_iter().map(|(source_id, (source_name, media_map))| {
                     let mut by_mt: Vec<crate::api::stats::CatalogBreakdownStats> = media_map.into_iter().map(|(label, pt_map)| {
                         let mut by_pt: Vec<crate::api::stats::CatalogBreakdownStats> = pt_map.into_iter().map(|(pt_label, (a, e, ar))| {
-                            crate::api::stats::CatalogBreakdownStats { label: pt_label, active_specimens: a, entered_specimens: e, archived_specimens: ar, loans: 0, by_public_type: None }
+                            crate::api::stats::CatalogBreakdownStats { label: pt_label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
                         }).collect();
-                        by_pt.sort_by(|a, b| b.active_specimens.cmp(&a.active_specimens));
-                        let (active, entered, archived) = by_pt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_specimens, acc.1 + x.entered_specimens, acc.2 + x.archived_specimens));
-                        crate::api::stats::CatalogBreakdownStats { label, active_specimens: active, entered_specimens: entered, archived_specimens: archived, loans: 0, by_public_type: Some(by_pt) }
+                        by_pt.sort_by(|a, b| b.active_items.cmp(&a.active_items));
+                        let (active, entered, archived) = by_pt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_items, acc.1 + x.entered_items, acc.2 + x.archived_items));
+                        crate::api::stats::CatalogBreakdownStats { label, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_public_type: Some(by_pt) }
                     }).collect();
-                    by_mt.sort_by(|a, b| b.active_specimens.cmp(&a.active_specimens));
-                    let (active, entered, archived) = by_mt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_specimens, acc.1 + x.entered_specimens, acc.2 + x.archived_specimens));
-                    crate::api::stats::CatalogSourceStats { source_id, source_name, active_specimens: active, entered_specimens: entered, archived_specimens: archived, loans: 0, by_media_type: Some(by_mt), by_public_type: None }
+                    by_mt.sort_by(|a, b| b.active_items.cmp(&a.active_items));
+                    let (active, entered, archived) = by_mt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_items, acc.1 + x.entered_items, acc.2 + x.archived_items));
+                    crate::api::stats::CatalogSourceStats { source_id, source_name, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_media_type: Some(by_mt), by_public_type: None }
                 }).collect();
-                result.sort_by(|a, b| b.active_specimens.cmp(&a.active_specimens));
+                result.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                 Some(result)
 
             } else if by_media_type {
@@ -964,10 +970,10 @@ impl StatsService {
                             COALESCE(src.id, 0) as source_id,
                             COALESCE(src.name, 'unknown') as source_name,
                             COALESCE(i.media_type, 'unknown') as media_type_label,
-                            COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_specimens,
-                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_specimens,
-                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_specimens
-                        FROM specimens sp
+                            COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_items,
+                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_items,
+                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_items
+                        FROM items sp
                         LEFT JOIN sources src ON sp.source_id = src.id
                         JOIN items i ON sp.item_id = i.id
                         GROUP BY src.id, src.name, i.media_type
@@ -983,9 +989,9 @@ impl StatsService {
                     let sid: i64 = row.get("source_id");
                     let sname: String = row.get("source_name");
                     let mt: String = row.get("media_type_label");
-                    let a: i64 = row.get("active_specimens");
-                    let e: i64 = row.get("entered_specimens");
-                    let ar: i64 = row.get("archived_specimens");
+                    let a: i64 = row.get("active_items");
+                    let e: i64 = row.get("entered_items");
+                    let ar: i64 = row.get("archived_items");
                     let source_entry = source_map.entry(sid).or_insert_with(|| (sname, HashMap::new()));
                     let mt_entry = source_entry.1.entry(mt).or_insert((0, 0, 0));
                     mt_entry.0 += a;
@@ -995,13 +1001,13 @@ impl StatsService {
 
                 let mut result: Vec<crate::api::stats::CatalogSourceStats> = source_map.into_iter().map(|(source_id, (source_name, media_map))| {
                     let mut by_mt: Vec<crate::api::stats::CatalogBreakdownStats> = media_map.into_iter().map(|(label, (a, e, ar))| {
-                        crate::api::stats::CatalogBreakdownStats { label, active_specimens: a, entered_specimens: e, archived_specimens: ar, loans: 0, by_public_type: None }
+                        crate::api::stats::CatalogBreakdownStats { label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
                     }).collect();
-                    by_mt.sort_by(|a, b| b.active_specimens.cmp(&a.active_specimens));
-                    let (active, entered, archived) = by_mt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_specimens, acc.1 + x.entered_specimens, acc.2 + x.archived_specimens));
-                    crate::api::stats::CatalogSourceStats { source_id, source_name, active_specimens: active, entered_specimens: entered, archived_specimens: archived, loans: 0, by_media_type: Some(by_mt), by_public_type: None }
+                    by_mt.sort_by(|a, b| b.active_items.cmp(&a.active_items));
+                    let (active, entered, archived) = by_mt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_items, acc.1 + x.entered_items, acc.2 + x.archived_items));
+                    crate::api::stats::CatalogSourceStats { source_id, source_name, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_media_type: Some(by_mt), by_public_type: None }
                 }).collect();
-                result.sort_by(|a, b| b.active_specimens.cmp(&a.active_specimens));
+                result.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                 Some(result)
 
             } else if by_public_type {
@@ -1013,10 +1019,10 @@ impl StatsService {
                             COALESCE(src.id, 0) as source_id,
                             COALESCE(src.name, 'unknown') as source_name,
                             COALESCE(i.audience_type, 'unknown') as public_type_label,
-                            COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_specimens,
-                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_specimens,
-                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_specimens
-                        FROM specimens sp
+                            COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_items,
+                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_items,
+                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_items
+                        FROM items sp
                         LEFT JOIN sources src ON sp.source_id = src.id
                         JOIN items i ON sp.item_id = i.id
                         GROUP BY src.id, src.name, i.audience_type
@@ -1033,9 +1039,9 @@ impl StatsService {
                     let sid: i64 = row.get("source_id");
                     let sname: String = row.get("source_name");
                     let pt: String = row.get("public_type_label");
-                    let a: i64 = row.get("active_specimens");
-                    let e: i64 = row.get("entered_specimens");
-                    let ar: i64 = row.get("archived_specimens");
+                    let a: i64 = row.get("active_items");
+                    let e: i64 = row.get("entered_items");
+                    let ar: i64 = row.get("archived_items");
                     let source_entry = source_map.entry(sid).or_insert_with(|| (sname, HashMap::new()));
                     let pt_entry = source_entry.1.entry(pt).or_insert((0, 0, 0));
                     pt_entry.0 += a;
@@ -1045,13 +1051,13 @@ impl StatsService {
 
                 let mut result: Vec<crate::api::stats::CatalogSourceStats> = source_map.into_iter().map(|(source_id, (source_name, pt_map))| {
                     let mut by_pt: Vec<crate::api::stats::CatalogBreakdownStats> = pt_map.into_iter().map(|(label, (a, e, ar))| {
-                        crate::api::stats::CatalogBreakdownStats { label, active_specimens: a, entered_specimens: e, archived_specimens: ar, loans: 0, by_public_type: None }
+                        crate::api::stats::CatalogBreakdownStats { label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
                     }).collect();
-                    by_pt.sort_by(|a, b| b.active_specimens.cmp(&a.active_specimens));
-                    let (active, entered, archived) = by_pt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_specimens, acc.1 + x.entered_specimens, acc.2 + x.archived_specimens));
-                    crate::api::stats::CatalogSourceStats { source_id, source_name, active_specimens: active, entered_specimens: entered, archived_specimens: archived, loans: 0, by_media_type: None, by_public_type: Some(by_pt) }
+                    by_pt.sort_by(|a, b| b.active_items.cmp(&a.active_items));
+                    let (active, entered, archived) = by_pt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_items, acc.1 + x.entered_items, acc.2 + x.archived_items));
+                    crate::api::stats::CatalogSourceStats { source_id, source_name, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_media_type: None, by_public_type: Some(by_pt) }
                 }).collect();
-                result.sort_by(|a, b| b.active_specimens.cmp(&a.active_specimens));
+                result.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                 Some(result)
 
             } else {
@@ -1062,13 +1068,13 @@ impl StatsService {
                         SELECT
                             COALESCE(src.id, 0) as source_id,
                             COALESCE(src.name, 'unknown') as source_name,
-                            COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_specimens,
-                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_specimens,
-                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_specimens
-                        FROM specimens sp
+                            COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_items,
+                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_items,
+                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_items
+                        FROM items sp
                         LEFT JOIN sources src ON sp.source_id = src.id
                         GROUP BY src.id, src.name
-                        ORDER BY active_specimens DESC
+                        ORDER BY active_items DESC
                         "#
                     )
                     .bind(start)
@@ -1079,9 +1085,9 @@ impl StatsService {
                 Some(rows.into_iter().map(|row| crate::api::stats::CatalogSourceStats {
                     source_id: row.get("source_id"),
                     source_name: row.get("source_name"),
-                    active_specimens: row.get("active_specimens"),
-                    entered_specimens: row.get("entered_specimens"),
-                    archived_specimens: row.get("archived_specimens"),
+                    active_items: row.get("active_items"),
+                    entered_items: row.get("entered_items"),
+                    archived_items: row.get("archived_items"),
                     loans: 0,
                     by_media_type: None,
                     by_public_type: None,
@@ -1102,10 +1108,10 @@ impl StatsService {
                         SELECT
                             COALESCE(i.media_type, 'unknown') as label,
                             COALESCE(i.audience_type, 'unknown') as public_type_label,
-                            COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_specimens,
-                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_specimens,
-                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_specimens
-                        FROM specimens sp
+                            COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_items,
+                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_items,
+                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_items
+                        FROM items sp
                         JOIN items i ON sp.item_id = i.id
                         GROUP BY i.media_type, i.audience_type
                         "#
@@ -1120,9 +1126,9 @@ impl StatsService {
                 for row in &rows {
                     let mt: String = row.get("label");
                     let pt: String = row.get("public_type_label");
-                    let a: i64 = row.get("active_specimens");
-                    let e: i64 = row.get("entered_specimens");
-                    let ar: i64 = row.get("archived_specimens");
+                    let a: i64 = row.get("active_items");
+                    let e: i64 = row.get("entered_items");
+                    let ar: i64 = row.get("archived_items");
                     let mt_entry = media_map.entry(mt).or_default();
                     let pt_entry = mt_entry.entry(pt).or_insert((0, 0, 0));
                     pt_entry.0 += a;
@@ -1132,13 +1138,13 @@ impl StatsService {
 
                 let mut result: Vec<crate::api::stats::CatalogBreakdownStats> = media_map.into_iter().map(|(label, pt_map)| {
                     let mut by_pt: Vec<crate::api::stats::CatalogBreakdownStats> = pt_map.into_iter().map(|(pt_label, (a, e, ar))| {
-                        crate::api::stats::CatalogBreakdownStats { label: pt_label, active_specimens: a, entered_specimens: e, archived_specimens: ar, loans: 0, by_public_type: None }
+                        crate::api::stats::CatalogBreakdownStats { label: pt_label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
                     }).collect();
-                    by_pt.sort_by(|a, b| b.active_specimens.cmp(&a.active_specimens));
-                    let (active, entered, archived) = by_pt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_specimens, acc.1 + x.entered_specimens, acc.2 + x.archived_specimens));
-                    crate::api::stats::CatalogBreakdownStats { label, active_specimens: active, entered_specimens: entered, archived_specimens: archived, loans: 0, by_public_type: Some(by_pt) }
+                    by_pt.sort_by(|a, b| b.active_items.cmp(&a.active_items));
+                    let (active, entered, archived) = by_pt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_items, acc.1 + x.entered_items, acc.2 + x.archived_items));
+                    crate::api::stats::CatalogBreakdownStats { label, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_public_type: Some(by_pt) }
                 }).collect();
-                result.sort_by(|a, b| b.active_specimens.cmp(&a.active_specimens));
+                result.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                 Some(result)
             } else {
                 // Flat media type breakdown
@@ -1147,13 +1153,13 @@ impl StatsService {
                         r#"
                         SELECT
                             COALESCE(i.media_type, 'unknown') as label,
-                            COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_specimens,
-                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_specimens,
-                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_specimens
-                        FROM specimens sp
+                            COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_items,
+                            COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_items,
+                            COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_items
+                        FROM items sp
                         JOIN items i ON sp.item_id = i.id
                         GROUP BY i.media_type
-                        ORDER BY active_specimens DESC
+                        ORDER BY active_items DESC
                         "#
                     )
                     .bind(start)
@@ -1163,9 +1169,9 @@ impl StatsService {
                
                 Some(rows.into_iter().map(|row| crate::api::stats::CatalogBreakdownStats {
                     label: row.get("label"),
-                    active_specimens: row.get("active_specimens"),
-                    entered_specimens: row.get("entered_specimens"),
-                    archived_specimens: row.get("archived_specimens"),
+                    active_items: row.get("active_items"),
+                    entered_items: row.get("entered_items"),
+                    archived_items: row.get("archived_items"),
                     loans: 0,
                     by_public_type: None,
                 }).collect())
@@ -1182,13 +1188,13 @@ impl StatsService {
                     r#"
                     SELECT
                         COALESCE(i.audience_type, 'unknown') as label,
-                        COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_specimens,
-                        COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_specimens,
-                        COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_specimens
-                    FROM specimens sp
+                        COUNT(*) FILTER (WHERE sp.archived_at IS NULL) as active_items,
+                        COUNT(*) FILTER (WHERE sp.created_at >= $1 AND sp.created_at <= $2) as entered_items,
+                        COUNT(*) FILTER (WHERE sp.archived_at >= $1 AND sp.archived_at <= $2) as archived_items
+                    FROM items sp
                     JOIN items i ON sp.item_id = i.id
                     GROUP BY i.audience_type
-                    ORDER BY active_specimens DESC
+                    ORDER BY active_items DESC
                     "#
                 )
                 .bind(start)
@@ -1198,9 +1204,9 @@ impl StatsService {
                
             Some(rows.into_iter().map(|row| crate::api::stats::CatalogBreakdownStats {
                 label: row.get("label"),
-                active_specimens: row.get("active_specimens"),
-                entered_specimens: row.get("entered_specimens"),
-                archived_specimens: row.get("archived_specimens"),
+                active_items: row.get("active_items"),
+                entered_items: row.get("entered_items"),
+                archived_items: row.get("archived_items"),
                 loans: 0,
                 by_public_type: None,
             }).collect::<Vec<_>>())

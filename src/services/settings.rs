@@ -5,7 +5,7 @@ use sqlx::Row;
 use crate::{
     api::settings::{LoanSettings, SettingsResponse, UpdateSettingsRequest, Z3950ServerConfig},
     error::AppResult,
-    models::item::MediaType,
+    models::biblio::MediaType,
     repository::Repository,
 };
 
@@ -20,6 +20,7 @@ impl SettingsService {
     }
 
     /// Get current settings
+    #[tracing::instrument(skip(self), err)]
     pub async fn get_settings(&self) -> AppResult<SettingsResponse> {
         let pool = &self.repository.pool;
 
@@ -72,6 +73,7 @@ impl SettingsService {
     }
 
     /// Update settings
+    #[tracing::instrument(skip(self), err)]
     pub async fn update_settings(&self, request: UpdateSettingsRequest) -> AppResult<SettingsResponse> {
         let pool = &self.repository.pool;
 

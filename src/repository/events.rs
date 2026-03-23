@@ -1,7 +1,7 @@
 //! Events domain methods on Repository
 
+use async_trait::async_trait;
 use chrono::{NaiveDate, NaiveTime, Utc};
-use sqlx::{Pool, Postgres};
 
 use super::Repository;
 use crate::{
@@ -9,8 +9,52 @@ use crate::{
     models::event::{CreateEvent, Event, EventQuery, UpdateEvent},
 };
 
+#[cfg_attr(test, mockall::automock)]
+#[async_trait]
+pub trait EventsRepository: Send + Sync {
+    async fn events_list(&self, query: &EventQuery) -> AppResult<(Vec<Event>, i64)>;
+    async fn events_get_by_id(&self, id: i64) -> AppResult<Event>;
+    async fn events_create(&self, data: &CreateEvent) -> AppResult<Event>;
+    async fn events_update(&self, id: i64, data: &UpdateEvent) -> AppResult<Event>;
+    async fn events_set_announcement_sent_at(&self, id: i64) -> AppResult<()>;
+    async fn events_delete(&self, id: i64) -> AppResult<()>;
+    async fn events_annual_stats(&self, year: i32) -> AppResult<EventAnnualStats>;
+}
+
+/// Combined repository trait used by [`crate::services::events::EventsService`].
+pub trait EventsServiceRepository: EventsRepository + crate::repository::UsersRepository + Send + Sync {}
+
+impl<T: EventsRepository + crate::repository::UsersRepository + Send + Sync> EventsServiceRepository for T {}
+
+#[async_trait::async_trait]
+impl EventsRepository for super::Repository {
+    async fn events_list(&self, query: &crate::models::event::EventQuery) -> crate::error::AppResult<(Vec<crate::models::event::Event>, i64)> {
+        super::Repository::events_list(self, query).await
+    }
+    async fn events_get_by_id(&self, id: i64) -> crate::error::AppResult<crate::models::event::Event> {
+        super::Repository::events_get_by_id(self, id).await
+    }
+    async fn events_create(&self, data: &crate::models::event::CreateEvent) -> crate::error::AppResult<crate::models::event::Event> {
+        super::Repository::events_create(self, data).await
+    }
+    async fn events_update(&self, id: i64, data: &crate::models::event::UpdateEvent) -> crate::error::AppResult<crate::models::event::Event> {
+        super::Repository::events_update(self, id, data).await
+    }
+    async fn events_set_announcement_sent_at(&self, id: i64) -> crate::error::AppResult<()> {
+        super::Repository::events_set_announcement_sent_at(self, id).await
+    }
+    async fn events_delete(&self, id: i64) -> crate::error::AppResult<()> {
+        super::Repository::events_delete(self, id).await
+    }
+    async fn events_annual_stats(&self, year: i32) -> crate::error::AppResult<EventAnnualStats> {
+        super::Repository::events_annual_stats(self, year).await
+    }
+}
+
+
 impl Repository {
     /// List events with optional filters and pagination
+    #[tracing::instrument(skip(self), err)]
     pub async fn events_list(&self, query: &EventQuery) -> AppResult<(Vec<Event>, i64)> {
         let page = query.page.unwrap_or(1);
         let per_page = query.per_page.unwrap_or(50);
@@ -66,6 +110,7 @@ impl Repository {
     }
 
     /// Get event by ID
+    #[tracing::instrument(skip(self), err)]
     pub async fn events_get_by_id(&self, id: i64) -> AppResult<Event> {
         sqlx::query_as::<_, Event>("SELECT * FROM events WHERE id = $1")
             .bind(id)
@@ -75,6 +120,7 @@ impl Repository {
     }
 
     /// Create an event
+    #[tracing::instrument(skip(self), err)]
     pub async fn events_create(&self, data: &CreateEvent) -> AppResult<Event> {
         let event_date = NaiveDate::parse_from_str(&data.event_date, "%Y-%m-%d")
             .map_err(|_| AppError::Validation("Invalid event_date".to_string()))?;
@@ -113,6 +159,7 @@ impl Repository {
     }
 
     /// Update an event
+    #[tracing::instrument(skip(self), err)]
     pub async fn events_update(&self, id: i64, data: &UpdateEvent) -> AppResult<Event> {
         let now = Utc::now();
         let mut sets = vec!["update_at = $1".to_string()];
@@ -177,6 +224,7 @@ impl Repository {
     }
 
     /// Set the announcement_sent_at timestamp on an event
+    #[tracing::instrument(skip(self), err)]
     pub async fn events_set_announcement_sent_at(&self, id: i64) -> AppResult<()> {
         sqlx::query("UPDATE events SET announcement_sent_at = NOW() WHERE id = $1")
             .bind(id)
@@ -186,6 +234,7 @@ impl Repository {
     }
 
     /// Delete an event
+    #[tracing::instrument(skip(self), err)]
     pub async fn events_delete(&self, id: i64) -> AppResult<()> {
         let result = sqlx::query("DELETE FROM events WHERE id = $1")
             .bind(id)
@@ -198,6 +247,7 @@ impl Repository {
     }
 
     /// Get event stats for a year (for annual report)
+    #[tracing::instrument(skip(self), err)]
     pub async fn events_annual_stats(&self, year: i32) -> AppResult<EventAnnualStats> {
         let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
         let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap();

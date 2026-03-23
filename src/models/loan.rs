@@ -6,7 +6,7 @@ use serde_with::{serde_as, DisplayFromStr};
 use sqlx::FromRow;
 use utoipa::ToSchema;
 
-use super::item::{ItemShort, MediaType};
+use super::biblio::{BiblioShort, MediaType};
 use super::user::UserShort;
 
 /// Loan model from database
@@ -18,7 +18,7 @@ pub struct Loan {
     #[serde_as(as = "DisplayFromStr")]
     pub user_id: i64,
     #[serde_as(as = "DisplayFromStr")]
-    pub specimen_id: i64,
+    pub item_id: i64,
     pub date: DateTime<Utc>,
     pub renew_at: Option<DateTime<Utc>>,
     pub nb_renews: Option<i16>,
@@ -41,9 +41,9 @@ pub struct LoanDetails {
     pub renewal_date: Option<DateTime<Utc>>,
     pub nb_renews: i16,
     pub returned_at: Option<DateTime<Utc>>,
-    pub item: ItemShort,
+    pub biblio: BiblioShort,
     pub user: Option<UserShort>,
-    pub specimen_identification: Option<String>,
+    pub item_identification: Option<String>,
     pub is_overdue: bool,
 }
 
@@ -54,8 +54,8 @@ pub struct CreateLoan {
     #[serde_as(as = "DisplayFromStr")]
     pub user_id: i64,
     #[serde_as(as = "Option<DisplayFromStr>")]
-    pub specimen_id: Option<i64>,
-    pub specimen_identification: Option<String>,
+    pub item_id: Option<i64>,
+    pub item_identification: Option<String>,
     pub force: bool,
 }
 
@@ -80,7 +80,7 @@ pub struct LoanArchive {
     #[serde_as(as = "DisplayFromStr")]
     pub id: i64,
     #[serde_as(as = "Option<DisplayFromStr>")]
-    pub specimen_id: Option<i64>,
+    pub item_id: Option<i64>,
     pub date: DateTime<Utc>,
     pub nb_renews: Option<i16>,
     pub issue_at: Option<DateTime<Utc>>,
@@ -90,4 +90,3 @@ pub struct LoanArchive {
     pub addr_city: Option<String>,
     pub account_type: Option<String>,
 }
-

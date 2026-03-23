@@ -8,6 +8,16 @@ use std::path::Path;
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// Allowed CORS origins in production (e.g. `["https://app.example.com"]`).
+    /// When absent or empty, all origins are allowed (development mode).
+    #[serde(default)]
+    pub cors_origins: Option<Vec<String>>,
+    /// Requests per second allowed per IP on auth endpoints (default: 4).
+    #[serde(default)]
+    pub auth_rate_per_second: Option<u64>,
+    /// Burst size for auth endpoint rate limiter (default: 2).
+    #[serde(default)]
+    pub auth_rate_burst: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -186,6 +196,9 @@ impl Default for ServerConfig {
         Self {
             host: "0.0.0.0".to_string(),
             port: 8080,
+            cors_origins: None,
+            auth_rate_per_second: None,
+            auth_rate_burst: None,
         }
     }
 }

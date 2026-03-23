@@ -2,19 +2,15 @@
 //!
 //! A modern Rust REST API server for library management.
 
-use axum::{
-    routing::{get, post, put, delete},
-    Router,
-};
+use axum::{routing::get, Router};
 use sqlx::postgres::PgPoolOptions;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_http::{
-    cors::{Any, CorsLayer},
-    trace::TraceLayer,
-};
+use std::time::Duration;
+use tower_http::trace::TraceLayer;
 use std::path::Path;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Layer, reload};
 
 use elidune_server::{
@@ -272,12 +268,16 @@ async fn main() -> anyhow::Result<()> {
         services.audit.clone(),
     );
 
+    // Broadcast channel for SSE real-time events (capacity = 256 messages)
+    let (event_bus, _) = tokio::sync::broadcast::channel(256);
+
     // Create application state
     let state = AppState {
         config: Arc::new(config),
         dynamic_config,
         services: services.clone(),
         scheduler_notify,
+        event_bus,
     };
 
     // Build router
@@ -296,126 +296,96 @@ async fn main() -> anyhow::Result<()> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
 
+    tracing::info!("Server has shut down cleanly");
     Ok(())
 }
 
-/// Create the application router with all routes
+/// Waits for SIGTERM or SIGINT (Ctrl-C) and returns so that Axum can drain
+/// in-flight requests before the process exits.
+async fn shutdown_signal() {
+    use tokio::signal;
+
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("Received Ctrl-C, initiating graceful shutdown"),
+        _ = terminate => tracing::info!("Received SIGTERM, initiating graceful shutdown"),
+    }
+}
+
+/// Create the application router with all routes.
+///
+/// Each domain's routes are registered in its own `api::<domain>::router()` function.
+/// `main.rs` only merges them under `/api/v1` and applies middleware.
 fn create_router(state: AppState) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = build_cors(&state.config);
+
+    // Rate-limit auth endpoints: burst of 2, replenish 1 per 4s by default (secure preset).
+    let per_second = state.config.server.auth_rate_per_second.unwrap_or(4);
+    let burst_size = state.config.server.auth_rate_burst.unwrap_or(2);
+    // Box::leak gives a `'static` reference; the config lives for the entire process lifetime.
+    let governor_conf: &'static _ = Box::leak(Box::new(
+        GovernorConfigBuilder::default()
+            .per_second(per_second)
+            .burst_size(burst_size)
+            .finish()
+            .expect("Failed to build auth rate-limit configuration"),
+    ));
+
+    // Periodically evict expired entries to bound memory usage.
+    let limiter = governor_conf.limiter().clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(60));
+        limiter.retain_recent();
+    });
+
+    let auth_router = api::auth::router()
+        .layer(GovernorLayer { config: governor_conf });
 
     let api_v1 = Router::new()
-        // Health check
-        .route("/health", get(api::health::health_check))
-        .route("/ready", get(api::health::readiness_check))
-        // Authentication
-        .route("/auth/login", post(api::auth::login))
-        .route("/auth/me", get(api::auth::me))
-        .route("/auth/profile", put(api::users::update_my_profile))
-        .route("/auth/verify-2fa", post(api::auth::verify_2fa))
-        .route("/auth/verify-recovery", post(api::auth::verify_recovery))
-        .route("/auth/request-password-reset", post(api::auth::request_password_reset))
-        .route("/auth/reset-password", post(api::auth::reset_password))
-        .route("/auth/setup-2fa", post(api::auth::setup_2fa))
-        .route("/auth/disable-2fa", post(api::auth::disable_2fa))
-        // Items (catalog)
-        .route("/items", get(api::items::list_items))
-        .route("/items", post(api::items::create_item))
-        .route("/items/load-marc", post(api::items::upload_unimarc))
-        .route("/items/import-marc", post(api::items::import_marc_batch))
-        .route("/items/:id", get(api::items::get_item))
-        .route("/items/:id", put(api::items::update_item))
-        .route("/items/:id", delete(api::items::delete_item))
-        // Specimens
-        .route("/items/:item_id/specimens", get(api::items::list_specimens))
-        .route("/items/:item_id/specimens", post(api::items::create_specimen))
-        .route("/items/:item_id/specimens", put(api::items::update_specimen))
-        .route("/items/:item_id/specimens/:specimen_id", delete(api::items::delete_specimen))
-        // Users
-        .route("/users", get(api::users::list_users))
-        .route("/users", post(api::users::create_user))
-        .route("/users/:id", get(api::users::get_user))
-        .route("/users/:id", put(api::users::update_user))
-        .route("/users/:id", delete(api::users::delete_user))
-        .route("/users/:id/account-type", put(api::users::update_account_type))
-        .route("/users/:id/loans", get(api::loans::get_user_loans))
-        // Loans
-        .route("/loans", post(api::loans::create_loan))
-        .route("/loans/overdue", get(api::loans::get_overdue_loans))
-        .route("/loans/send-overdue-reminders", post(api::loans::send_overdue_reminders))
-        .route("/loans/:id/return", post(api::loans::return_loan))
-        .route("/loans/:id/renew", post(api::loans::renew_loan))
-        .route("/loans/specimens/:specimen_id/return", post(api::loans::return_loan_by_specimen))
-        .route("/loans/specimens/:specimen_id/renew", post(api::loans::renew_loan_by_specimen))
-        // Z39.50
-        .route("/z3950/search", get(api::z3950::search))
-        .route("/z3950/import", post(api::z3950::import_record))
-        // Statistics
-        .route("/stats", get(api::stats::get_stats))
-        .route("/stats/loans", get(api::stats::get_loan_stats))
-        .route("/stats/users", get(api::stats::get_user_stats))
-        .route("/stats/catalog", get(api::stats::get_catalog_stats))
-        // Library information
-        .route("/library-info", get(api::library_info::get_library_info))
-        .route("/library-info", put(api::library_info::update_library_info))
-        // Settings (loan rules)
-        .route("/settings", get(api::settings::get_settings))
-        .route("/settings", put(api::settings::update_settings))
-        // Admin config (dynamic config override)
-        .route("/admin/config", get(api::admin_config::get_config))
-        .route("/admin/config/:section", put(api::admin_config::update_config_section))
-        .route("/admin/config/:section", delete(api::admin_config::reset_config_section))
-        .route("/admin/config/email/test", post(api::admin_config::test_email))
-        .route("/admin/reindex-search", post(api::admin_config::reindex_search))
-        // Audit log
-        .route("/audit", get(api::audit::get_audit_log))
-        .route("/audit/export", get(api::audit::export_audit_log))
-        // Public types
-        .route("/public-types", get(api::public_types::list_public_types))
-        .route("/public-types", post(api::public_types::create_public_type))
-        .route("/public-types/:id", get(api::public_types::get_public_type))
-        .route("/public-types/:id", put(api::public_types::update_public_type))
-        .route("/public-types/:id", delete(api::public_types::delete_public_type))
-        .route("/public-types/:id/loan-settings", put(api::public_types::upsert_loan_setting))
-        .route("/public-types/:id/loan-settings/:media_type", delete(api::public_types::delete_loan_setting))
-        // Visitor counts
-        .route("/visitor-counts", get(api::visitor_counts::list_visitor_counts))
-        .route("/visitor-counts", post(api::visitor_counts::create_visitor_count))
-        .route("/visitor-counts/:id", delete(api::visitor_counts::delete_visitor_count))
-        // Schedules
-        .route("/schedules/periods", get(api::schedules::list_periods))
-        .route("/schedules/periods", post(api::schedules::create_period))
-        .route("/schedules/periods/:id", put(api::schedules::update_period))
-        .route("/schedules/periods/:id", delete(api::schedules::delete_period))
-        .route("/schedules/periods/:id/slots", get(api::schedules::list_slots))
-        .route("/schedules/periods/:id/slots", post(api::schedules::create_slot))
-        .route("/schedules/slots/:id", delete(api::schedules::delete_slot))
-        .route("/schedules/closures", get(api::schedules::list_closures))
-        .route("/schedules/closures", post(api::schedules::create_closure))
-        .route("/schedules/closures/:id", delete(api::schedules::delete_closure))
-        // Sources
-        .route("/sources", get(api::sources::list_sources).post(api::sources::create_source))
-        .route("/sources/merge", post(api::sources::merge_sources))
-        .route("/sources/:id", get(api::sources::get_source))
-        .route("/sources/:id", put(api::sources::update_source))
-        .route("/sources/:id/archive", post(api::sources::archive_source))
-        // Equipment
-        .route("/equipment", get(api::equipment::list_equipment))
-        .route("/equipment", post(api::equipment::create_equipment))
-        .route("/equipment/:id", get(api::equipment::get_equipment))
-        .route("/equipment/:id", put(api::equipment::update_equipment))
-        .route("/equipment/:id", delete(api::equipment::delete_equipment))
-        // Events (cultural)
-        .route("/events", get(api::events::list_events))
-        .route("/events", post(api::events::create_event))
-        .route("/events/:id", get(api::events::get_event))
-        .route("/events/:id", put(api::events::update_event))
-        .route("/events/:id", delete(api::events::delete_event))
-        .route("/events/:id/send-announcement", post(api::events::send_event_announcement))
+        .merge(api::health::router())
+        .merge(auth_router)
+        .merge(api::biblios::router())
+        .merge(api::users::router())
+        .merge(api::loans::router())
+        .merge(api::batch::router())
+        .merge(api::reservations::router())
+        .merge(api::fines::router())
+        .merge(api::inventory::router())
+        .merge(api::history::router())
+        .merge(api::opac::router())
+        .merge(api::covers::router())
+        .merge(api::sse::router())
+        .merge(api::z3950::router())
+        .merge(api::stats::router())
+        .merge(api::library_info::router())
+        .merge(api::settings::router())
+        .merge(api::admin_config::router())
+        .merge(api::audit::router())
+        .merge(api::public_types::router())
+        .merge(api::visitor_counts::router())
+        .merge(api::schedules::router())
+        .merge(api::sources::router())
+        .merge(api::equipment::router())
+        .merge(api::events::router())
         .with_state(state.clone());
 
     // OpenAPI documentation
@@ -427,4 +397,34 @@ fn create_router(state: AppState) -> Router {
         .merge(openapi)
         .layer(TraceLayer::new_for_http())
         .layer(cors)
+}
+
+/// Build the CORS layer from configuration.
+///
+/// In production (`server.cors_origins` is set), only the listed origins are allowed.
+/// When the list is empty or the field is absent, CORS falls back to `Any` (dev mode).
+fn build_cors(config: &elidune_server::config::AppConfig) -> tower_http::cors::CorsLayer {
+    use tower_http::cors::{Any, CorsLayer};
+    use axum::http::HeaderValue;
+
+    if let Some(ref origins) = config.server.cors_origins {
+        if !origins.is_empty() {
+            let parsed: Vec<HeaderValue> = origins
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            if !parsed.is_empty() {
+                return CorsLayer::new()
+                    .allow_origin(parsed)
+                    .allow_methods(Any)
+                    .allow_headers(Any);
+            }
+        }
+    }
+
+    // Permissive default for development / unconfigured deployments.
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any)
 }

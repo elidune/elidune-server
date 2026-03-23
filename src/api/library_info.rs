@@ -60,7 +60,11 @@ pub struct UpdateLibraryInfoRequest {
     path = "/library-info",
     tag = "library_info",
     responses(
-        (status = 200, description = "Library information", body = LibraryInfo)
+        (status = 200, description = "Library information", body = LibraryInfo),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn get_library_info(
@@ -102,4 +106,11 @@ pub async fn update_library_info(
     );
 
     Ok(Json(info))
+}
+
+/// Build the library-info routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{get, put};
+    axum::Router::new()
+        .route("/library-info", get(get_library_info).put(update_library_info))
 }

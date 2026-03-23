@@ -21,7 +21,11 @@ use super::{AuthenticatedUser, ClientIp};
     tag = "equipment",
     security(("bearer_auth" = [])),
     responses(
-        (status = 200, description = "Equipment list", body = Vec<Equipment>)
+        (status = 200, description = "Equipment list", body = Vec<Equipment>),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn list_equipment(
@@ -41,7 +45,11 @@ pub async fn list_equipment(
     security(("bearer_auth" = [])),
     params(("id" = i32, Path, description = "Equipment ID")),
     responses(
-        (status = 200, description = "Equipment details", body = Equipment)
+        (status = 200, description = "Equipment details", body = Equipment),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn get_equipment(
@@ -62,7 +70,11 @@ pub async fn get_equipment(
     security(("bearer_auth" = [])),
     request_body = CreateEquipment,
     responses(
-        (status = 201, description = "Equipment created", body = Equipment)
+        (status = 201, description = "Equipment created", body = Equipment),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn create_equipment(
@@ -86,7 +98,11 @@ pub async fn create_equipment(
     params(("id" = i32, Path, description = "Equipment ID")),
     request_body = UpdateEquipment,
     responses(
-        (status = 200, description = "Equipment updated", body = Equipment)
+        (status = 200, description = "Equipment updated", body = Equipment),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn update_equipment(
@@ -110,7 +126,11 @@ pub async fn update_equipment(
     security(("bearer_auth" = [])),
     params(("id" = i32, Path, description = "Equipment ID")),
     responses(
-        (status = 204, description = "Equipment deleted")
+        (status = 204, description = "Equipment deleted"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn delete_equipment(
@@ -123,4 +143,12 @@ pub async fn delete_equipment(
     state.services.equipment.delete(id).await?;
     state.services.audit.log(audit::event::EQUIPMENT_DELETED, Some(claims.user_id), Some("equipment"), Some(id), ip, Some(serde_json::json!({ "id": id })));
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Build the equipment routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, post, put};
+    axum::Router::new()
+        .route("/equipment", get(list_equipment).post(create_equipment))
+        .route("/equipment/{id}", get(get_equipment).put(update_equipment).delete(delete_equipment))
 }

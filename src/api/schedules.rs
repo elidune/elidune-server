@@ -29,7 +29,11 @@ use super::{AuthenticatedUser, ClientIp};
     tag = "schedules",
     security(("bearer_auth" = [])),
     responses(
-        (status = 200, description = "Schedule periods", body = Vec<SchedulePeriod>)
+        (status = 200, description = "Schedule periods", body = Vec<SchedulePeriod>),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn list_periods(
@@ -49,7 +53,11 @@ pub async fn list_periods(
     security(("bearer_auth" = [])),
     request_body = CreateSchedulePeriod,
     responses(
-        (status = 201, description = "Period created", body = SchedulePeriod)
+        (status = 201, description = "Period created", body = SchedulePeriod),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn create_period(
@@ -73,7 +81,11 @@ pub async fn create_period(
     params(("id" = i32, Path, description = "Period ID")),
     request_body = UpdateSchedulePeriod,
     responses(
-        (status = 200, description = "Period updated", body = SchedulePeriod)
+        (status = 200, description = "Period updated", body = SchedulePeriod),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn update_period(
@@ -97,7 +109,11 @@ pub async fn update_period(
     security(("bearer_auth" = [])),
     params(("id" = i32, Path, description = "Period ID")),
     responses(
-        (status = 204, description = "Period deleted")
+        (status = 204, description = "Period deleted"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn delete_period(
@@ -122,7 +138,11 @@ pub async fn delete_period(
     security(("bearer_auth" = [])),
     params(("id" = i32, Path, description = "Period ID")),
     responses(
-        (status = 200, description = "Period slots", body = Vec<ScheduleSlot>)
+        (status = 200, description = "Period slots", body = Vec<ScheduleSlot>),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn list_slots(
@@ -144,7 +164,11 @@ pub async fn list_slots(
     params(("id" = i32, Path, description = "Period ID")),
     request_body = CreateScheduleSlot,
     responses(
-        (status = 201, description = "Slot created", body = ScheduleSlot)
+        (status = 201, description = "Slot created", body = ScheduleSlot),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn create_slot(
@@ -168,7 +192,11 @@ pub async fn create_slot(
     security(("bearer_auth" = [])),
     params(("id" = i32, Path, description = "Slot ID")),
     responses(
-        (status = 204, description = "Slot deleted")
+        (status = 204, description = "Slot deleted"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn delete_slot(
@@ -193,7 +221,11 @@ pub async fn delete_slot(
     security(("bearer_auth" = [])),
     params(ScheduleClosureQuery),
     responses(
-        (status = 200, description = "Closures list", body = Vec<ScheduleClosure>)
+        (status = 200, description = "Closures list", body = Vec<ScheduleClosure>),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn list_closures(
@@ -218,7 +250,11 @@ pub async fn list_closures(
     security(("bearer_auth" = [])),
     request_body = CreateScheduleClosure,
     responses(
-        (status = 201, description = "Closure created", body = ScheduleClosure)
+        (status = 201, description = "Closure created", body = ScheduleClosure),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn create_closure(
@@ -241,7 +277,11 @@ pub async fn create_closure(
     security(("bearer_auth" = [])),
     params(("id" = i32, Path, description = "Closure ID")),
     responses(
-        (status = 204, description = "Closure deleted")
+        (status = 204, description = "Closure deleted"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = ErrorResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
     )
 )]
 pub async fn delete_closure(
@@ -254,4 +294,16 @@ pub async fn delete_closure(
     state.services.schedules.delete_closure(id).await?;
     state.services.audit.log(audit::event::SCHEDULE_CLOSURE_DELETED, Some(claims.user_id), Some("schedule_closure"), Some(id), ip, Some(json!({ "id": id })));
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Build the schedules routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, post, put};
+    axum::Router::new()
+        .route("/schedules/periods", get(list_periods).post(create_period))
+        .route("/schedules/periods/{id}", put(update_period).delete(delete_period))
+        .route("/schedules/periods/{id}/slots", get(list_slots).post(create_slot))
+        .route("/schedules/slots/{id}", delete(delete_slot))
+        .route("/schedules/closures", get(list_closures).post(create_closure))
+        .route("/schedules/closures/{id}", delete(delete_closure))
 }

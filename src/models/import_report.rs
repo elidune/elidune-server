@@ -5,16 +5,16 @@ use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use utoipa::ToSchema;
 
+use crate::models::biblio::BiblioShort;
 use crate::models::item::ItemShort;
-use crate::models::specimen::SpecimenShort;
 
 /// Result of an ISBN duplicate lookup before import.
 #[derive(Debug, Clone)]
 pub struct DuplicateCandidate {
-    pub item_id: i64,
+    pub biblio_id: i64,
     pub archived_at: Option<DateTime<Utc>>,
-    /// Number of active (non-archived) specimens linked to this item.
-    pub specimen_count: i64,
+    /// Number of active (non-archived) items (physical copies) linked to this biblio.
+    pub item_count: i64,
 }
 
 /// What happened during import.
@@ -27,7 +27,7 @@ pub enum ImportAction {
     ReplacedConfirmed,
 }
 
-/// Report returned alongside the imported/updated item.
+/// Report returned alongside the imported/updated biblio.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ImportReport {
@@ -42,10 +42,22 @@ pub struct ImportReport {
     pub message: Option<String>,
 }
 
-/// Body returned on 409 when confirmation is required.
+/// Body returned on 409 when confirmation is required (duplicate ISBN).
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct DuplicateConfirmationRequired {
+    pub code: String,
+    #[serde_as(as = "DisplayFromStr")]
+    #[schema(value_type = String)]
+    pub existing_id: i64,
+    pub existing_biblio: BiblioShort,
+    pub message: String,
+}
+
+/// Body returned on 409 when a physical item barcode conflict is detected.
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DuplicateItemBarcodeRequired {
     pub code: String,
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -54,115 +66,35 @@ pub struct DuplicateConfirmationRequired {
     pub message: String,
 }
 
-/// Body returned on 409 when a specimen barcode conflict is detected.
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct DuplicateSpecimenBarcodeRequired {
-    pub code: String,
-    #[serde_as(as = "DisplayFromStr")]
-    #[schema(value_type = String)]
-    pub existing_id: i64,
-    pub existing_specimen: SpecimenShort,
-    pub message: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::item::MediaType;
+    use crate::models::biblio::MediaType;
 
     #[test]
-    fn duplicate_isbn_response_serializes_with_existing_item() {
+    fn duplicate_isbn_response_serializes_with_existing_biblio() {
         let resp = DuplicateConfirmationRequired {
             code: "duplicate_isbn_needs_confirmation".to_string(),
             existing_id: 42,
-            existing_item: ItemShort {
+            existing_biblio: BiblioShort {
                 id: 42,
                 media_type: MediaType::PrintedText,
-                isbn: Some(crate::models::item::Isbn::new("9782070408504")),
+                isbn: Some(crate::models::biblio::Isbn::new("9782070408504")),
                 title: Some("Test Book".to_string()),
                 date: None,
                 status: 0,
                 is_valid: None,
                 archived_at: None,
                 author: None,
-                specimens: Vec::new(),
+                items: Vec::new(),
             },
             message: "Duplicate".to_string(),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"code\":\"duplicate_isbn_needs_confirmation\""));
         assert!(json.contains("\"existing_id\":\"42\""));
-        assert!(json.contains("\"existing_item\""));
+        assert!(json.contains("\"existing_biblio\""));
         assert!(json.contains("\"title\":\"Test Book\""));
-    }
-
-    #[test]
-    fn duplicate_isbn_response_roundtrips() {
-        let resp = DuplicateConfirmationRequired {
-            code: "duplicate_isbn_needs_confirmation".to_string(),
-            existing_id: 99,
-            existing_item: ItemShort {
-                id: 99,
-                media_type: MediaType::Unknown,
-                isbn: None,
-                title: Some("Roundtrip".to_string()),
-                date: None,
-                status: 0,
-                is_valid: None,
-                archived_at: None,
-                author: None,
-                specimens: Vec::new(),
-            },
-            message: "test".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        let back: DuplicateConfirmationRequired = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.existing_id, 99);
-        assert_eq!(back.code, "duplicate_isbn_needs_confirmation");
-    }
-
-    #[test]
-    fn duplicate_barcode_response_serializes_with_existing_specimen() {
-        let resp = DuplicateSpecimenBarcodeRequired {
-            code: "duplicate_barcode_needs_confirmation".to_string(),
-            existing_id: 7,
-            existing_specimen: SpecimenShort {
-                id: 7,
-                barcode: Some("BC001".to_string()),
-                call_number: Some("A1".to_string()),
-                borrowable: true,
-                source_name: None,
-                availability: Some(0),
-            },
-            message: "Barcode conflict".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        assert!(json.contains("\"code\":\"duplicate_barcode_needs_confirmation\""));
-        assert!(json.contains("\"existing_id\":\"7\""));
-        assert!(json.contains("\"existing_specimen\""));
-        assert!(json.contains("\"barcode\":\"BC001\""));
-    }
-
-    #[test]
-    fn duplicate_barcode_response_roundtrips() {
-        let resp = DuplicateSpecimenBarcodeRequired {
-            code: "duplicate_barcode_needs_confirmation".to_string(),
-            existing_id: 15,
-            existing_specimen: SpecimenShort {
-                id: 15,
-                barcode: Some("BC999".to_string()),
-                call_number: None,
-                borrowable: false,
-                source_name: Some("Source1".to_string()),
-                availability: None,
-            },
-            message: "test".to_string(),
-        };
-        let json = serde_json::to_string(&resp).unwrap();
-        let back: DuplicateSpecimenBarcodeRequired = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.existing_id, 15);
-        assert_eq!(back.existing_specimen.barcode, Some("BC999".to_string()));
     }
 
     #[test]

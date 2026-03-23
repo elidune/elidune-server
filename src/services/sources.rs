@@ -1,18 +1,20 @@
 //! Sources service
 
+use std::sync::Arc;
+
 use crate::{
     error::{AppError, AppResult},
     models::source::{CreateSource, MergeSources, Source, UpdateSource},
-    repository::Repository,
+    repository::SourcesRepository,
 };
 
 #[derive(Clone)]
 pub struct SourcesService {
-    repository: Repository,
+    repository: Arc<dyn SourcesRepository>,
 }
 
 impl SourcesService {
-    pub fn new(repository: Repository) -> Self {
+    pub fn new(repository: Arc<dyn SourcesRepository>) -> Self {
         Self { repository }
     }
 
@@ -86,7 +88,10 @@ impl SourcesService {
         self.repository.sources_archive(id).await
     }
 
-    /// Merge multiple sources into a new one
+    /// Merge multiple sources into a new one.
+    ///
+    /// All three writes (create, reassign, archive) run inside a single transaction so
+    /// a failure cannot leave specimens pointing at a non-existent or wrong source.
     pub async fn merge(&self, data: &MergeSources) -> AppResult<Source> {
         if data.name.trim().is_empty() {
             return Err(AppError::Validation(
@@ -99,27 +104,43 @@ impl SourcesService {
             ));
         }
 
-        // Verify all source IDs exist
+        // Verify all source IDs exist before opening the transaction.
         for &id in &data.source_ids {
             self.repository.sources_get_by_id(id).await?;
         }
 
-        // Create new source
-        let new_source = self
-            .repository
-            .sources_create(data.name.trim(), None)
+        let now = chrono::Utc::now();
+        let name = data.name.trim();
+        let old_ids = &data.source_ids;
+
+        let mut tx = self.repository.pool().begin().await?;
+
+        // Create the merged source.
+        let new_id: i64 = sqlx::query_scalar(
+            r#"INSERT INTO sources (name, "default") VALUES ($1, false) RETURNING id"#,
+        )
+        .bind(name)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // Reassign all specimens from the old sources.
+        sqlx::query("UPDATE specimens SET source_id = $1 WHERE source_id = ANY($2)")
+            .bind(new_id)
+            .bind(old_ids.as_slice())
+            .execute(&mut *tx)
             .await?;
 
-        // Reassign specimens and items to the new source
-        self.repository
-            .sources_reassign_specimens(&data.source_ids, new_source.id)
-            .await?;
+        // Archive the old sources.
+        sqlx::query(
+            "UPDATE sources SET is_archive = 1, archived_at = $1 WHERE id = ANY($2)",
+        )
+        .bind(now)
+        .bind(old_ids.as_slice())
+        .execute(&mut *tx)
+        .await?;
 
-        // Archive old sources
-        self.repository
-            .sources_archive_many(&data.source_ids)
-            .await?;
+        tx.commit().await?;
 
-        Ok(new_source)
+        self.repository.sources_get_by_id(new_id).await
     }
 }

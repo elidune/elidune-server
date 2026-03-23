@@ -1,23 +1,26 @@
 //! Public types service
 
+use std::sync::Arc;
+
 use crate::{
     error::AppResult,
     models::public_type::{
         CreatePublicType, PublicType, PublicTypeLoanSettings, UpdatePublicType,
     },
-    repository::Repository,
+    repository::PublicTypesRepository,
 };
 
 #[derive(Clone)]
 pub struct PublicTypesService {
-    repository: Repository,
+    repository: Arc<dyn PublicTypesRepository>,
 }
 
 impl PublicTypesService {
-    pub fn new(repository: Repository) -> Self {
+    pub fn new(repository: Arc<dyn PublicTypesRepository>) -> Self {
         Self { repository }
     }
 
+    #[tracing::instrument(skip(self), err)]
     pub async fn list(&self) -> AppResult<Vec<PublicType>> {
         self.repository.public_types_list().await
     }
@@ -26,10 +29,12 @@ impl PublicTypesService {
         self.repository.public_types_get_by_id(id).await
     }
 
+    #[tracing::instrument(skip(self), err)]
     pub async fn get_loan_settings(&self, public_type_id: i64) -> AppResult<Vec<PublicTypeLoanSettings>> {
         self.repository.public_types_get_loan_settings(public_type_id).await
     }
 
+    #[tracing::instrument(skip(self), err)]
     pub async fn create(&self, data: &CreatePublicType) -> AppResult<PublicType> {
         self.repository.public_types_create(data).await
     }
@@ -38,6 +43,7 @@ impl PublicTypesService {
         self.repository.public_types_update(id, data).await
     }
 
+    #[tracing::instrument(skip(self), err)]
     pub async fn delete(&self, id: i64) -> AppResult<()> {
         self.repository.public_types_delete(id).await
     }
@@ -55,6 +61,7 @@ impl PublicTypesService {
             .await
     }
 
+    #[tracing::instrument(skip(self), err)]
     pub async fn delete_loan_setting(&self, public_type_id: i64, media_type: &str) -> AppResult<()> {
         self.repository
             .public_types_delete_loan_setting(public_type_id, media_type)

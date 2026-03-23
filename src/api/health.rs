@@ -64,3 +64,11 @@ pub async fn version() -> Json<VersionResponse> {
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }
+
+/// Build the health routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::get;
+    axum::Router::new()
+        .route("/health", get(health_check))
+        .route("/ready", get(readiness_check))
+}
