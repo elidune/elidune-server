@@ -435,11 +435,14 @@ pub struct Item {
     pub notes: Option<String>,
     pub keywords: Option<Vec<String>>,
     pub is_valid: Option<i16>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub series_id: Option<i64>,
+    /// Resolved series IDs (same order as `series_volume_numbers` and `series`).
+    #[serde_as(as = "Vec<DisplayFromStr>")]
+    #[schema(value_type = Vec<String>)]
     #[serde(default)]
-    pub series_volume_number: Option<i16>,
+    pub series_ids: Vec<i64>,
+    /// Volume within each series for this item (parallel to `series_ids`).
+    #[serde(default)]
+    pub series_volume_numbers: Vec<Option<i16>>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub edition_id: Option<i64>,
@@ -459,7 +462,7 @@ pub struct Item {
     pub authors: Vec<Author>,
     #[sqlx(skip)]
     #[serde(default)]
-    pub series: Option<Serie>,
+    pub series: Vec<Serie>,
     #[sqlx(skip)]
     #[serde(default)]
     pub collection: Option<Collection>,
@@ -530,6 +533,10 @@ pub struct Serie {
     pub created_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
+    /// Volume of this item in the series (only meaningful in item context; not stored on `series` rows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(skip)]
+    pub volume_number: Option<i16>,
 }
 
 
@@ -684,7 +691,7 @@ mod tests {
 
     #[test]
     fn item_short_id_deserializes_from_string() {
-        let json = r#"{"id":"12345","media_type":null,"isbn":null,"title":"Test","date":null,"status":0,"is_valid":null,"archived_at":null,"author":null}"#;
+        let json = r#"{"id":"12345","media_type":"unknown","isbn":null,"title":"Test","date":null,"status":0,"is_valid":null,"archived_at":null,"author":null,"specimens":[]}"#;
         let item: ItemShort = serde_json::from_str(json).unwrap();
         assert_eq!(item.id, 12345);
     }

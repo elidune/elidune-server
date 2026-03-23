@@ -260,25 +260,23 @@ impl From<MarcRecord> for Item {
         let audience_type: Option<AudienceType> = record.coded.target_audience.clone().map(AudienceType::from);
 
         // --- Series / collection from description / links ---
-        let mut serie: Option<Serie> = None;
-        let mut serie_vol_number: Option<i16> = None;
+        let mut series_list: Vec<Serie> = Vec::new();
         let mut collection: Option<Collection> = None;
         let mut collection_vol_number: Option<i16> = None;
 
-        // Series from description.series
-        if let Some(first_series) = record.description.series.first() {
-            serie_vol_number = first_series
-                .volume
-                .as_deref()
-                .and_then(extract_volume_number);
-
-            serie = Some(Serie {
+        // All series statements from description.series (N:M)
+        for entry in &record.description.series {
+            series_list.push(Serie {
                 id: None,
                 key: None,
-                name: Some(first_series.title.clone()),
-                issn: first_series.issn.clone(),
+                name: Some(entry.title.clone()),
+                issn: entry.issn.clone(),
                 created_at: None,
                 updated_at: None,
+                volume_number: entry
+                    .volume
+                    .as_deref()
+                    .and_then(extract_volume_number),
             });
         }
 
@@ -324,8 +322,8 @@ impl From<MarcRecord> for Item {
             notes,
             keywords,
             is_valid: Some(1),
-            series_id: None,
-            series_volume_number: serie_vol_number,
+            series_ids: vec![],
+            series_volume_numbers: series_list.iter().map(|s| s.volume_number).collect(),
             edition_id: None,
             collection_id: None,
             collection_sequence_number: None,
@@ -334,7 +332,7 @@ impl From<MarcRecord> for Item {
             updated_at: None,
             archived_at: None,
             authors,
-            series: serie,
+            series: series_list,
             collection,
             edition,
             specimens,

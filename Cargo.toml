@@ -67,6 +67,7 @@ utoipa-swagger-ui = { version = "7", features = ["axum"] }
 
 
 snowflaked = "1.0"
+#z3950-rs = "0.0.8"
 z3950-rs = { path = "../z3950-rs" }
 regex = "1"
 meilisearch-sdk = "0.32"

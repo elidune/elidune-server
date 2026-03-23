@@ -124,7 +124,7 @@ impl Repository {
                    subject, audience_type, page_extent, format,
                    table_of_contents, accompanying_material,
                    abstract as abstract_, notes, keywords, 
-                   series_id, series_volume_number, edition_id,
+                   edition_id,
                    collection_id, collection_sequence_number, collection_volume_number,
                    is_valid,
                    created_at, updated_at, archived_at
@@ -146,12 +146,7 @@ impl Repository {
 
         item.authors = self.get_item_authors(id).await?;
 
-        item.series = sqlx::query_as::<_, Serie>(
-            "SELECT id, key, name, issn, created_at, updated_at FROM series WHERE id = $1",
-        )
-        .bind(item.series_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        self.load_item_series(id, &mut item).await?;
 
         item.collection = sqlx::query_as::<_, Collection>(
             "SELECT id, key, primary_title, secondary_title, tertiary_title, issn, created_at, updated_at FROM collections WHERE id = $1",
@@ -201,6 +196,97 @@ impl Repository {
                 function: r.get::<Option<Function>, _>("function"),
             })
             .collect())
+    }
+
+    /// Load N:M series links into `item` (series_ids, series_volume_numbers, series).
+    async fn load_item_series(&self, item_id: i64, item: &mut Item) -> AppResult<()> {
+        let rows = sqlx::query(
+            r#"
+            SELECT isx.series_id, isx.volume_number,
+                   s.id, s.key, s.name, s.issn, s.created_at, s.updated_at
+            FROM item_series isx
+            INNER JOIN series s ON s.id = isx.series_id
+            WHERE isx.item_id = $1
+            ORDER BY isx.position
+            "#,
+        )
+        .bind(item_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        item.series_ids.clear();
+        item.series_volume_numbers.clear();
+        item.series.clear();
+
+        for row in rows {
+            let sid: i64 = row.get("series_id");
+            let vol: Option<i16> = row.get("volume_number");
+            item.series_ids.push(sid);
+            item.series_volume_numbers.push(vol);
+            item.series.push(Serie {
+                id: row.get("id"),
+                key: row.get("key"),
+                name: row.get("name"),
+                issn: row.get("issn"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+                volume_number: vol,
+            });
+        }
+        Ok(())
+    }
+
+    /// Resolve `item.series` (nested Serie payloads) into `series_ids` / `series_volume_numbers`,
+    /// or keep explicit `series_ids` when `series` is empty.
+    async fn resolve_series_ids_from_item(&self, item: &mut Item) -> AppResult<()> {
+        if !item.series.is_empty() {
+            let mut ids = Vec::new();
+            let mut vols = Vec::new();
+            for s in &item.series {
+                if let Some(id) = self.process_serie(&Some(s.clone())).await? {
+                    ids.push(id);
+                    vols.push(s.volume_number);
+                }
+            }
+            item.series_ids = ids;
+            item.series_volume_numbers = vols;
+        } else {
+            while item.series_volume_numbers.len() < item.series_ids.len() {
+                item.series_volume_numbers.push(None);
+            }
+            item.series_volume_numbers.truncate(item.series_ids.len());
+        }
+        Ok(())
+    }
+
+    /// Replace `item_series` rows for this item.
+    async fn sync_item_series(
+        &self,
+        item_id: i64,
+        series_ids: &[i64],
+        volumes: &[Option<i16>],
+    ) -> AppResult<()> {
+        sqlx::query("DELETE FROM item_series WHERE item_id = $1")
+            .bind(item_id)
+            .execute(&self.pool)
+            .await?;
+
+        for (pos, &sid) in series_ids.iter().enumerate() {
+            let vol = volumes.get(pos).copied().flatten();
+            sqlx::query(
+                r#"
+                INSERT INTO item_series (item_id, series_id, position, volume_number)
+                VALUES ($1, $2, $3, $4)
+                "#,
+            )
+            .bind(item_id)
+            .bind(sid)
+            .bind((pos + 1) as i16)
+            .bind(vol)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
     }
 
     /// Get a short item representation by ID (includes author + specimens).
@@ -500,8 +586,9 @@ impl Repository {
                        ORDER BY ia.position LIMIT 1
                    ) as author
             FROM items i
-            WHERE i.series_id = $1 AND i.archived_at IS NULL
-            ORDER BY i.series_volume_number, i.title
+            INNER JOIN item_series isx ON isx.item_id = i.id AND isx.series_id = $1
+            WHERE i.archived_at IS NULL
+            ORDER BY isx.volume_number NULLS LAST, i.title
             "#,
         )
         .bind(series_id)
@@ -543,7 +630,10 @@ impl Repository {
                 i.subject,
                 COALESCE(i.keywords, '{}') AS keywords,
                 ed.publisher_name,
-                se.name AS series_name,
+                COALESCE(
+                    string_agg(DISTINCT se.name, ', ') FILTER (WHERE se.name IS NOT NULL),
+                    ''
+                ) AS series_name,
                 co.primary_title AS collection_name,
                 COALESCE(
                     array_agg(DISTINCT sp.barcode) FILTER (WHERE sp.barcode IS NOT NULL),
@@ -563,11 +653,12 @@ impl Repository {
             LEFT JOIN item_authors ia ON ia.item_id = i.id
             LEFT JOIN authors a ON a.id = ia.author_id
             LEFT JOIN editions ed ON ed.id = i.edition_id
-            LEFT JOIN series se ON se.id = i.series_id
+            LEFT JOIN item_series isx ON isx.item_id = i.id
+            LEFT JOIN series se ON se.id = isx.series_id
             LEFT JOIN collections co ON co.id = i.collection_id
             LEFT JOIN specimens sp ON sp.item_id = i.id AND sp.archived_at IS NULL
             WHERE i.id = $1
-            GROUP BY i.id, ed.publisher_name, se.name, co.primary_title
+            GROUP BY i.id, ed.publisher_name, co.primary_title
             "#,
         )
         .bind(id)
@@ -593,7 +684,10 @@ impl Repository {
                 i.subject,
                 COALESCE(i.keywords, '{}') AS keywords,
                 ed.publisher_name,
-                se.name AS series_name,
+                COALESCE(
+                    string_agg(DISTINCT se.name, ', ') FILTER (WHERE se.name IS NOT NULL),
+                    ''
+                ) AS series_name,
                 co.primary_title AS collection_name,
                 COALESCE(
                     array_agg(DISTINCT sp.barcode) FILTER (WHERE sp.barcode IS NOT NULL),
@@ -613,10 +707,11 @@ impl Repository {
             LEFT JOIN item_authors ia ON ia.item_id = i.id
             LEFT JOIN authors a ON a.id = ia.author_id
             LEFT JOIN editions ed ON ed.id = i.edition_id
-            LEFT JOIN series se ON se.id = i.series_id
+            LEFT JOIN item_series isx ON isx.item_id = i.id
+            LEFT JOIN series se ON se.id = isx.series_id
             LEFT JOIN collections co ON co.id = i.collection_id
             LEFT JOIN specimens sp ON sp.item_id = i.id AND sp.archived_at IS NULL
-            GROUP BY i.id, ed.publisher_name, se.name, co.primary_title
+            GROUP BY i.id, ed.publisher_name, co.primary_title
             ORDER BY i.id
             "#,
         )
@@ -688,7 +783,7 @@ impl Repository {
 
         item.updated_at = Some(now);
         item.created_at = Some(now);
-        item.series_id = self.process_serie(&item.series).await?;
+        self.resolve_series_ids_from_item(item).await?;
         item.collection_id = self.process_collection(&item.collection).await?;
         item.edition_id = self.process_edition(&item.edition).await?;
 
@@ -699,7 +794,6 @@ impl Repository {
                 lang, lang_orig, title, subject,
                 audience_type, page_extent, format, table_of_contents, accompanying_material,
                 abstract, notes, keywords, is_valid,
-                series_id, series_volume_number,
                 collection_id, collection_sequence_number, collection_volume_number,
                 edition_id, created_at, updated_at
             ) VALUES (
@@ -707,9 +801,8 @@ impl Repository {
                 $4, $5, $6, $7,
                 $8, $9, $10, $11, $12,
                 $13, $14, $15, $16,
-                $17, $18,
-                $19, $20, $21,
-                $22, $23, $24
+                $17, $18, $19,
+                $20, $21, $22
             ) RETURNING id
             "#,
         )
@@ -729,8 +822,6 @@ impl Repository {
         .bind(&item.notes)
         .bind(&item.keywords)
         .bind(&item.is_valid)
-        .bind(&item.series_id)
-        .bind(&item.series_volume_number)
         .bind(&item.collection_id)
         .bind(&item.collection_sequence_number)
         .bind(&item.collection_volume_number)
@@ -741,6 +832,9 @@ impl Repository {
         .await?;
 
         item.id = Some(id);
+        self.sync_item_series(id, &item.series_ids, &item.series_volume_numbers)
+            .await?;
+        self.load_item_series(id, item).await?;
         self.sync_item_authors(id, &item.authors).await?;
         self.items_update_marc_record_for_item(item).await?;
 
@@ -755,7 +849,7 @@ impl Repository {
     pub async fn items_update<'a>(&self, id: i64, item: &'a mut Item) -> AppResult<&'a mut Item> {
 
         item.updated_at = Some(Utc::now());
-        item.series_id = self.process_serie(&item.series).await?;
+        self.resolve_series_ids_from_item(item).await?;
         item.collection_id = self.process_collection(&item.collection).await?;
         item.edition_id = self.process_edition(&item.edition).await?;
         item.id = Some(id);
@@ -766,21 +860,17 @@ impl Repository {
                 media_type = COALESCE($1::text, media_type),    
                 isbn = COALESCE($2::text, isbn),
                 title = COALESCE($3::text, title),
-                series_id = $4,
-                series_volume_number = $5,
-                collection_id = $6,
-                collection_sequence_number = $7,
-                collection_volume_number = $8,
-                edition_id = $9,
-                updated_at = $10
-            WHERE id = $11
+                collection_id = $4,
+                collection_sequence_number = $5,
+                collection_volume_number = $6,
+                edition_id = $7,
+                updated_at = $8
+            WHERE id = $9
             "#,
         )
         .bind(&item.media_type)
         .bind(&item.isbn.as_ref().map(|i| i.to_string()))
         .bind(&item.title)
-        .bind(&item.series_id)
-        .bind(&item.series_volume_number)
         .bind(&item.collection_id)
         .bind(&item.collection_sequence_number)
         .bind(&item.collection_volume_number)
@@ -789,6 +879,10 @@ impl Repository {
         .bind(id)
         .execute(&self.pool)
         .await?;
+
+        self.sync_item_series(id, &item.series_ids, &item.series_volume_numbers)
+            .await?;
+        self.load_item_series(id, item).await?;
 
         if !item.authors.is_empty() {
             self.sync_item_authors(id, &item.authors).await?;

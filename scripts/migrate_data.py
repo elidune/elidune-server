@@ -153,6 +153,7 @@ TABLES_DROP_ORDER = [
     'audit_log',
     'loans_archives', 'loans', 'loans_settings',
     'item_authors',
+    'item_series',
     'specimens',
     'items',
     'z3950servers', 'fees', 'users',
@@ -556,10 +557,11 @@ def migrate_items(src, dst):
     Target columns (new schema):
         id, media_type (camelCase), isbn, title, subject, audience_type (camelCase),
         lang (camelCase), lang_orig (camelCase), publication_date,
-        series_id, series_volume_number, collection_id, collection_sequence_number,
+        collection_id, collection_sequence_number,
         collection_volume_number, source_id, edition_id, page_extent, format,
         table_of_contents, accompanying_material, abstract, notes, keywords (array),
         is_valid, created_at, updated_at, archived_at
+    Legacy serie_id / serie_vol_number -> item_series junction (migration 044).
     """
     print("Migrating items...")
     src_cur = src.cursor()
@@ -571,6 +573,7 @@ def migrate_items(src, dst):
     BATCH = 1000
     offset = 0
     item_authors_batch = []
+    item_series_batch = []
 
     while offset < total:
         src_cur.execute(f"""
@@ -624,7 +627,6 @@ def migrate_items(src, dst):
                 INSERT INTO items (
                     id, media_type, isbn, title, subject, audience_type,
                     lang, lang_orig, publication_date,
-                    series_id, series_volume_number,
                     collection_id, collection_sequence_number, collection_volume_number,
                     source_id, edition_id, page_extent, format,
                     table_of_contents, accompanying_material, abstract, notes,
@@ -633,7 +635,6 @@ def migrate_items(src, dst):
                 ) VALUES (
                     %s,%s,%s,%s,%s,%s,
                     %s,%s,%s,
-                    %s,%s,
                     %s,%s,%s,
                     %s,%s,%s,%s,
                     %s,%s,%s,%s,
@@ -643,13 +644,15 @@ def migrate_items(src, dst):
             """, (
                 iid, media_type, identification, title1, subject, audience_type,
                 lang, lang_orig, publication_date,
-                serie_id, serie_vol_number,
                 collection_id, collection_number_sub, collection_vol_number,
                 source_id, edition_id, nb_pages, fmt,
                 content, addon, abstract_, notes,
                 keywords_arr, is_valid,
                 crea_dt, modif_dt, archived_at,
             ))
+
+            if serie_id is not None:
+                item_series_batch.append((iid, int(serie_id), 1, serie_vol_number))
 
             # Collect item_authors entries from legacy author arrays
             position = 1
@@ -674,6 +677,20 @@ def migrate_items(src, dst):
         print(f"  {min(offset, total)}/{total} items")
 
     print(f"  {total} items migrated")
+
+    print("  Migrating item_series...")
+    for i in range(0, len(item_series_batch), 500):
+        for entry in item_series_batch[i:i + 500]:
+            try:
+                dst_cur.execute("""
+                    INSERT INTO item_series (item_id, series_id, position, volume_number)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (item_id, series_id) DO NOTHING
+                """, entry)
+            except Exception:
+                dst.rollback()
+        dst.commit()
+    print(f"  {len(item_series_batch)} item_series rows migrated")
 
     # Insert item_authors in batches
     print("  Migrating item_authors...")
@@ -976,7 +993,7 @@ def reset_sequences(conn):
 
     tables = [
         'users', 'authors', 'editions', 'collections', 'series', 'sources',
-        'items', 'item_authors', 'specimens',
+        'items', 'item_authors', 'item_series', 'specimens',
         'loans', 'loans_archives', 'loans_settings', 'z3950servers',
         'public_types', 'public_type_loan_settings',
         'visitor_counts', 'schedule_periods', 'schedule_slots', 'schedule_closures',
