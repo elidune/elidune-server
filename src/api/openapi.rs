@@ -5,7 +5,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{admin_config, audit, auth, biblios, equipment, events, health, library_info, loans, public_types, schedules, settings, sources, stats, users, visitor_counts, z3950};
+use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, library_info, loans, public_types, schedules, series, settings, sources, stats, users, visitor_counts, z3950};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -91,6 +91,20 @@ use crate::api::{admin_config, audit, auth, biblios, equipment, events, health, 
         schedules::list_closures,
         schedules::create_closure,
         schedules::delete_closure,
+        // Series
+        series::list_series,
+        series::get_serie,
+        series::get_serie_biblios,
+        series::create_serie,
+        series::update_serie,
+        series::delete_serie,
+        // Collections
+        collections::list_collections,
+        collections::get_collection,
+        collections::get_collection_biblios,
+        collections::create_collection,
+        collections::update_collection,
+        collections::delete_collection,
         // Sources
         sources::list_sources,
         sources::create_source,
@@ -148,6 +162,14 @@ use crate::api::{admin_config, audit, auth, biblios, equipment, events, health, 
             crate::models::biblio::Serie,
             crate::models::biblio::Collection,
             crate::models::biblio::Edition,
+            crate::models::biblio::CreateSerie,
+            crate::models::biblio::UpdateSerie,
+            crate::models::biblio::SerieQuery,
+            crate::models::biblio::CreateCollection,
+            crate::models::biblio::UpdateCollection,
+            crate::models::biblio::CollectionQuery,
+            series::PaginatedSeries,
+            collections::PaginatedCollections,
             // Items (physical copies)
             crate::models::item::Item,
             crate::models::item::ItemShort,
@@ -281,6 +303,8 @@ use crate::api::{admin_config, audit, auth, biblios, equipment, events, health, 
         (name = "equipment", description = "Library equipment management"),
         (name = "events", description = "Cultural events and school visits"),
         (name = "library_info", description = "Library global information (name, address, phones, email)"),
+        (name = "series", description = "Series management"),
+        (name = "collections", description = "Collections management"),
         (name = "public_types", description = "Borrower public types (child, adult, school, staff, senior)"),
         (name = "admin", description = "Admin runtime configuration"),
         (name = "audit", description = "Audit log")

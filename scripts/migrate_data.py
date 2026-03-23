@@ -154,6 +154,7 @@ TABLES_DROP_ORDER = [
     'loans_archives', 'loans', 'loans_settings',
     'biblio_authors',
     'biblio_series',
+    'biblio_collections',
     'items',     # physical copies (formerly specimens)
     'biblios',   # bibliographic records (formerly items)
     'z3950servers', 'fees', 'users',
@@ -521,7 +522,7 @@ def migrate_editions(src, dst):
 
 
 def migrate_collections(src, dst):
-    """Migrate collections: title1/2/3 -> primary/secondary/tertiary_title."""
+    """Migrate collections: title1 -> name (main display title), title2/3 -> secondary/tertiary_title."""
     print("Migrating collections...")
     src_cur = src.cursor()
     dst_cur = dst.cursor()
@@ -530,11 +531,13 @@ def migrate_collections(src, dst):
     rows = src_cur.fetchall()
 
     for cid, key, t1, t2, t3, issn in rows:
+        # name (formerly primary_title) must be non-null; fall back to key or generated value
+        name = t1 or key or f"Collection {cid}"
         dst_cur.execute("""
-            INSERT INTO collections (id, key, primary_title, secondary_title, tertiary_title, issn)
+            INSERT INTO collections (id, key, name, secondary_title, tertiary_title, issn)
             VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO NOTHING
-        """, (cid, key, t1, t2, t3, issn))
+        """, (cid, key, name, t2, t3, issn))
 
     dst.commit()
     print(f"  {len(rows)} collections migrated")
@@ -574,6 +577,7 @@ def migrate_items(src, dst):
     offset = 0
     item_authors_batch = []
     item_series_batch = []
+    item_collections_batch = []
 
     while offset < total:
         src_cur.execute(f"""
@@ -627,14 +631,12 @@ def migrate_items(src, dst):
                 INSERT INTO biblios (
                     id, media_type, isbn, title, subject, audience_type,
                     lang, lang_orig, publication_date,
-                    collection_id, collection_sequence_number, collection_volume_number,
                     source_id, edition_id, page_extent, format,
                     table_of_contents, accompanying_material, abstract, notes,
                     keywords, is_valid,
                     created_at, updated_at, archived_at
                 ) VALUES (
                     %s,%s,%s,%s,%s,%s,
-                    %s,%s,%s,
                     %s,%s,%s,
                     %s,%s,%s,%s,
                     %s,%s,%s,%s,
@@ -644,7 +646,6 @@ def migrate_items(src, dst):
             """, (
                 iid, media_type, identification, title1, subject, audience_type,
                 lang, lang_orig, publication_date,
-                collection_id, collection_number_sub, collection_vol_number,
                 source_id, edition_id, nb_pages, fmt,
                 content, addon, abstract_, notes,
                 keywords_arr, is_valid,
@@ -653,6 +654,9 @@ def migrate_items(src, dst):
 
             if serie_id is not None:
                 item_series_batch.append((iid, int(serie_id), 1, serie_vol_number))
+
+            if collection_id is not None:
+                item_collections_batch.append((iid, int(collection_id), 1, collection_vol_number))
 
             # Collect item_authors entries from legacy author arrays
             position = 1
@@ -691,6 +695,20 @@ def migrate_items(src, dst):
                 dst.rollback()
         dst.commit()
     print(f"  {len(item_series_batch)} biblio_series rows migrated")
+
+    print("  Migrating biblio_collections...")
+    for i in range(0, len(item_collections_batch), 500):
+        for entry in item_collections_batch[i:i + 500]:
+            try:
+                dst_cur.execute("""
+                    INSERT INTO biblio_collections (biblio_id, collection_id, position, volume_number)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (biblio_id, collection_id) DO NOTHING
+                """, entry)
+            except Exception:
+                dst.rollback()
+        dst.commit()
+    print(f"  {len(item_collections_batch)} biblio_collections rows migrated")
 
     # Insert biblio_authors in batches
     print("  Migrating biblio_authors...")
@@ -993,7 +1011,7 @@ def reset_sequences(conn):
 
     tables = [
         'users', 'authors', 'editions', 'collections', 'series', 'sources',
-        'biblios', 'biblio_authors', 'biblio_series', 'items',
+        'biblios', 'biblio_authors', 'biblio_series', 'biblio_collections', 'items',
         'loans', 'loans_archives', 'loans_settings', 'z3950servers',
         'public_types', 'public_type_loan_settings',
         'visitor_counts', 'schedule_periods', 'schedule_slots', 'schedule_closures',

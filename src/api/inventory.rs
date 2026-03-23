@@ -198,9 +198,9 @@ pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{get, post};
     axum::Router::new()
         .route("/inventory/sessions", get(list_sessions).post(create_session))
-        .route("/inventory/sessions/{id}", get(get_session))
-        .route("/inventory/sessions/{id}/close", post(close_session))
-        .route("/inventory/sessions/{id}/scan", post(scan_barcode))
-        .route("/inventory/sessions/{id}/scans", get(list_scans))
-        .route("/inventory/sessions/{id}/report", get(get_report))
+        .route("/inventory/sessions/:id", get(get_session))
+        .route("/inventory/sessions/:id/close", post(close_session))
+        .route("/inventory/sessions/:id/scan", post(scan_barcode))
+        .route("/inventory/sessions/:id/scans", get(list_scans))
+        .route("/inventory/sessions/:id/report", get(get_report))
 }

@@ -301,9 +301,9 @@ pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{delete, get, post, put};
     axum::Router::new()
         .route("/schedules/periods", get(list_periods).post(create_period))
-        .route("/schedules/periods/{id}", put(update_period).delete(delete_period))
-        .route("/schedules/periods/{id}/slots", get(list_slots).post(create_slot))
-        .route("/schedules/slots/{id}", delete(delete_slot))
+        .route("/schedules/periods/:id", put(update_period).delete(delete_period))
+        .route("/schedules/periods/:id/slots", get(list_slots).post(create_slot))
+        .route("/schedules/slots/:id", delete(delete_slot))
         .route("/schedules/closures", get(list_closures).post(create_closure))
-        .route("/schedules/closures/{id}", delete(delete_closure))
+        .route("/schedules/closures/:id", delete(delete_closure))
 }

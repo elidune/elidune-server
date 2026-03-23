@@ -13,7 +13,7 @@ use totp_lite::totp_custom;
 use crate::{
     config::UsersConfig,
     error::{AppError, AppResult},
-    models::user::{AccountTypeSlug, UpdateProfile, User, UserClaims, UserPayload, UserQuery, UserShort},
+    models::user::{AccountTypeSlug, UpdateProfile, User, UserClaims, UserPayload, UserQuery, UserShort, SCOPE_CHANGE_PASSWORD},
     repository::Repository,
 };
 
@@ -70,33 +70,15 @@ impl UsersService {
                 let is_trusted = self.redis.is_device_trusted(user.id, device).await?;
                 if is_trusted {
                     // Device is trusted, skip 2FA and create token directly
-                    return self.create_token_for_user(&user).await.map(|token| (Some(token), user));
+                    let token = self.token_respecting_password_policy(&user).await?;
+                    return Ok((Some(token), user));
                 }
             }
-            // Return user without token - 2FA verification required
+            // Return user without token — 2FA verification required
             return Ok((None, user));
         }
 
-        // Get user rights
-        let rights = self.repository.users_get_rights(&user.account_type).await?;
-
-        // Create JWT token
-        let now = Utc::now().timestamp();
-        let exp = now + (self.config.jwt_expiration_hours as i64 * 3600);
-
-        let claims = UserClaims {
-            sub: user.login.clone().unwrap_or_default(),
-            user_id: user.id,
-            account_type: user.account_type.clone(),
-            rights,
-            exp,
-            iat: now,
-        };
-
-        let token = claims
-            .create_token(&self.config.jwt_secret)
-            .map_err(|e| AppError::Internal(format!("Failed to create token: {}", e)))?;
-
+        let token = self.token_respecting_password_policy(&user).await?;
         Ok((Some(token), user))
     }
 
@@ -145,8 +127,8 @@ impl UsersService {
             }
         }
 
-        // Create token for user
-        self.create_token_for_user(&user).await
+        // Create token for user (scoped if must_change_password)
+        self.token_respecting_password_policy(&user).await
     }
 
     /// Verify recovery code and return JWT token
@@ -186,16 +168,28 @@ impl UsersService {
 
         self.repository.users_mark_recovery_code_used(user_id, &used_codes_json).await?;
 
-        // Create token
-        self.create_token_for_user(&user).await
+        // Create token (scoped if must_change_password)
+        self.token_respecting_password_policy(&user).await
     }
 
-    /// Create JWT token for a user
+    /// Create a full JWT token for a user (no scope restrictions).
     async fn create_token_for_user(&self, user: &User) -> AppResult<String> {
+        self.create_token_with_scope(user, None).await
+    }
+
+    /// Create a JWT token, optionally restricting it to a specific scope.
+    ///
+    /// When `scope` is `Some(SCOPE_CHANGE_PASSWORD)`, the token is short-lived
+    /// (1 hour) and can only be used at `POST /auth/change-password`.
+    async fn create_token_with_scope(&self, user: &User, scope: Option<&str>) -> AppResult<String> {
         let rights = self.repository.users_get_rights(&user.account_type).await?;
 
         let now = Utc::now().timestamp();
-        let exp = now + (self.config.jwt_expiration_hours as i64 * 3600);
+        let exp = if scope.is_some() {
+            now + 3600 // 1-hour window to complete the password change
+        } else {
+            now + (self.config.jwt_expiration_hours as i64 * 3600)
+        };
 
         let claims = UserClaims {
             sub: user.login.clone().unwrap_or_default(),
@@ -204,11 +198,21 @@ impl UsersService {
             rights,
             exp,
             iat: now,
+            scope: scope.map(str::to_owned),
         };
 
         claims
             .create_token(&self.config.jwt_secret)
             .map_err(|e| AppError::Internal(format!("Failed to create token: {}", e)))
+    }
+
+    /// Return a scoped token if the user must change their password, otherwise a full token.
+    async fn token_respecting_password_policy(&self, user: &User) -> AppResult<String> {
+        if user.must_change_password {
+            self.create_token_with_scope(user, Some(SCOPE_CHANGE_PASSWORD)).await
+        } else {
+            self.create_token_for_user(user).await
+        }
     }
 
     /// Generate TOTP secret and provisioning URI
@@ -495,6 +499,74 @@ impl UsersService {
 
         let hash = self.hash_password(new_password)?;
         self.repository.users_update_password(claims.user_id, &hash).await
+    }
+
+    /// Change the password for a user who has a `change_password_only` scoped token.
+    ///
+    /// The caller (API handler) must have already validated the scoped token via
+    /// the `PasswordChangeUser` extractor. After the password is updated the
+    /// must_change_password flag is cleared by the repository layer and a full JWT
+    /// is returned.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn change_password_first_login(&self, user_id: i64, new_password: &str) -> AppResult<String> {
+        if new_password.len() < 4 {
+            return Err(AppError::Validation("Password must be at least 4 characters".to_string()));
+        }
+
+        let hash = self.hash_password(new_password)?;
+        // users_update_password also resets must_change_password = false
+        self.repository.users_update_password(user_id, &hash).await?;
+
+        let user = self.repository.users_get_by_id(user_id).await?;
+        // Issue a full JWT now that the password has been changed
+        self.create_token_for_user(&user).await
+    }
+
+    /// Seed the database with a default admin user if no users exist yet.
+    ///
+    /// Returns `Some((login, password))` when a new admin was created, `None` otherwise.
+    pub async fn seed_admin_if_empty(&self) -> AppResult<Option<(String, String)>> {
+        let count = self.repository.users_count().await?;
+        if count > 0 {
+            return Ok(None);
+        }
+
+        let login = "admin".to_string();
+        let password = Self::generate_random_password(16);
+        let hash = self.hash_password(&password)?;
+
+        let payload = crate::models::user::UserPayload {
+            login: Some(login.clone()),
+            account_type: Some(crate::models::user::AccountTypeSlug::Admin),
+            firstname: Some("Administrator".to_string()),
+            ..Default::default()
+        };
+
+        let user = self.repository.users_create(&payload, Some(hash)).await?;
+        // Force password change on first login
+        self.repository.users_set_must_change_password(user.id, true).await?;
+
+        Ok(Some((login, password)))
+    }
+
+    /// Force a password change for the given user on next login.
+    pub async fn set_must_change_password(&self, user_id: i64, value: bool) -> AppResult<()> {
+        // Ensure user exists before updating
+        self.repository.users_get_by_id(user_id).await?;
+        self.repository.users_set_must_change_password(user_id, value).await
+    }
+
+    /// Generate a cryptographically random alphanumeric password of the given length.
+    fn generate_random_password(length: usize) -> String {
+        use rand::Rng;
+        const CHARSET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#%^&*";
+        let mut rng = rand::thread_rng();
+        (0..length)
+            .map(|_| {
+                let idx = rng.gen_range(0..CHARSET.len());
+                CHARSET[idx] as char
+            })
+            .collect()
     }
 
     /// Get a user's GDPR history preference

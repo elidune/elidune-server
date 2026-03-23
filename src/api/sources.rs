@@ -190,6 +190,6 @@ pub fn router() -> axum::Router<crate::AppState> {
     axum::Router::new()
         .route("/sources", get(list_sources).post(create_source))
         .route("/sources/merge", post(merge_sources))
-        .route("/sources/{id}", get(get_source).put(update_source))
-        .route("/sources/{id}/archive", post(archive_source))
+        .route("/sources/:id", get(get_source).put(update_source))
+        .route("/sources/:id/archive", post(archive_source))
 }

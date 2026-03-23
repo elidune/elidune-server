@@ -19,6 +19,7 @@ pub mod error_code {
     pub const AUTHENTICATION: &str = "authentication_failed";
     pub const AUTHORIZATION: &str = "authorization_failed";
     pub const NOT_FOUND: &str = "not_found";
+    pub const GONE: &str = "gone";
     pub const VALIDATION: &str = "validation_error";
     pub const DATABASE: &str = "database_error";
     pub const CONFLICT: &str = "conflict";
@@ -41,6 +42,9 @@ pub enum AppError {
 
     #[error("Not found: {0}")]
     NotFound(String),
+
+    #[error("Gone: {0}")]
+    Gone(String),
 
     #[error("Validation error: {0}")]
     Validation(String),
@@ -108,6 +112,9 @@ impl IntoResponse for AppError {
             ),
             AppError::NotFound(msg) => {
                 (StatusCode::NOT_FOUND, ec::NOT_FOUND, "Not Found", msg.clone())
+            }
+            AppError::Gone(msg) => {
+                (StatusCode::GONE, ec::GONE, "Gone", msg.clone())
             }
             AppError::Validation(msg) => (
                 StatusCode::BAD_REQUEST,

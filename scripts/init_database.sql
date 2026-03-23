@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS editions (
 CREATE TABLE IF NOT EXISTS series (
     id          BIGSERIAL   PRIMARY KEY,
     key         VARCHAR(255),
-    name        VARCHAR(255),
+    name        VARCHAR(255) NOT NULL,
     issn        VARCHAR(30),
     created_at  TIMESTAMPTZ DEFAULT NOW(),
     updated_at  TIMESTAMPTZ DEFAULT NOW()
@@ -123,7 +123,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_series_key_unique
 CREATE TABLE IF NOT EXISTS collections (
     id              BIGSERIAL   PRIMARY KEY,
     key             VARCHAR(255),
-    primary_title   VARCHAR(255),
+    name            VARCHAR(255) NOT NULL,
     secondary_title VARCHAR(255),
     tertiary_title  VARCHAR(255),
     issn            VARCHAR(30),
@@ -209,9 +209,6 @@ CREATE TABLE IF NOT EXISTS biblios (
     lang                        VARCHAR(32),
     lang_orig                   VARCHAR(32),
     publication_date            VARCHAR(20),
-    collection_id               BIGINT      REFERENCES collections(id) ON DELETE SET NULL,
-    collection_sequence_number  SMALLINT,
-    collection_volume_number    SMALLINT,
     source_id                   BIGINT      REFERENCES sources(id) ON DELETE SET NULL,
     edition_id                  BIGINT      REFERENCES editions(id) ON DELETE SET NULL,
     page_extent                 VARCHAR(30),
@@ -230,7 +227,6 @@ CREATE TABLE IF NOT EXISTS biblios (
 
 CREATE INDEX IF NOT EXISTS idx_biblios_isbn       ON biblios(isbn) WHERE isbn IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_biblios_media_type ON biblios(media_type);
-CREATE INDEX IF NOT EXISTS idx_biblios_collection ON biblios(collection_id, collection_volume_number);
 CREATE INDEX IF NOT EXISTS idx_biblios_active     ON biblios(archived_at) WHERE archived_at IS NULL;
 
 -- =============================================================================
@@ -265,6 +261,22 @@ CREATE TABLE IF NOT EXISTS biblio_series (
 
 CREATE INDEX IF NOT EXISTS idx_biblio_series_biblio  ON biblio_series(biblio_id);
 CREATE INDEX IF NOT EXISTS idx_biblio_series_series  ON biblio_series(series_id);
+
+-- =============================================================================
+-- BIBLIO_COLLECTIONS (N:M junction)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS biblio_collections (
+    id              BIGSERIAL   PRIMARY KEY,
+    biblio_id       BIGINT      NOT NULL REFERENCES biblios(id)     ON DELETE CASCADE,
+    collection_id   BIGINT      NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    position        SMALLINT    NOT NULL DEFAULT 1,
+    volume_number   SMALLINT,
+    UNIQUE (biblio_id, collection_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_biblio_collections_biblio     ON biblio_collections(biblio_id);
+CREATE INDEX IF NOT EXISTS idx_biblio_collections_collection ON biblio_collections(collection_id);
 
 -- =============================================================================
 -- ITEMS (physical copies, formerly specimens)

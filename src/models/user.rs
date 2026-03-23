@@ -257,6 +257,7 @@ pub struct UserRow {
     recovery_codes: Option<String>,
     recovery_codes_used: Option<String>,
     receive_reminders: Option<bool>,
+    must_change_password: Option<bool>,
 }
 
 impl From<UserRow> for User {
@@ -296,6 +297,7 @@ impl From<UserRow> for User {
             recovery_codes: row.recovery_codes,
             recovery_codes_used: row.recovery_codes_used,
             receive_reminders: row.receive_reminders.unwrap_or(true),
+            must_change_password: row.must_change_password.unwrap_or(false),
         }
     }
 }
@@ -357,6 +359,8 @@ pub struct User {
     pub recovery_codes_used: Option<String>,
     /// Whether the user wants to receive overdue reminder emails
     pub receive_reminders: bool,
+    /// When true, the user must change their password on next login
+    pub must_change_password: bool,
 }
 
 /// Internal row structure for UserShort queries
@@ -411,7 +415,7 @@ pub struct UserQuery {
 
 /// User create/update body. `login` is required when creating; omit fields for partial update.
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Validate, ToSchema)]
 pub struct UserPayload {
     pub barcode: Option<String>,
     /// Login (username); required on create, optional on update
@@ -513,6 +517,9 @@ impl Default for UserRights {
     }
 }
 
+/// Scoped JWT for users who must change their password before full access.
+pub const SCOPE_CHANGE_PASSWORD: &str = "change_password_only";
+
 /// JWT Claims for authenticated users
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserClaims {
@@ -522,9 +529,18 @@ pub struct UserClaims {
     pub rights: UserRights,
     pub exp: i64,
     pub iat: i64,
+    /// When set to `SCOPE_CHANGE_PASSWORD`, the token may only be used to
+    /// call `POST /auth/change-password`. All other endpoints reject it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 impl UserClaims {
+    /// Returns true when this is a password-change-only scoped token.
+    pub fn is_password_change_scope(&self) -> bool {
+        self.scope.as_deref() == Some(SCOPE_CHANGE_PASSWORD)
+    }
+
     /// Create a new JWT token
     pub fn create_token(&self, secret: &str) -> Result<String, jsonwebtoken::errors::Error> {
         use jsonwebtoken::{encode, EncodingKey, Header};

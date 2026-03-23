@@ -19,6 +19,8 @@ pub mod opac;
 pub mod public_types;
 pub mod reservations;
 pub mod schedules;
+pub mod collections;
+pub mod series;
 pub mod settings;
 pub mod sources;
 pub mod sse;
@@ -37,7 +39,7 @@ use axum::{
 use serde::de::DeserializeOwned;
 use validator::Validate;
 
-use crate::{error::AppError, models::user::UserClaims, AppState};
+use crate::{error::AppError, models::user::{UserClaims, SCOPE_CHANGE_PASSWORD}, AppState};
 
 /// Resolved client IP for audit: proxy headers first, then `ConnectInfo` peer address.
 pub struct ClientIp(pub Option<String>);
@@ -135,7 +137,26 @@ impl FromRequestParts<AppState> for StaffUser {
 // AuthenticatedUser extractor
 // ============================================================================
 
-/// Extractor for authenticated user from JWT token
+/// Parse and validate a Bearer JWT from the request headers.
+fn extract_claims(parts: &Parts, secret: &str) -> Result<UserClaims, AppError> {
+    let auth_header = parts
+        .headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| AppError::Authentication("Missing authorization header".to_string()))?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return Err(AppError::Authentication("Invalid authorization header format".to_string()));
+    }
+
+    UserClaims::from_token(&auth_header[7..], secret)
+        .map_err(|e| AppError::Authentication(e.to_string()))
+}
+
+/// Extractor for authenticated user from JWT token.
+///
+/// Rejects tokens with scope `change_password_only` — those are only accepted
+/// by the dedicated `POST /auth/change-password` endpoint via [`PasswordChangeUser`].
 pub struct AuthenticatedUser(pub UserClaims);
 
 #[async_trait]
@@ -143,25 +164,37 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        // Get the Authorization header
-        let auth_header = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .ok_or_else(|| AppError::Authentication("Missing authorization header".to_string()))?;
+        let claims = extract_claims(parts, &state.config.users.jwt_secret)?;
 
-        // Check for Bearer token
-        if !auth_header.starts_with("Bearer ") {
-            return Err(AppError::Authentication("Invalid authorization header format".to_string()));
+        if claims.is_password_change_scope() {
+            return Err(AppError::Authorization(
+                "Password change required before accessing this endpoint".to_string(),
+            ));
         }
 
-        let token = &auth_header[7..];
-
-        // Validate JWT token using the secret from configuration
-        let claims = UserClaims::from_token(token, &state.config.users.jwt_secret)
-            .map_err(|e| AppError::Authentication(e.to_string()))?;
-
         Ok(AuthenticatedUser(claims))
+    }
+}
+
+/// Extractor that accepts **only** scoped `change_password_only` tokens.
+///
+/// Used exclusively by `POST /auth/change-password`.
+pub struct PasswordChangeUser(pub UserClaims);
+
+#[async_trait]
+impl FromRequestParts<AppState> for PasswordChangeUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let claims = extract_claims(parts, &state.config.users.jwt_secret)?;
+
+        if claims.scope.as_deref() != Some(SCOPE_CHANGE_PASSWORD) {
+            return Err(AppError::Authorization(
+                "This endpoint requires a password-change token".to_string(),
+            ));
+        }
+
+        Ok(PasswordChangeUser(claims))
     }
 }
 

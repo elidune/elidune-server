@@ -324,7 +324,7 @@ pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{delete, get, post, put};
     axum::Router::new()
         .route("/admin/config", get(get_config))
-        .route("/admin/config/{section}", put(update_config_section).delete(reset_config_section))
+        .route("/admin/config/:section", put(update_config_section).delete(reset_config_section))
         .route("/admin/config/email/test", post(test_email))
         .route("/admin/reindex-search", post(reindex_search))
 }

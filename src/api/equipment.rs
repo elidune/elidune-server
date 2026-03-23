@@ -150,5 +150,5 @@ pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{delete, get, post, put};
     axum::Router::new()
         .route("/equipment", get(list_equipment).post(create_equipment))
-        .route("/equipment/{id}", get(get_equipment).put(update_equipment).delete(delete_equipment))
+        .route("/equipment/:id", get(get_equipment).put(update_equipment).delete(delete_equipment))
 }

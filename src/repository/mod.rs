@@ -4,6 +4,7 @@
 //! methods and the forwarding `impl *Repository for Repository` (see module docs in each file).
 
 pub mod biblios;
+pub mod catalog_entities;
 pub mod equipment;
 pub mod events;
 pub mod fines;
@@ -17,6 +18,7 @@ pub mod users;
 pub mod visitor_counts;
 
 pub use biblios::BibliosRepository;
+pub use catalog_entities::CatalogEntitiesRepository;
 pub use equipment::EquipmentRepository;
 pub use events::{EventsRepository, EventsServiceRepository};
 pub use fines::FinesRepository;

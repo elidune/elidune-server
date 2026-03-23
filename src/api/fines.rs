@@ -181,8 +181,8 @@ pub async fn upsert_fine_rule(
 pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{get, post, put};
     axum::Router::new()
-        .route("/users/{id}/fines", get(list_user_fines))
+        .route("/users/:id/fines", get(list_user_fines))
         .route("/fines/rules", get(list_fine_rules).put(upsert_fine_rule))
-        .route("/fines/{id}/pay", post(pay_fine))
-        .route("/fines/{id}/waive", post(waive_fine))
+        .route("/fines/:id/pay", post(pay_fine))
+        .route("/fines/:id/waive", post(waive_fine))
 }

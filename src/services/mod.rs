@@ -34,10 +34,10 @@ use crate::{
     dynamic_config::DynamicConfig,
     error::AppResult,
     repository::{
-        BibliosRepository, EquipmentRepository, EventsServiceRepository, FinesRepository,
-        InventoryRepository, LoansRepository, LoansServiceRepository, PublicTypesRepository,
-        Repository, ReservationsRepository, SchedulesRepository, SourcesRepository,
-        UsersRepository, VisitorCountsRepository,
+        BibliosRepository, CatalogEntitiesRepository, EquipmentRepository, EventsServiceRepository,
+        FinesRepository, InventoryRepository, LoansRepository, LoansServiceRepository,
+        PublicTypesRepository, Repository, ReservationsRepository, SchedulesRepository,
+        SourcesRepository, UsersRepository, VisitorCountsRepository,
     },
 };
 
@@ -100,10 +100,11 @@ impl Services {
         };
 
         let biblios_repo: Arc<dyn BibliosRepository> = repo.clone();
+        let entities_repo: Arc<dyn CatalogEntitiesRepository> = repo.clone();
         let catalog = if let Some(ref svc) = search_service {
-            catalog::CatalogService::with_search(biblios_repo.clone(), Arc::clone(svc))
+            catalog::CatalogService::with_search(biblios_repo.clone(), entities_repo, Arc::clone(svc))
         } else {
-            catalog::CatalogService::new(biblios_repo)
+            catalog::CatalogService::new(biblios_repo, entities_repo)
         };
 
         let marc_service = marc::MarcService::new(catalog.clone(), redis_service.clone());

@@ -147,6 +147,14 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Database migrations completed");
 
+    // Normalize series/collection names (strip stray double quotes) and remove orphan entities
+    {
+        let repo = Repository::new(pool.clone());
+        if let Err(e) = repo.cleanup_series_collections_at_startup().await {
+            tracing::warn!("Startup series/collections cleanup failed: {}", e);
+        }
+    }
+
     // Load DB settings overrides and build DynamicConfig
     let dynamic_config = {
         let mut merged = config.clone();
@@ -250,6 +258,32 @@ async fn main() -> anyhow::Result<()> {
     .expect("Failed to create services");
 
     let services = Arc::new(services);
+
+    // Seed default admin user if the users table is empty (first run)
+    match services.users.seed_admin_if_empty().await {
+        Ok(Some((login, password))) => {
+            tracing::warn!(
+                "╔══════════════════════════════════════════════════════╗"
+            );
+            tracing::warn!(
+                "║          INITIAL ADMIN ACCOUNT CREATED               ║"
+            );
+            tracing::warn!(
+                "║  Login    : {:<42}║", login
+            );
+            tracing::warn!(
+                "║  Password : {:<42}║", password
+            );
+            tracing::warn!(
+                "║  Change the password immediately after first login.  ║"
+            );
+            tracing::warn!(
+                "╚══════════════════════════════════════════════════════╝"
+            );
+        }
+        Ok(None) => {}
+        Err(e) => tracing::error!("Failed to seed admin user: {}", e),
+    }
 
     // Log system startup audit event
     services.audit.log(
@@ -383,6 +417,8 @@ fn create_router(state: AppState) -> Router {
         .merge(api::public_types::router())
         .merge(api::visitor_counts::router())
         .merge(api::schedules::router())
+        .merge(api::series::router())
+        .merge(api::collections::router())
         .merge(api::sources::router())
         .merge(api::equipment::router())
         .merge(api::events::router())

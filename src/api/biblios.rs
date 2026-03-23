@@ -79,6 +79,10 @@ impl<T: for<'a> ToSchema<'a>> PaginatedResponse<T> {
         ("author" = Option<String>, Query, description = "Search by author"),
         ("isbn" = Option<String>, Query, description = "Search by ISBN/ISSN"),
         ("freesearch" = Option<String>, Query, description = "Full-text search"),
+        ("serie" = Option<String>, Query, description = "Filter by series name (substring)"),
+        ("serie_id" = Option<i64>, Query, description = "Filter by series ID (exact match)"),
+        ("collection" = Option<String>, Query, description = "Filter by collection name (substring)"),
+        ("collection_id" = Option<i64>, Query, description = "Filter by collection ID (exact match)"),
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
         ("per_page" = Option<i64>, Query, description = "Items per page (default: 20)")
     ),
@@ -638,10 +642,11 @@ pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{delete, get, post};
     axum::Router::new()
         .route("/biblios", get(list_biblios).post(create_biblio))
+        .route("/biblios/:id", get(get_biblio).put(update_biblio).delete(delete_biblio))
+        .route("/biblios/:id/items", get(list_items).post(create_item).put(update_item))
+        .route("/biblios/:biblio_id/items/:item_id", delete(delete_item))
         .route("/biblios/export.csv", get(export_biblios_csv))
         .route("/biblios/upload-unimarc", post(upload_unimarc))
         .route("/biblios/import-marc-batch", post(import_marc_batch))
-        .route("/biblios/{id}", get(get_biblio).put(update_biblio).delete(delete_biblio))
-        .route("/biblios/{id}/items", get(list_items).post(create_item).put(update_item))
-        .route("/biblios/{biblio_id}/items/{item_id}", delete(delete_item))
+      
 }

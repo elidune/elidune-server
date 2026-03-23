@@ -433,20 +433,25 @@ pub struct Biblio {
     #[serde_as(as = "Vec<DisplayFromStr>")]
     #[schema(value_type = Vec<String>)]
     #[serde(default)]
+    #[sqlx(skip)]
     pub series_ids: Vec<i64>,
     /// Volume within each series for this biblio (parallel to `series_ids`).
     #[serde(default)]
+    #[sqlx(skip)]
     pub series_volume_numbers: Vec<Option<i16>>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub edition_id: Option<i64>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub collection_id: Option<i64>,
+    /// Resolved collection IDs (same order as `collection_volume_numbers` and `collections`).
+    #[serde_as(as = "Vec<DisplayFromStr>")]
+    #[schema(value_type = Vec<String>)]
     #[serde(default)]
-    pub collection_sequence_number: Option<i16>,
+    #[sqlx(skip)]
+    pub collection_ids: Vec<i64>,
+    /// Volume within each collection for this biblio (parallel to `collection_ids`).
     #[serde(default)]
-    pub collection_volume_number: Option<i16>,
+    #[sqlx(skip)]
+    pub collection_volume_numbers: Vec<Option<i16>>,
     pub created_at: Option<DateTime<Utc>>,
     pub updated_at: Option<DateTime<Utc>>,
     pub archived_at: Option<DateTime<Utc>>,
@@ -459,7 +464,7 @@ pub struct Biblio {
     pub series: Vec<Serie>,
     #[sqlx(skip)]
     #[serde(default)]
-    pub collection: Option<Collection>,
+    pub collections: Vec<Collection>,
     #[sqlx(skip)]
     #[serde(default)]
     pub edition: Option<Edition>,
@@ -529,7 +534,7 @@ pub struct Serie {
     pub volume_number: Option<i16>,
 }
 
-/// Collection model. Persistence shape for MARC linking (e.g. 410); source: marc-rs `LinkingData` (title → primary_title, issn).
+/// Collection model. Persistence shape for MARC linking (e.g. 410); source: marc-rs `LinkingData` (title → name, issn).
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct Collection {
@@ -538,7 +543,8 @@ pub struct Collection {
     #[serde(default)]
     pub id: Option<i64>,
     pub key: Option<String>,
-    pub primary_title: Option<String>,
+    /// Primary display title (replaces former `primary_title`; mirrors `Serie.name`).
+    pub name: Option<String>,
     pub secondary_title: Option<String>,
     pub tertiary_title: Option<String>,
     pub issn: Option<String>,
@@ -546,6 +552,10 @@ pub struct Collection {
     pub created_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
+    /// Volume of this biblio in the collection (only meaningful in biblio context; not stored on `collections` rows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(skip)]
+    pub volume_number: Option<i16>,
 }
 
 /// Edition (publisher) model. Persistence shape for MARC publication (260/264/210); source: marc-rs `EditionInfo` or `PublicationData`.
@@ -588,6 +598,66 @@ pub struct MeiliBiblioDocument {
     pub is_archived: bool,
 }
 
+/// Query/list parameters for series.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SerieQuery {
+    /// Filter by name (substring, case-insensitive).
+    pub name: Option<String>,
+    pub page: Option<i64>,
+    pub per_page: Option<i64>,
+}
+
+/// Create a new series entry.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSerie {
+    pub name: String,
+    pub key: Option<String>,
+    pub issn: Option<String>,
+}
+
+/// Update an existing series entry (all fields optional).
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSerie {
+    pub name: Option<String>,
+    pub key: Option<String>,
+    pub issn: Option<String>,
+}
+
+/// Query/list parameters for collections.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionQuery {
+    /// Filter by name (substring, case-insensitive).
+    pub name: Option<String>,
+    pub page: Option<i64>,
+    pub per_page: Option<i64>,
+}
+
+/// Create a new collection entry.
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateCollection {
+    pub name: String,
+    pub key: Option<String>,
+    pub secondary_title: Option<String>,
+    pub tertiary_title: Option<String>,
+    pub issn: Option<String>,
+}
+
+/// Update an existing collection entry (all fields optional).
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCollection {
+    pub name: Option<String>,
+    pub key: Option<String>,
+    pub secondary_title: Option<String>,
+    pub tertiary_title: Option<String>,
+    pub issn: Option<String>,
+}
+
 /// Biblio query parameters (API). Filter values are strings; use `MarcFormat` when filtering by MARC format where applicable.
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct BiblioQuery {
@@ -604,6 +674,14 @@ pub struct BiblioQuery {
     pub freesearch: Option<String>,
     pub audience_type: Option<String>,
     pub archive: Option<bool>,
+    /// Filter by series name (substring, case-insensitive).
+    pub serie: Option<String>,
+    /// Filter by series ID (exact match).
+    pub serie_id: Option<i64>,
+    /// Filter by collection name (substring, case-insensitive).
+    pub collection: Option<String>,
+    /// Filter by collection ID (exact match).
+    pub collection_id: Option<i64>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
 }

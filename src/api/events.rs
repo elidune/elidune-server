@@ -201,6 +201,6 @@ pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{delete, get, post, put};
     axum::Router::new()
         .route("/events", get(list_events).post(create_event))
-        .route("/events/{id}", get(get_event).put(update_event).delete(delete_event))
-        .route("/events/{id}/send-announcement", post(send_event_announcement))
+        .route("/events/:id", get(get_event).put(update_event).delete(delete_event))
+        .route("/events/:id/send-announcement", post(send_event_announcement))
 }

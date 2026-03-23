@@ -25,6 +25,10 @@ use crate::{
         ("isbn" = Option<String>, Query, description = "Search by ISBN"),
         ("freesearch" = Option<String>, Query, description = "Full-text search"),
         ("media_type" = Option<String>, Query, description = "Filter by media type"),
+        ("serie" = Option<String>, Query, description = "Filter by series name (substring)"),
+        ("serie_id" = Option<i64>, Query, description = "Filter by series ID (exact match)"),
+        ("collection" = Option<String>, Query, description = "Filter by collection name (substring)"),
+        ("collection_id" = Option<i64>, Query, description = "Filter by collection ID (exact match)"),
         ("page" = Option<i64>, Query, description = "Page number (default 1)"),
         ("per_page" = Option<i64>, Query, description = "Items per page (default 20, max 50)")
     ),
@@ -92,6 +96,6 @@ pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::get;
     axum::Router::new()
         .route("/opac/biblios", get(opac_search))
-        .route("/opac/biblios/{id}", get(opac_get_biblio))
-        .route("/opac/biblios/{id}/availability", get(opac_availability))
+        .route("/opac/biblios/:id", get(opac_get_biblio))
+        .route("/opac/biblios/:id/availability", get(opac_availability))
 }

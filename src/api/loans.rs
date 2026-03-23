@@ -429,8 +429,8 @@ pub fn router() -> axum::Router<crate::AppState> {
         .route("/loans", post(create_loan))
         .route("/loans/overdue", get(get_overdue_loans))
         .route("/loans/send-overdue-reminders", post(send_overdue_reminders))
-        .route("/loans/{id}/return", post(return_loan))
-        .route("/loans/{id}/renew", post(renew_loan))
-        .route("/loans/items/{item_id}/return", post(return_loan_by_item))
-        .route("/loans/items/{item_id}/renew", post(renew_loan_by_item))
+        .route("/loans/:id/return", post(return_loan))
+        .route("/loans/:id/renew", post(renew_loan))
+        .route("/loans/items/:item_id/return", post(return_loan_by_item))
+        .route("/loans/items/:item_id/renew", post(renew_loan_by_item))
 }

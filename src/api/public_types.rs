@@ -212,7 +212,7 @@ pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{delete, get, post, put};
     axum::Router::new()
         .route("/public-types", get(list_public_types).post(create_public_type))
-        .route("/public-types/{id}", get(get_public_type).put(update_public_type).delete(delete_public_type))
-        .route("/public-types/{id}/loan-settings", put(upsert_loan_setting))
-        .route("/public-types/{id}/loan-settings/{media_type}", delete(delete_loan_setting))
+        .route("/public-types/:id", get(get_public_type).put(update_public_type).delete(delete_public_type))
+        .route("/public-types/:id/loan-settings", put(upsert_loan_setting))
+        .route("/public-types/:id/loan-settings/:media_type", delete(delete_loan_setting))
 }

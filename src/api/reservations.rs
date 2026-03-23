@@ -160,7 +160,7 @@ pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{delete, get, post};
     axum::Router::new()
         .route("/reservations", post(create_reservation))
-        .route("/reservations/{id}", delete(cancel_reservation))
-        .route("/items/{id}/reservations", get(list_reservations_for_item))
-        .route("/users/{id}/reservations", get(list_reservations_for_user))
+        .route("/reservations/:id", delete(cancel_reservation))
+        .route("/items/:id/reservations", get(list_reservations_for_item))
+        .route("/users/:id/reservations", get(list_reservations_for_user))
 }

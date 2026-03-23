@@ -70,6 +70,8 @@ pub trait UsersRepository: Send + Sync {
         &self,
         public_type: Option<i64>,
     ) -> AppResult<Vec<UserEmailTarget>>;
+    async fn users_count(&self) -> AppResult<i64>;
+    async fn users_set_must_change_password(&self, id: i64, value: bool) -> AppResult<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +141,12 @@ impl UsersRepository for Repository {
     async fn users_get_emails_by_public_type(&self, public_type: Option<i64>) -> crate::error::AppResult<Vec<UserEmailTarget>> {
         Repository::users_get_emails_by_public_type(self, public_type).await
     }
+    async fn users_count(&self) -> crate::error::AppResult<i64> {
+        Repository::users_count(self).await
+    }
+    async fn users_set_must_change_password(&self, id: i64, value: bool) -> crate::error::AppResult<()> {
+        Repository::users_set_must_change_password(self, id, value).await
+    }
 }
 
 
@@ -193,13 +201,41 @@ impl Repository {
         Ok(user_row.map(|r| r.into()))
     }
 
-    /// Update user password directly (used for password reset flow)
+    /// Update user password directly (used for password reset flow).
+    /// Also clears the must_change_password flag.
     #[tracing::instrument(skip(self), err)]
     pub async fn users_update_password(&self, id: i64, password_hash: &str) -> AppResult<()> {
         let result = sqlx::query(
-            "UPDATE users SET password = $1, update_at = NOW() WHERE id = $2"
+            "UPDATE users SET password = $1, must_change_password = FALSE, update_at = NOW() WHERE id = $2"
         )
         .bind(password_hash)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("User with id {} not found", id)));
+        }
+
+        Ok(())
+    }
+
+    /// Count total users (used to detect first-run empty database).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn users_count(&self) -> AppResult<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count)
+    }
+
+    /// Set or clear the must_change_password flag for a user.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn users_set_must_change_password(&self, id: i64, value: bool) -> AppResult<()> {
+        let result = sqlx::query(
+            "UPDATE users SET must_change_password = $1, update_at = NOW() WHERE id = $2"
+        )
+        .bind(value)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -631,6 +667,9 @@ impl Repository {
         
         if password.is_some() {
             sets.push(format!("password = ${}", param_idx));
+            param_idx += 1;
+            // Changing password clears the forced-change flag
+            sets.push(format!("must_change_password = ${}", param_idx));
         }
 
         let query = format!(
@@ -665,6 +704,8 @@ impl Repository {
         
         if let Some(ref hash) = password {
             builder = builder.bind(hash);
+            // Bind false for must_change_password (cleared when user sets a new password)
+            builder = builder.bind(false);
         }
 
         builder.execute(&self.pool).await?;

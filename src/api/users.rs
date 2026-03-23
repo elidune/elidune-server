@@ -250,12 +250,49 @@ pub async fn update_account_type(
     Ok(Json(updated))
 }
 
+/// Force the user to change their password on next login (admin only).
+#[utoipa::path(
+    put,
+    path = "/users/{id}/force-password-change",
+    tag = "users",
+    security(("bearer_auth" = [])),
+    params(("id" = i64, Path, description = "User ID")),
+    responses(
+        (status = 200, description = "Flag updated"),
+        (status = 401, description = "Not authenticated"),
+        (status = 403, description = "Admin rights required"),
+        (status = 404, description = "User not found")
+    )
+)]
+pub async fn force_password_change(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Path(id): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    claims.require_write_users()?;
+
+    state.services.users.set_must_change_password(id, true).await?;
+
+    state.services.audit.log(
+        audit::event::USER_UPDATED,
+        Some(claims.user_id),
+        Some("user"),
+        Some(id),
+        ip,
+        Some(serde_json::json!({ "must_change_password": true })),
+    );
+
+    Ok(Json(serde_json::json!({ "message": "User must change password on next login" })))
+}
+
 /// Build the users routes for this domain.
 pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{delete, get, put};
     axum::Router::new()
         .route("/users", get(list_users).post(create_user))
-        .route("/users/{id}", get(get_user).put(update_user).delete(delete_user))
-        .route("/users/{id}/account-type", put(update_account_type))
-        .route("/users/{id}/loans", get(super::loans::get_user_loans))
+        .route("/users/:id", get(get_user).put(update_user).delete(delete_user))
+        .route("/users/:id/account-type", put(update_account_type))
+        .route("/users/:id/force-password-change", put(force_password_change))
+        .route("/users/:id/loans", get(super::loans::get_user_loans))
 }

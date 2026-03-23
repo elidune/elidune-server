@@ -1,7 +1,7 @@
 
 
 use z3950_rs::marc_rs::record::{
-    Agent, BibliographicLevel, Description, Indexing, Local, Note, NoteType,
+    Agent, BibliographicLevel, Description, Indexing, LinkType, Local, Note, NoteType,
     Publication, Record as MarcRecord, RecordStatus, RecordType,
     Specimen as MarcSpecimen, Subject, SubjectType, Title,
 };
@@ -262,47 +262,76 @@ impl From<MarcRecord> for Biblio {
         // --- Series / collection from description / links ---
         let mut series_list: Vec<Serie> = Vec::new();
         let mut collection: Option<Collection> = None;
-        let mut collection_vol_number: Option<i16> = None;
 
-        // All series statements from description.series (N:M)
-        for entry in &record.description.series {
-            series_list.push(Serie {
-                id: None,
-                key: None,
-                name: Some(entry.title.clone()),
-                issn: entry.issn.clone(),
-                created_at: None,
-                updated_at: None,
-                volume_number: entry
-                    .volume
-                    .as_deref()
-                    .and_then(extract_volume_number),
-            });
+  
+
+        // UNIMARC 410 → links.records[link_type=Series]: authority-controlled series.
+        // Only used as fallback when no free-text series statement was found (225/490),
+        // to avoid creating duplicates from the same bibliographic series.
+        for link in record
+            .links
+            .records
+            .iter()
+            .filter(|l| matches!(l.link_type, Some(LinkType::Series)))
+        {
+            if let Some(title) = &link.title {
+                series_list.push(Serie {
+                    id: None,
+                    key: None,
+                    name: Some(title.clone()),
+                    issn: link.issn.clone(),
+                    created_at: None,
+                    updated_at: None,
+                    volume_number: link.volume.as_deref().and_then(extract_volume_number),
+                });
+            }
         }
 
-        // Collection from links.records (first with title)
-        if let Some(link) = record.links.records.first() {
-            if let Some(title) = &link.title {
-                collection_vol_number = link
-                    .volume
-                    .as_deref()
-                    .and_then(extract_volume_number);
+        if series_list.is_empty() {
+            // Series: UNIMARC 225 / MARC21 490 → description.series (free-text form on the document)
+            for entry in &record.description.series {
+                series_list.push(Serie {
+                    id: None,
+                    key: None,
+                    name: Some(entry.title.clone()),
+                    issn: entry.issn.clone(),
+                    created_at: None,
+                    updated_at: None,
+                    volume_number: entry.volume.as_deref().and_then(extract_volume_number),
+                });
+            }
+        }
 
+        // Collection: UNIMARC 461 → links.records[link_type=SetLevel].
+        // Represents the publisher collection (ensemble documentaire) the item belongs to.
+        // No direct MARC21 equivalent is mapped in the current dictionary.
+        if let Some(link) = record
+            .links
+            .records
+            .iter()
+            .find(|l| matches!(l.link_type, Some(LinkType::SetLevel)))
+        {
+            if let Some(title) = &link.title {
                 collection = Some(Collection {
                     id: None,
                     key: None,
-                    primary_title: Some(title.clone()),
+                    name: Some(title.clone()),
                     secondary_title: None,
                     tertiary_title: None,
                     issn: link.issn.clone(),
                     created_at: None,
                     updated_at: None,
+                    volume_number: link.volume.as_deref().and_then(extract_volume_number),
                 });
             }
         }
 
         // --- Physical items (from local MARC data) ---
         let items: Vec<Item> = record.local.specimens.iter().map(Item::from).collect();
+
+        let collection_volume_numbers: Vec<Option<i16>> =
+            collection.as_ref().map(|c| vec![c.volume_number]).unwrap_or_default();
+        let collections_vec: Vec<Collection> = collection.into_iter().collect();
 
         Biblio {
             id: None,
@@ -325,15 +354,14 @@ impl From<MarcRecord> for Biblio {
             series_ids: vec![],
             series_volume_numbers: series_list.iter().map(|s| s.volume_number).collect(),
             edition_id: None,
-            collection_id: None,
-            collection_sequence_number: None,
-            collection_volume_number: collection_vol_number,
+            collection_ids: vec![],
+            collection_volume_numbers,
             created_at: None,
             updated_at: None,
             archived_at: None,
             authors,
             series: series_list,
-            collection,
+            collections: collections_vec,
             edition,
             items,
             marc_record: Some(record),

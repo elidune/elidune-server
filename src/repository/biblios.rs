@@ -31,6 +31,7 @@ pub trait BibliosRepository: Send + Sync {
     async fn biblios_get_short_by_id(&self, id: i64) -> AppResult<BiblioShort>;
     async fn biblios_search(&self, query: &BiblioQuery) -> AppResult<(Vec<BiblioShort>, i64)>;
     async fn biblios_get_by_series(&self, series_id: i64) -> AppResult<Vec<BiblioShort>>;
+    async fn biblios_get_by_collection(&self, collection_id: i64) -> AppResult<Vec<BiblioShort>>;
     async fn biblios_get_meili_document(&self, id: i64) -> AppResult<Option<MeiliBiblioDocument>>;
     async fn biblios_get_all_meili_documents(&self) -> AppResult<Vec<MeiliBiblioDocument>>;
     async fn biblios_get_short_by_ids_ordered(&self, ids: &[i64]) -> AppResult<Vec<BiblioShort>>;
@@ -97,6 +98,9 @@ impl BibliosRepository for Repository {
     }
     async fn biblios_get_by_series(&self, series_id: i64) -> crate::error::AppResult<Vec<crate::models::biblio::BiblioShort>> {
         Repository::biblios_get_by_series(self, series_id).await
+    }
+    async fn biblios_get_by_collection(&self, collection_id: i64) -> crate::error::AppResult<Vec<crate::models::biblio::BiblioShort>> {
+        Repository::biblios_get_by_collection(self, collection_id).await
     }
     async fn biblios_get_meili_document(&self, id: i64) -> crate::error::AppResult<Option<crate::models::biblio::MeiliBiblioDocument>> {
         Repository::biblios_get_meili_document(self, id).await
@@ -271,33 +275,33 @@ impl Repository {
                    publication_date, lang, lang_orig, title,
                    subject, audience_type, page_extent, format,
                    table_of_contents, accompanying_material,
-                   abstract as abstract_, notes, keywords, 
+                   abstract as abstract_, notes, keywords,
                    edition_id,
-                   collection_id, collection_sequence_number, collection_volume_number,
                    is_valid,
                    created_at, updated_at, archived_at
             FROM biblios
-            WHERE (id = $1 OR isbn = $2) AND archived_at IS NULL
+            WHERE (id = $1 OR isbn = $2)
             "#;
-            
+
+        let numeric_id = id_or_isbn.parse::<i64>().unwrap_or(0);
+        let isbn_str = Isbn::new(id_or_isbn).to_string();
+
         let mut biblio = sqlx::query_as::<_, Biblio>(query)
-        .bind(id_or_isbn.parse::<i64>().unwrap_or(0))
-        .bind(Isbn::new(id_or_isbn).to_string())
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Biblio with id {} not found", id_or_isbn)))?;
+            .bind(numeric_id)
+            .bind(&isbn_str)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Biblio '{}' not found", id_or_isbn)))?;
+
+        if biblio.archived_at.is_some() {
+            return Err(AppError::Gone(format!("Biblio '{}' has been archived", id_or_isbn)));
+        }
 
         let id = biblio.id.ok_or_else(|| AppError::Internal("Biblio id is null".to_string()))?;
 
         biblio.authors = self.get_biblio_authors(id).await?;
         self.load_biblio_series(id, &mut biblio).await?;
-
-        biblio.collection = sqlx::query_as::<_, Collection>(
-            "SELECT id, key, primary_title, secondary_title, tertiary_title, issn, created_at, updated_at FROM collections WHERE id = $1",
-        )
-        .bind(biblio.collection_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        self.load_biblio_collections(id, &mut biblio).await?;
 
         biblio.edition = sqlx::query_as::<_, Edition>(
             "SELECT id, publisher_name, place_of_publication, date, created_at, updated_at FROM editions WHERE id = $1",
@@ -401,6 +405,100 @@ impl Repository {
         Ok(())
     }
 
+    /// Load N:M collection links into `biblio` (collection_ids, collection_volume_numbers, collections).
+    async fn load_biblio_collections(&self, biblio_id: i64, biblio: &mut Biblio) -> AppResult<()> {
+        let rows = sqlx::query(
+            r#"
+            SELECT bcx.collection_id, bcx.volume_number,
+                   c.id, c.key, c.name, c.secondary_title, c.tertiary_title, c.issn,
+                   c.created_at, c.updated_at
+            FROM biblio_collections bcx
+            INNER JOIN collections c ON c.id = bcx.collection_id
+            WHERE bcx.biblio_id = $1
+            ORDER BY bcx.position
+            "#,
+        )
+        .bind(biblio_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        biblio.collection_ids.clear();
+        biblio.collection_volume_numbers.clear();
+        biblio.collections.clear();
+
+        for row in rows {
+            let cid: i64 = row.get("collection_id");
+            let vol: Option<i16> = row.get("volume_number");
+            biblio.collection_ids.push(cid);
+            biblio.collection_volume_numbers.push(vol);
+            biblio.collections.push(Collection {
+                id: row.get("id"),
+                key: row.get("key"),
+                name: row.get("name"),
+                secondary_title: row.get("secondary_title"),
+                tertiary_title: row.get("tertiary_title"),
+                issn: row.get("issn"),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+                volume_number: vol,
+            });
+        }
+        Ok(())
+    }
+
+    /// Resolve `biblio.collections` (nested Collection payloads) into `collection_ids` / `collection_volume_numbers`.
+    async fn resolve_collection_ids_from_biblio(&self, biblio: &mut Biblio) -> AppResult<()> {
+        if !biblio.collections.is_empty() {
+            let mut ids = Vec::new();
+            let mut vols = Vec::new();
+            for c in &biblio.collections {
+                if let Some(id) = self.process_collection(&Some(c.clone())).await? {
+                    ids.push(id);
+                    vols.push(c.volume_number);
+                }
+            }
+            biblio.collection_ids = ids;
+            biblio.collection_volume_numbers = vols;
+        } else {
+            while biblio.collection_volume_numbers.len() < biblio.collection_ids.len() {
+                biblio.collection_volume_numbers.push(None);
+            }
+            biblio.collection_volume_numbers.truncate(biblio.collection_ids.len());
+        }
+        Ok(())
+    }
+
+    /// Replace `biblio_collections` rows for this biblio within an open transaction.
+    async fn sync_biblio_collections_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        biblio_id: i64,
+        collection_ids: &[i64],
+        volumes: &[Option<i16>],
+    ) -> AppResult<()> {
+        sqlx::query("DELETE FROM biblio_collections WHERE biblio_id = $1")
+            .bind(biblio_id)
+            .execute(&mut **tx)
+            .await?;
+
+        for (pos, &cid) in collection_ids.iter().enumerate() {
+            let vol = volumes.get(pos).copied().flatten();
+            sqlx::query(
+                r#"
+                INSERT INTO biblio_collections (biblio_id, collection_id, position, volume_number)
+                VALUES ($1, $2, $3, $4)
+                "#,
+            )
+            .bind(biblio_id)
+            .bind(cid)
+            .bind((pos + 1) as i16)
+            .bind(vol)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
     /// Replace `biblio_series` rows for this biblio within an open transaction.
     async fn sync_biblio_series_tx(
         &self,
@@ -487,6 +585,7 @@ impl Repository {
         enum Param {
             Text(String),
             I16(i16),
+            I64(i64),
         }
 
         let mut where_parts: Vec<String> = Vec::new();
@@ -587,6 +686,52 @@ impl Repository {
             ));
         }
 
+        if query.serie.is_some() || query.serie_id.is_some() {
+            let mut conds: Vec<String> = Vec::new();
+            if let Some(ref serie) = query.serie {
+                params.push(Param::Text(format!("%{}%", like_escape(serie))));
+                let idx = params.len();
+                conds.push(format!("unaccent(lower(s.name)) LIKE unaccent(lower(${idx}))"));
+            }
+            if let Some(serie_id) = query.serie_id {
+                params.push(Param::I64(serie_id));
+                let idx = params.len();
+                conds.push(format!("s.id = ${idx}"));
+            }
+            where_parts.push(format!(
+                "EXISTS (\
+                    SELECT 1 FROM biblio_series bsx \
+                    JOIN series s ON s.id = bsx.series_id \
+                    WHERE bsx.biblio_id = b.id \
+                    AND ({})\
+                )",
+                conds.join(" OR ")
+            ));
+        }
+
+        if query.collection.is_some() || query.collection_id.is_some() {
+            let mut conds: Vec<String> = Vec::new();
+            if let Some(ref collection) = query.collection {
+                params.push(Param::Text(format!("%{}%", like_escape(collection))));
+                let idx = params.len();
+                conds.push(format!("unaccent(lower(c.name)) LIKE unaccent(lower(${idx}))"));
+            }
+            if let Some(collection_id) = query.collection_id {
+                params.push(Param::I64(collection_id));
+                let idx = params.len();
+                conds.push(format!("c.id = ${idx}"));
+            }
+            where_parts.push(format!(
+                "EXISTS (\
+                    SELECT 1 FROM biblio_collections bcx \
+                    JOIN collections c ON c.id = bcx.collection_id \
+                    WHERE bcx.biblio_id = b.id \
+                    AND ({})\
+                )",
+                conds.join(" OR ")
+            ));
+        }
+
         if let Some(ref fs) = query.freesearch {
             let fs = fs.trim();
             if !fs.is_empty() {
@@ -645,6 +790,7 @@ impl Repository {
             match p {
                 Param::Text(s) => pg_args.add(s.clone()),
                 Param::I16(v) => pg_args.add(*v),
+                Param::I64(v) => pg_args.add(*v),
             }
         }
 
@@ -741,6 +887,52 @@ impl Repository {
         Ok(biblios)
     }
 
+    /// List all biblios belonging to a collection (ordered by volume number)
+    #[tracing::instrument(skip(self), err)]
+    pub async fn biblios_get_by_collection(&self, collection_id: i64) -> AppResult<Vec<BiblioShort>> {
+        let rows: Vec<BiblioShortRow> = sqlx::query_as(
+            r#"
+            SELECT b.id, b.media_type, b.isbn, b.title,
+                   b.publication_date as date, 0::smallint as status,
+                   1::smallint as is_local, b.is_valid, b.archived_at,
+                   (
+                       SELECT jsonb_build_object(
+                           'id', a.id::text,
+                           'lastname', a.lastname,
+                           'firstname', a.firstname,
+                           'bio', a.bio,
+                           'notes', a.notes,
+                           'function', ba.function
+                       )
+                       FROM biblio_authors ba
+                       JOIN authors a ON a.id = ba.author_id
+                       WHERE ba.biblio_id = b.id
+                       ORDER BY ba.position LIMIT 1
+                   ) as author
+            FROM biblios b
+            INNER JOIN biblio_collections bcx ON bcx.biblio_id = b.id AND bcx.collection_id = $1
+            WHERE b.archived_at IS NULL
+            ORDER BY bcx.volume_number NULLS LAST, b.title
+            "#,
+        )
+        .bind(collection_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let biblio_ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
+        let items_map = self.biblios_get_items_short_by_biblio_ids(&biblio_ids).await?;
+        let biblios: Vec<BiblioShort> = rows
+            .into_iter()
+            .map(|r| {
+                let mut short = BiblioShort::from(r);
+                short.items = items_map.get(&short.id).cloned().unwrap_or_default();
+                short
+            })
+            .collect();
+
+        Ok(biblios)
+    }
+
     // =========================================================================
     // MEILISEARCH DOCUMENT BUILDERS
     // =========================================================================
@@ -767,7 +959,10 @@ impl Repository {
                     string_agg(DISTINCT se.name, ', ') FILTER (WHERE se.name IS NOT NULL),
                     ''
                 ) AS series_name,
-                co.primary_title AS collection_name,
+                COALESCE(
+                    string_agg(DISTINCT co.name, ', ') FILTER (WHERE co.name IS NOT NULL),
+                    ''
+                ) AS collection_name,
                 COALESCE(
                     array_agg(DISTINCT it.barcode) FILTER (WHERE it.barcode IS NOT NULL),
                     '{}'
@@ -788,10 +983,11 @@ impl Repository {
             LEFT JOIN editions ed ON ed.id = b.edition_id
             LEFT JOIN biblio_series bsx ON bsx.biblio_id = b.id
             LEFT JOIN series se ON se.id = bsx.series_id
-            LEFT JOIN collections co ON co.id = b.collection_id
+            LEFT JOIN biblio_collections bcx ON bcx.biblio_id = b.id
+            LEFT JOIN collections co ON co.id = bcx.collection_id
             LEFT JOIN items it ON it.biblio_id = b.id AND it.archived_at IS NULL
             WHERE b.id = $1
-            GROUP BY b.id, ed.publisher_name, co.primary_title
+            GROUP BY b.id, ed.publisher_name
             "#,
         )
         .bind(id)
@@ -822,7 +1018,10 @@ impl Repository {
                     string_agg(DISTINCT se.name, ', ') FILTER (WHERE se.name IS NOT NULL),
                     ''
                 ) AS series_name,
-                co.primary_title AS collection_name,
+                COALESCE(
+                    string_agg(DISTINCT co.name, ', ') FILTER (WHERE co.name IS NOT NULL),
+                    ''
+                ) AS collection_name,
                 COALESCE(
                     array_agg(DISTINCT it.barcode) FILTER (WHERE it.barcode IS NOT NULL),
                     '{}'
@@ -843,9 +1042,10 @@ impl Repository {
             LEFT JOIN editions ed ON ed.id = b.edition_id
             LEFT JOIN biblio_series bsx ON bsx.biblio_id = b.id
             LEFT JOIN series se ON se.id = bsx.series_id
-            LEFT JOIN collections co ON co.id = b.collection_id
+            LEFT JOIN biblio_collections bcx ON bcx.biblio_id = b.id
+            LEFT JOIN collections co ON co.id = bcx.collection_id
             LEFT JOIN items it ON it.biblio_id = b.id AND it.archived_at IS NULL
-            GROUP BY b.id, ed.publisher_name, co.primary_title
+            GROUP BY b.id, ed.publisher_name
             ORDER BY b.id
             "#,
         )
@@ -921,7 +1121,7 @@ impl Repository {
         biblio.created_at = Some(now);
 
         self.resolve_series_ids_from_biblio(biblio).await?;
-        biblio.collection_id = self.process_collection(&biblio.collection).await?;
+        self.resolve_collection_ids_from_biblio(biblio).await?;
         biblio.edition_id = self.process_edition(&biblio.edition).await?;
 
         let mut tx = self.pool.begin().await?;
@@ -933,15 +1133,13 @@ impl Repository {
                 lang, lang_orig, title, subject,
                 audience_type, page_extent, format, table_of_contents, accompanying_material,
                 abstract, notes, keywords, is_valid,
-                collection_id, collection_sequence_number, collection_volume_number,
                 edition_id, created_at, updated_at
             ) VALUES (
                 $1, $2, $3,
                 $4, $5, $6, $7,
                 $8, $9, $10, $11, $12,
                 $13, $14, $15, $16,
-                $17, $18, $19,
-                $20, $21, $22
+                $17, $18, $19
             ) RETURNING id
             "#,
         )
@@ -961,9 +1159,6 @@ impl Repository {
         .bind(&biblio.notes)
         .bind(&biblio.keywords)
         .bind(&biblio.is_valid)
-        .bind(&biblio.collection_id)
-        .bind(&biblio.collection_sequence_number)
-        .bind(&biblio.collection_volume_number)
         .bind(&biblio.edition_id)
         .bind(&biblio.created_at)
         .bind(&biblio.updated_at)
@@ -973,6 +1168,8 @@ impl Repository {
         biblio.id = Some(id);
 
         self.sync_biblio_series_tx(&mut tx, id, &biblio.series_ids, &biblio.series_volume_numbers)
+            .await?;
+        self.sync_biblio_collections_tx(&mut tx, id, &biblio.collection_ids, &biblio.collection_volume_numbers)
             .await?;
         self.sync_biblio_authors_tx(&mut tx, id, &biblio.authors).await?;
 
@@ -986,6 +1183,7 @@ impl Repository {
         tx.commit().await?;
 
         self.load_biblio_series(id, biblio).await?;
+        self.load_biblio_collections(id, biblio).await?;
 
         Ok(biblio)
     }
@@ -1001,7 +1199,7 @@ impl Repository {
         biblio.id = Some(id);
 
         self.resolve_series_ids_from_biblio(biblio).await?;
-        biblio.collection_id = self.process_collection(&biblio.collection).await?;
+        self.resolve_collection_ids_from_biblio(biblio).await?;
         biblio.edition_id = self.process_edition(&biblio.edition).await?;
 
         let mut tx = self.pool.begin().await?;
@@ -1012,20 +1210,14 @@ impl Repository {
                 media_type = COALESCE($1::text, media_type),
                 isbn = COALESCE($2::text, isbn),
                 title = COALESCE($3::text, title),
-                collection_id = $4,
-                collection_sequence_number = $5,
-                collection_volume_number = $6,
-                edition_id = $7,
-                updated_at = $8
-            WHERE id = $9
+                edition_id = $4,
+                updated_at = $5
+            WHERE id = $6
             "#,
         )
         .bind(&biblio.media_type)
         .bind(&biblio.isbn.as_ref().map(|i| i.to_string()))
         .bind(&biblio.title)
-        .bind(&biblio.collection_id)
-        .bind(&biblio.collection_sequence_number)
-        .bind(&biblio.collection_volume_number)
         .bind(&biblio.edition_id)
         .bind(&biblio.updated_at)
         .bind(id)
@@ -1033,6 +1225,8 @@ impl Repository {
         .await?;
 
         self.sync_biblio_series_tx(&mut tx, id, &biblio.series_ids, &biblio.series_volume_numbers)
+            .await?;
+        self.sync_biblio_collections_tx(&mut tx, id, &biblio.collection_ids, &biblio.collection_volume_numbers)
             .await?;
 
         if !biblio.authors.is_empty() {
@@ -1049,6 +1243,7 @@ impl Repository {
         tx.commit().await?;
 
         self.load_biblio_series(id, biblio).await?;
+        self.load_biblio_collections(id, biblio).await?;
 
         Ok(biblio)
     }
@@ -1246,17 +1441,17 @@ impl Repository {
             return Ok(Some(id));
         }
 
-        let Some(ref primary_title) = collection.primary_title else {
+        let Some(ref name) = collection.name else {
             return Ok(None);
         };
 
-        let key = normalize_key(primary_title);
+        let key = normalize_key(name);
 
         let existing: Option<i64> = sqlx::query_scalar(
-            "SELECT id FROM collections WHERE key = $1 OR primary_title = $2",
+            "SELECT id FROM collections WHERE key = $1 OR name = $2",
         )
         .bind(&key)
-        .bind(primary_title)
+        .bind(name)
         .fetch_optional(&self.pool)
         .await?;
 
@@ -1264,10 +1459,10 @@ impl Repository {
             Ok(Some(id))
         } else {
             let id = sqlx::query_scalar::<_, i64>(
-                "INSERT INTO collections (key, primary_title, secondary_title, tertiary_title, issn) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                "INSERT INTO collections (key, name, secondary_title, tertiary_title, issn) VALUES ($1, $2, $3, $4, $5) RETURNING id",
             )
             .bind(&key)
-            .bind(primary_title)
+            .bind(name)
             .bind(&collection.secondary_title)
             .bind(&collection.tertiary_title)
             .bind(&collection.issn)

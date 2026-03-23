@@ -105,5 +105,5 @@ async fn proxy_cover(url: &str) -> Result<Response, StatusCode> {
 
 pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::get;
-    axum::Router::new().route("/covers/isbn/{isbn}", get(get_cover_by_isbn))
+    axum::Router::new().route("/covers/isbn/:isbn", get(get_cover_by_isbn))
 }

@@ -106,5 +106,5 @@ pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{delete, get, post};
     axum::Router::new()
         .route("/visitor-counts", get(list_visitor_counts).post(create_visitor_count))
-        .route("/visitor-counts/{id}", delete(delete_visitor_count))
+        .route("/visitor-counts/:id", delete(delete_visitor_count))
 }

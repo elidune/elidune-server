@@ -6,26 +6,34 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         import_report::{ImportAction, ImportReport},
-        biblio::{Biblio, BiblioQuery, BiblioShort},
+        biblio::{
+            Biblio, BiblioQuery, BiblioShort, Collection, CollectionQuery, CreateCollection,
+            CreateSerie, Serie, SerieQuery, UpdateCollection, UpdateSerie,
+        },
         item::Item,
     },
-    repository::BibliosRepository,
+    repository::{BibliosRepository, CatalogEntitiesRepository},
     services::search::{MeilisearchService, SearchFilters},
 };
 
 #[derive(Clone)]
 pub struct CatalogService {
     repository: Arc<dyn BibliosRepository>,
+    entities: Arc<dyn CatalogEntitiesRepository>,
     search: Option<Arc<MeilisearchService>>,
 }
 
 impl CatalogService {
-    pub fn new(repository: Arc<dyn BibliosRepository>) -> Self {
-        Self { repository, search: None }
+    pub fn new(repository: Arc<dyn BibliosRepository>, entities: Arc<dyn CatalogEntitiesRepository>) -> Self {
+        Self { repository, entities, search: None }
     }
 
-    pub fn with_search(repository: Arc<dyn BibliosRepository>, search: Arc<MeilisearchService>) -> Self {
-        Self { repository, search: Some(search) }
+    pub fn with_search(
+        repository: Arc<dyn BibliosRepository>,
+        entities: Arc<dyn CatalogEntitiesRepository>,
+        search: Arc<MeilisearchService>,
+    ) -> Self {
+        Self { repository, entities, search: Some(search) }
     }
 
     // =========================================================================
@@ -318,6 +326,82 @@ impl CatalogService {
     #[tracing::instrument(skip(self), err)]
     pub async fn get_biblios_by_series(&self, series_id: i64) -> AppResult<Vec<BiblioShort>> {
         self.repository.biblios_get_by_series(series_id).await
+    }
+
+    /// List all biblios in a collection (ordered by volume number)
+    #[tracing::instrument(skip(self), err)]
+    pub async fn get_biblios_by_collection(&self, collection_id: i64) -> AppResult<Vec<BiblioShort>> {
+        self.repository.biblios_get_by_collection(collection_id).await
+    }
+
+    // =========================================================================
+    // Series CRUD
+    // =========================================================================
+
+    #[tracing::instrument(skip(self), err)]
+    pub async fn list_series(&self, query: &SerieQuery) -> AppResult<(Vec<Serie>, i64)> {
+        self.entities.series_list(query).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    pub async fn get_serie(&self, id: i64) -> AppResult<Serie> {
+        self.entities.series_get(id).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    pub async fn create_serie(&self, data: &CreateSerie) -> AppResult<Serie> {
+        if data.name.trim().is_empty() {
+            return Err(AppError::Validation("Series name must not be empty".into()));
+        }
+        self.entities.series_create(data).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    pub async fn update_serie(&self, id: i64, data: &UpdateSerie) -> AppResult<Serie> {
+        if data.name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+            return Err(AppError::Validation("Series name must not be empty".into()));
+        }
+        self.entities.series_update(id, data).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    pub async fn delete_serie(&self, id: i64) -> AppResult<()> {
+        self.entities.series_delete(id).await
+    }
+
+    // =========================================================================
+    // Collections CRUD
+    // =========================================================================
+
+    #[tracing::instrument(skip(self), err)]
+    pub async fn list_collections(&self, query: &CollectionQuery) -> AppResult<(Vec<Collection>, i64)> {
+        self.entities.collections_list(query).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    pub async fn get_collection(&self, id: i64) -> AppResult<Collection> {
+        self.entities.collections_get(id).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    pub async fn create_collection(&self, data: &CreateCollection) -> AppResult<Collection> {
+        if data.name.trim().is_empty() {
+            return Err(AppError::Validation("Collection name must not be empty".into()));
+        }
+        self.entities.collections_create(data).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    pub async fn update_collection(&self, id: i64, data: &UpdateCollection) -> AppResult<Collection> {
+        if data.name.as_deref().is_some_and(|n| n.trim().is_empty()) {
+            return Err(AppError::Validation("Collection name must not be empty".into()));
+        }
+        self.entities.collections_update(id, data).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
+    pub async fn delete_collection(&self, id: i64) -> AppResult<()> {
+        self.entities.collections_delete(id).await
     }
 
     // =========================================================================

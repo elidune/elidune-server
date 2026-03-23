@@ -141,9 +141,9 @@ pub async fn update_history_preference(
 pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{get, put};
     axum::Router::new()
-        .route("/users/{id}/history", get(get_history))
+        .route("/users/:id/history", get(get_history))
         .route(
-            "/users/{id}/history/preference",
+            "/users/:id/history/preference",
             get(get_history_preference).put(update_history_preference),
         )
 }
