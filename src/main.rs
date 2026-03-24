@@ -147,14 +147,6 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Database migrations completed");
 
-    // Normalize series/collection names (strip stray double quotes) and remove orphan entities
-    {
-        let repo = Repository::new(pool.clone());
-        if let Err(e) = repo.cleanup_series_collections_at_startup().await {
-            tracing::warn!("Startup series/collections cleanup failed: {}", e);
-        }
-    }
-
     // Load DB settings overrides and build DynamicConfig
     let dynamic_config = {
         let mut merged = config.clone();
@@ -422,6 +414,7 @@ fn create_router(state: AppState) -> Router {
         .merge(api::sources::router())
         .merge(api::equipment::router())
         .merge(api::events::router())
+        .merge(api::maintenance::router())
         .with_state(state.clone());
 
     // OpenAPI documentation

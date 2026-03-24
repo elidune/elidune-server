@@ -15,7 +15,7 @@ use crate::{
     models::biblio::{BiblioShort, Collection, CollectionQuery, CreateCollection, UpdateCollection},
 };
 
-use super::{AuthenticatedUser, StaffUser};
+use super::AuthenticatedUser;
 
 /// Paginated list of collections.
 #[derive(Serialize, ToSchema)]
@@ -121,9 +121,10 @@ pub async fn get_collection_biblios(
 )]
 pub async fn create_collection(
     State(state): State<crate::AppState>,
-    StaffUser(_claims): StaffUser,
+    AuthenticatedUser(claims): AuthenticatedUser,
     Json(data): Json<CreateCollection>,
 ) -> AppResult<impl IntoResponse> {
+    claims.require_write_items()?;
     let collection = state.services.catalog.create_collection(&data).await?;
     Ok((StatusCode::CREATED, Json(collection)))
 }
@@ -145,10 +146,11 @@ pub async fn create_collection(
 )]
 pub async fn update_collection(
     State(state): State<crate::AppState>,
-    StaffUser(_claims): StaffUser,
+    AuthenticatedUser(claims): AuthenticatedUser,
     Path(id): Path<i64>,
     Json(data): Json<UpdateCollection>,
 ) -> AppResult<Json<Collection>> {
+    claims.require_write_items()?;
     let collection = state.services.catalog.update_collection(id, &data).await?;
     Ok(Json(collection))
 }
@@ -169,9 +171,10 @@ pub async fn update_collection(
 )]
 pub async fn delete_collection(
     State(state): State<crate::AppState>,
-    StaffUser(_claims): StaffUser,
+    AuthenticatedUser(claims): AuthenticatedUser,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
+    claims.require_write_items()?;
     state.services.catalog.delete_collection(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

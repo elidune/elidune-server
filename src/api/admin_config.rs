@@ -62,14 +62,14 @@ pub struct TestEmailRequest {
     security(("bearer_auth" = [])),
     responses(
         (status = 200, description = "All config sections", body = ConfigResponse),
-        (status = 403, description = "Insufficient permissions")
+        (status = 403, description = "Admin privileges required")
     )
 )]
 pub async fn get_config(
     State(state): State<AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
 ) -> AppResult<Json<ConfigResponse>> {
-    claims.require_write_settings()?;
+    claims.require_admin()?;
 
     let pool = state.services.repository_pool();
 
@@ -110,7 +110,7 @@ pub async fn get_config(
     responses(
         (status = 200, description = "Updated config section", body = ConfigSectionInfo),
         (status = 400, description = "Validation error"),
-        (status = 403, description = "Insufficient permissions"),
+        (status = 403, description = "Admin privileges required"),
         (status = 404, description = "Unknown section")
     )
 )]
@@ -121,7 +121,7 @@ pub async fn update_config_section(
     Path(section): Path<String>,
     Json(body): Json<UpdateConfigSectionRequest>,
 ) -> AppResult<Json<ConfigSectionInfo>> {
-    claims.require_write_settings()?;
+    claims.require_admin()?;
 
     let dynamic = &state.dynamic_config;
 
@@ -194,7 +194,7 @@ pub async fn update_config_section(
     ),
     responses(
         (status = 200, description = "Section reset to file default", body = ConfigSectionInfo),
-        (status = 403, description = "Insufficient permissions"),
+        (status = 403, description = "Admin privileges required"),
         (status = 404, description = "Unknown section")
     )
 )]
@@ -204,7 +204,7 @@ pub async fn reset_config_section(
     ClientIp(ip): ClientIp,
     Path(section): Path<String>,
 ) -> AppResult<Json<ConfigSectionInfo>> {
-    claims.require_write_settings()?;
+    claims.require_admin()?;
 
     let dynamic = &state.dynamic_config;
     dynamic.reset_section(&section)?;
@@ -251,7 +251,7 @@ pub async fn reset_config_section(
     responses(
         (status = 200, description = "Test email sent"),
         (status = 400, description = "Invalid request or SMTP error"),
-        (status = 403, description = "Insufficient permissions")
+        (status = 403, description = "Admin privileges required")
     )
 )]
 pub async fn test_email(
@@ -260,7 +260,7 @@ pub async fn test_email(
     ClientIp(ip): ClientIp,
     Json(body): Json<TestEmailRequest>,
 ) -> AppResult<StatusCode> {
-    claims.require_write_settings()?;
+    claims.require_admin()?;
 
     state.services.email.send_test_email(&body.to).await?;
 
@@ -297,7 +297,7 @@ pub async fn reindex_search(
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
 ) -> AppResult<Json<ReindexSearchResponse>> {
-    claims.require_write_settings()?;
+    claims.require_admin()?;
 
     let (count, available) = state.services.catalog.reindex_search().await?;
 

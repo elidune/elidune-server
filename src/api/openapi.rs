@@ -5,7 +5,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, library_info, loans, public_types, schedules, series, settings, sources, stats, users, visitor_counts, z3950};
+use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, library_info, loans, maintenance, opac, public_types, schedules, series, settings, sources, stats, users, visitor_counts, z3950};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -37,8 +37,10 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         biblios::list_biblios,
         biblios::get_biblio,
         biblios::create_biblio,
-        biblios::upload_unimarc,
+        biblios::load_marc,
         biblios::import_marc_batch,
+        biblios::list_marc_batches,
+        biblios::load_marc_batch,
         biblios::update_biblio,
         biblios::delete_biblio,
         biblios::list_items,
@@ -130,6 +132,8 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         admin_config::update_config_section,
         admin_config::reset_config_section,
         admin_config::test_email,
+        // Maintenance
+        maintenance::run_maintenance,
         // Audit
         audit::get_audit_log,
         audit::export_audit_log,
@@ -141,6 +145,10 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         public_types::delete_public_type,
         public_types::upsert_loan_setting,
         public_types::delete_loan_setting,
+        // Opac
+        opac::opac_search,
+        opac::opac_get_biblio,
+        opac::opac_availability,
     ),
     components(
         schemas(
@@ -268,6 +276,11 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
             admin_config::ConfigSectionInfo,
             admin_config::UpdateConfigSectionRequest,
             admin_config::TestEmailRequest,
+            // Maintenance
+            maintenance::MaintenanceRequest,
+            maintenance::MaintenanceAction,
+            maintenance::MaintenanceActionReport,
+            maintenance::MaintenanceResponse,
             // Audit
             audit::AuditQueryRequest,
             audit::AuditExportRequest,
@@ -284,6 +297,7 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
             // Health
             health::HealthResponse,
             health::VersionResponse,
+
             // Errors
             crate::error::ErrorResponse,
         )
@@ -307,7 +321,8 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         (name = "collections", description = "Collections management"),
         (name = "public_types", description = "Borrower public types (child, adult, school, staff, senior)"),
         (name = "admin", description = "Admin runtime configuration"),
-        (name = "audit", description = "Audit log")
+        (name = "audit", description = "Audit log"),
+        (name = "maintenance", description = "Data-quality maintenance operations (admin only)")
     ),
     modifiers(&SecurityAddon)
 )]

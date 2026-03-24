@@ -48,12 +48,7 @@ pub async fn get_history(
     AuthenticatedUser(claims): AuthenticatedUser,
     Path(user_id): Path<i64>,
 ) -> AppResult<Json<Vec<LoanDetails>>> {
-    // Users can view their own history; staff can view any user's history
-    if claims.user_id != user_id && !claims.is_admin() && !claims.is_librarian() {
-        return Err(crate::error::AppError::Authorization(
-            "You can only view your own history".to_string(),
-        ));
-    }
+    claims.require_self_or_staff(user_id)?;
     let history = state.services.loans.get_user_archived_loans(user_id).await?;
     Ok(Json(history))
 }
@@ -75,11 +70,7 @@ pub async fn get_history_preference(
     AuthenticatedUser(claims): AuthenticatedUser,
     Path(user_id): Path<i64>,
 ) -> AppResult<Json<HistoryPreference>> {
-    if claims.user_id != user_id && !claims.is_admin() && !claims.is_librarian() {
-        return Err(crate::error::AppError::Authorization(
-            "Access denied".to_string(),
-        ));
-    }
+    claims.require_self_or_staff(user_id)?;
     let enabled = state.services.users.get_history_preference(user_id).await?;
     Ok(Json(HistoryPreference {
         user_id: user_id.to_string(),
@@ -108,11 +99,8 @@ pub async fn update_history_preference(
     Path(user_id): Path<i64>,
     Json(req): Json<UpdateHistoryPreference>,
 ) -> AppResult<Json<HistoryPreference>> {
-    if claims.user_id != user_id && !claims.is_admin() {
-        return Err(crate::error::AppError::Authorization(
-            "Cannot change another user's history preference".to_string(),
-        ));
-    }
+    // GDPR consent changes are restricted to self or admin (librarians cannot override patron consent)
+    claims.require_self_or_admin(user_id)?;
     state
         .services
         .users

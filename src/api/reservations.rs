@@ -137,6 +137,7 @@ pub async fn cancel_reservation(
     ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Reservation>> {
+    claims.require_write_borrows()?;
     let is_staff = claims.is_admin() || claims.is_librarian();
     let reservation = state
         .services

@@ -15,7 +15,7 @@ use crate::{
     models::biblio::{BiblioShort, CreateSerie, Serie, SerieQuery, UpdateSerie},
 };
 
-use super::{AuthenticatedUser, StaffUser};
+use super::AuthenticatedUser;
 
 /// Paginated list of series.
 #[derive(Serialize, ToSchema)]
@@ -121,9 +121,10 @@ pub async fn get_serie_biblios(
 )]
 pub async fn create_serie(
     State(state): State<crate::AppState>,
-    StaffUser(_claims): StaffUser,
+    AuthenticatedUser(claims): AuthenticatedUser,
     Json(data): Json<CreateSerie>,
 ) -> AppResult<impl IntoResponse> {
+    claims.require_write_items()?;
     let serie = state.services.catalog.create_serie(&data).await?;
     Ok((StatusCode::CREATED, Json(serie)))
 }
@@ -145,10 +146,11 @@ pub async fn create_serie(
 )]
 pub async fn update_serie(
     State(state): State<crate::AppState>,
-    StaffUser(_claims): StaffUser,
+    AuthenticatedUser(claims): AuthenticatedUser,
     Path(id): Path<i64>,
     Json(data): Json<UpdateSerie>,
 ) -> AppResult<Json<Serie>> {
+    claims.require_write_items()?;
     let serie = state.services.catalog.update_serie(id, &data).await?;
     Ok(Json(serie))
 }
@@ -169,9 +171,10 @@ pub async fn update_serie(
 )]
 pub async fn delete_serie(
     State(state): State<crate::AppState>,
-    StaffUser(_claims): StaffUser,
+    AuthenticatedUser(claims): AuthenticatedUser,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
+    claims.require_write_items()?;
     state.services.catalog.delete_serie(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

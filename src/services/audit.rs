@@ -123,6 +123,9 @@ pub mod event {
     pub const INVENTORY_SESSION_CREATED: &str = "inventory.session_created";
     pub const INVENTORY_SESSION_CLOSED: &str = "inventory.session_closed";
 
+    // Maintenance
+    pub const MAINTENANCE_RUN: &str = "maintenance.run";
+
     // System
     pub const SYSTEM_STARTUP: &str = "system.startup";
     pub const SYSTEM_REMINDERS_BATCH_COMPLETED: &str = "system.reminders_batch_completed";

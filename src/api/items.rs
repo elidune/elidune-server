@@ -1,4 +1,4 @@
-//! Biblio (catalog) and Item (physical copy) endpoints
+//! Item (catalog) endpoints
 
 use axum::{
     extract::{Path, Query, State},
@@ -14,36 +14,20 @@ use utoipa::ToSchema;
 use crate::{
     error::{AppError, AppResult},
     models::{
-        biblio::{Biblio, BiblioQuery, BiblioShort},
         import_report::ImportReport,
-        item::Item,
+        item::{Item, ItemQuery, ItemShort},
+        specimen::Specimen,
     },
     services::{
         audit::{self},
-        marc::{EnqueueResult, MarcBatchImportReport, MarcBatchInfo},
+        marc::{EnqueueResult, MarcBatchImportReport},
     },
 };
 
 use super::{AuthenticatedUser, ClientIp, ValidatedJson};
 
-
-/// Build the biblios and items routes for this domain.
-pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post};
-    axum::Router::new()
-        .route("/biblios", get(list_biblios).post(create_biblio))
-        .route("/biblios/:id", get(get_biblio).put(update_biblio).delete(delete_biblio))
-        .route("/biblios/:id/items", get(list_items).post(create_item).put(update_item))
-        .route("/biblios/:biblio_id/items/:item_id", delete(delete_item))
-        .route("/biblios/export.csv", get(export_biblios_csv))
-        .route("/biblios/load-marc", post(load_marc))
-        .route("/biblios/import-marc-batch", post(import_marc_batch))
-        .route("/biblios/list-marc-batches", get(list_marc_batches))
-        .route("/biblios/marc-batch/:batch_id", get(load_marc_batch))
-}
-
 #[derive(Debug, Deserialize, Default)]
-pub struct GetBiblioQuery {
+pub struct GetItemQuery {
     /// If true, include the full MARC record (marc_record JSONB) in the response
     #[serde(default)]
     pub full_record: bool,
@@ -83,11 +67,11 @@ impl<T: for<'a> ToSchema<'a>> PaginatedResponse<T> {
     }
 }
 
-/// List biblios with search and pagination
+/// List items with search and pagination
 #[utoipa::path(
     get,
-    path = "/biblios",
-    tag = "biblios",
+    path = "/items",
+    tag = "items",
     security(("bearer_auth" = [])),
     params(
         ("media_type" = Option<String>, Query, description = "Filter by media type"),
@@ -95,80 +79,78 @@ impl<T: for<'a> ToSchema<'a>> PaginatedResponse<T> {
         ("author" = Option<String>, Query, description = "Search by author"),
         ("isbn" = Option<String>, Query, description = "Search by ISBN/ISSN"),
         ("freesearch" = Option<String>, Query, description = "Full-text search"),
-        ("serie" = Option<String>, Query, description = "Filter by series name (substring)"),
-        ("serie_id" = Option<i64>, Query, description = "Filter by series ID (exact match)"),
-        ("collection" = Option<String>, Query, description = "Filter by collection name (substring)"),
-        ("collection_id" = Option<i64>, Query, description = "Filter by collection ID (exact match)"),
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
         ("per_page" = Option<i64>, Query, description = "Items per page (default: 20)")
     ),
     responses(
-        (status = 200, description = "List of bibliographic records", body = PaginatedResponse<BiblioShort>),
+        (status = 200, description = "List of items", body = PaginatedResponse<ItemShort>),
         (status = 401, description = "Not authenticated")
     )
 )]
-pub async fn list_biblios(
+pub async fn list_items(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
-    Query(query): Query<BiblioQuery>,
-) -> AppResult<Json<PaginatedResponse<BiblioShort>>> {
+    Query(query): Query<ItemQuery>,
+) -> AppResult<Json<PaginatedResponse<ItemShort>>> {
     claims.require_read_items()?;
 
-    let (biblios, total) = state.services.catalog.search_biblios(&query).await?;
+    let (items, total) = state.services.catalog.search_items(&query).await?;
     let page = query.page.unwrap_or(1);
     let per_page = query.per_page.unwrap_or(20);
 
-    Ok(Json(PaginatedResponse::new(biblios, total, page, per_page)))
+    Ok(Json(PaginatedResponse::new(items, total, page, per_page)))
 }
 
-/// Get biblio details by ID
+/// Get item details by ID
 #[utoipa::path(
     get,
-    path = "/biblios/{id}",
-    tag = "biblios",
+    path = "/items/{id}",
+    tag = "items",
     security(("bearer_auth" = [])),
     params(
-        ("id" = i64, Path, description = "Biblio ID"),
+        ("id" = i32, Path, description = "Item ID"),
         ("full_record" = Option<bool>, Query, description = "If true, include full MARC record data")
     ),
     responses(
-        (status = 200, description = "Bibliographic record details", body = Biblio),
-        (status = 404, description = "Biblio not found")
+        (status = 200, description = "Item details", body = Item),
+        (status = 404, description = "Item not found")
     )
 )]
-pub async fn get_biblio(
+pub async fn get_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     Path(id): Path<i64>,
-    Query(_query): Query<GetBiblioQuery>,
-) -> AppResult<Json<Biblio>> {
+    Query(query): Query<GetItemQuery>,
+) -> AppResult<Json<Item>> {
     claims.require_read_items()?;
 
-    let biblio = state.services.catalog.get_biblio(id).await?;
-    Ok(Json(biblio))
+   
+    let item = state.services.catalog.get_item(id).await?;
+    Ok(Json(item))
 }
 
-/// Query params for create biblio
+/// Query params for create item
 #[serde_as]
 #[derive(Debug, Deserialize, Default, ToSchema)]
-pub struct CreateBiblioQuery {
-    /// If true, allow creating a biblio even when another has the same ISBN
+pub struct CreateItemQuery {
+    /// If true, allow creating an item even when another item has the same ISBN
     #[serde(default)]
     pub allow_duplicate_isbn: bool,
-    /// Set to the existing biblio ID to confirm replacement of a duplicate
+    /// Set to the existing item ID to confirm replacement of a duplicate
     pub confirm_replace_existing_id: Option<i64>,
 }
 
-/// Response body for biblio creation (biblio + optional dedup report)
+/// Response body for item creation (item + optional dedup report)
 #[derive(Serialize, ToSchema)]
-pub struct CreateBiblioResponse {
-    pub biblio: Biblio,
+pub struct CreateItemResponse {
+    pub item: Item,
     pub import_report: ImportReport,
 }
 
 /// Query params for UNIMARC upload
 #[derive(Debug, Deserialize)]
-pub struct UploadUnimarcQuery {}
+pub struct UploadUnimarcQuery {
+}
 
 /// Query params for MARC batch import
 #[serde_as]
@@ -182,74 +164,69 @@ pub struct ImportMarcBatchQuery {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub batch_id: i64,
-    /// Optional record id inside the batch (e.g. "1", "2", ...)
+    /// Optional record id inside the batch (e.g. \"1\", \"2\", ...)
     pub record_id: Option<usize>,
-    /// If true, allow creating a biblio even when another has the same ISBN
-    #[serde(default)]
-    pub allow_duplicate_isbn: bool,
-    /// Set to the existing biblio ID to confirm replacement of a duplicate
-    pub confirm_replace_existing_id: Option<i64>,
 }
 
-/// Create a new bibliographic record (with ISBN deduplication)
+/// Create a new item (with ISBN deduplication)
 #[utoipa::path(
     post,
-    path = "/biblios",
-    tag = "biblios",
+    path = "/items",
+    tag = "items",
     security(("bearer_auth" = [])),
     params(
         ("allow_duplicate_isbn" = Option<bool>, Query, description = "Allow duplicate ISBN (default: false)"),
-        ("confirm_replace_existing_id" = Option<i64>, Query, description = "Confirm replacement of duplicate biblio")
+        ("confirm_replace_existing_id" = Option<i64>, Query, description = "Confirm replacement of duplicate item")
     ),
-    request_body = Biblio,
+    request_body = Item,
     responses(
-        (status = 201, description = "Biblio created or merged", body = CreateBiblioResponse),
+        (status = 201, description = "Item created or merged", body = CreateItemResponse),
         (status = 400, description = "Invalid input"),
         (status = 409, description = "Duplicate ISBN requires confirmation", body = crate::models::import_report::DuplicateConfirmationRequired)
     )
 )]
-pub async fn create_biblio(
+pub async fn create_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
-    Query(query): Query<CreateBiblioQuery>,
-    Json(biblio): Json<Biblio>,
-) -> AppResult<(StatusCode, Json<CreateBiblioResponse>)> {
+    Query(query): Query<CreateItemQuery>,
+    Json(item): Json<Item>,
+) -> AppResult<(StatusCode, Json<CreateItemResponse>)> {
     claims.require_write_items()?;
-    let (biblio, import_report) = state
+    let (item, import_report) = state
         .services
         .catalog
-        .create_biblio(biblio, query.allow_duplicate_isbn, query.confirm_replace_existing_id)
+        .create_item(item, query.allow_duplicate_isbn, query.confirm_replace_existing_id)
         .await?;
 
     state.services.audit.log(
         audit::event::ITEM_CREATED,
         Some(claims.user_id),
-        Some("biblio"),
-        biblio.id,
+        Some("item"),
+        item.id,
         ip,
-        Some(&biblio),
+        Some(&item),
     );
 
-    Ok((StatusCode::CREATED, Json(CreateBiblioResponse { biblio, import_report })))
+    Ok((StatusCode::CREATED, Json(CreateItemResponse { item, import_report })))
 }
 
-/// Upload a UNIMARC file and return parsed biblios with linked items (995/952).
+/// Upload a UNIMARC file and return parsed items with linked specimens (995/952).
 #[utoipa::path(
     post,
-    path = "/biblios/load-marc",
-    tag = "biblios",
+    path = "/items/load-marc",
+    tag = "items",
     security(("bearer_auth" = [])),
     params(
         ("source_id" = i64, Query, description = "Source ID associated to this MARC batch")
     ),
     responses(
-        (status = 200, description = "Parsed biblios with physical items", body = EnqueueResult),
+        (status = 200, description = "Parsed items with specimens", body = EnqueueResult),
         (status = 400, description = "Missing file or invalid UNIMARC"),
         (status = 401, description = "Not authenticated")
     )
 )]
-pub async fn load_marc(
+pub async fn upload_unimarc(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     mut multipart: Multipart,
@@ -277,22 +254,25 @@ pub async fn load_marc(
         ));
     }
 
-    let enqueue_result = state.services.marc.enqueue_unimarc_batch(&data).await?;
+    let enqueue_result = state
+        .services
+        .marc
+        .enqueue_unimarc_batch(&data)
+        .await?;
 
+    // store 
     Ok(Json(enqueue_result))
 }
 
 /// Import cached MARC records from a batch into the catalog.
 #[utoipa::path(
     post,
-    path = "/biblios/import-marc-batch",
-    tag = "biblios",
+    path = "/items/import-marc-batch",
+    tag = "items",
     security(("bearer_auth" = [])),
     params(
         ("batch_id" = String, Query, description = "MARC batch identifier returned by upload_unimarc"),
-        ("record_id" = Option<String>, Query, description = "Optional record id inside batch; if omitted, import all records"),
-        ("allow_duplicate_isbn" = Option<bool>, Query, description = "Allow creating a biblio even when another has the same ISBN (default: false)"),
-        ("confirm_replace_existing_id" = Option<i64>, Query, description = "Set to the existing biblio ID to confirm replacement of a duplicate")
+        ("record_id" = Option<String>, Query, description = "Optional record id inside batch; if omitted, import all records")
     ),
     responses(
         (status = 200, description = "MARC batch import report", body = MarcBatchImportReport),
@@ -309,13 +289,7 @@ pub async fn import_marc_batch(
     let report = state
         .services
         .marc
-        .import_from_batch(
-            params.batch_id,
-            params.source_id,
-            params.record_id,
-            params.allow_duplicate_isbn,
-            params.confirm_replace_existing_id,
-        )
+        .import_from_batch(params.batch_id, params.source_id, params.record_id)
         .await?;
 
     state.services.audit.log(
@@ -330,38 +304,38 @@ pub async fn import_marc_batch(
     Ok(Json(report))
 }
 
-/// Update an existing bibliographic record
+/// Update an existing item
 #[utoipa::path(
     put,
-    path = "/biblios/{id}",
-    tag = "biblios",
+    path = "/items/{id}",
+    tag = "items",
     security(("bearer_auth" = [])),
     params(
-        ("id" = i64, Path, description = "Biblio ID"),
+        ("id" = i32, Path, description = "Item ID"),
         ("allow_duplicate_isbn" = Option<bool>, Query, description = "Allow duplicate ISBN (default: false)")
     ),
-    request_body = Biblio,
+    request_body = Item,
     responses(
-        (status = 200, description = "Biblio updated", body = Biblio),
-        (status = 404, description = "Biblio not found"),
+        (status = 200, description = "Item updated", body = Item),
+        (status = 404, description = "Item not found"),
         (status = 409, description = "Duplicate ISBN requires confirmation")
     )
 )]
-pub async fn update_biblio(
+pub async fn update_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
-    Query(query): Query<UpdateBiblioQuery>,
-    Json(biblio): Json<Biblio>,
-) -> AppResult<Json<Biblio>> {
+    Query(query): Query<UpdateItemQuery>,
+    Json(item): Json<Item>,
+) -> AppResult<Json<Item>> {
     claims.require_write_items()?;
-    let updated = state.services.catalog.update_biblio(id, biblio, query.allow_duplicate_isbn).await?;
+    let updated = state.services.catalog.update_item(id, item, query.allow_duplicate_isbn).await?;
 
     state.services.audit.log(
         audit::event::ITEM_UPDATED,
         Some(claims.user_id),
-        Some("biblio"),
+        Some("item"),
         Some(id),
         ip,
         Some((id, &updated)),
@@ -371,211 +345,48 @@ pub async fn update_biblio(
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
-pub struct UpdateBiblioQuery {
+pub struct UpdateItemQuery {
     #[serde(default)]
     pub allow_duplicate_isbn: bool,
 }
 
-/// Delete a bibliographic record
+/// Delete an item
 #[utoipa::path(
     delete,
-    path = "/biblios/{id}",
-    tag = "biblios",
+    path = "/items/{id}",
+    tag = "items",
     security(("bearer_auth" = [])),
     params(
-        ("id" = i64, Path, description = "Biblio ID"),
-        ("force" = Option<bool>, Query, description = "Force delete even if physical items are borrowed")
+        ("id" = i32, Path, description = "Item ID"),
+        ("force" = Option<bool>, Query, description = "Force delete even if specimens are borrowed")
     ),
     responses(
-        (status = 204, description = "Biblio deleted"),
-        (status = 404, description = "Biblio not found"),
-        (status = 409, description = "Biblio has borrowed items")
-    )
-)]
-pub async fn delete_biblio(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    ClientIp(ip): ClientIp,
-    Path(id): Path<i64>,
-    Query(params): Query<DeleteBiblioParams>,
-) -> AppResult<StatusCode> {
-    claims.require_write_items()?;
-    state
-        .services
-        .catalog
-        .delete_biblio(id, params.force.unwrap_or(false))
-        .await?;
-
-    state.services.audit.log(
-        audit::event::ITEM_DELETED,
-        Some(claims.user_id),
-        Some("biblio"),
-        Some(id),
-        ip,
-        Some(serde_json::json!({ "id": id, "force": params.force.unwrap_or(false) })),
-    );
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Deserialize)]
-pub struct DeleteBiblioParams {
-    pub force: Option<bool>,
-}
-
-/// List physical items for a bibliographic record
-#[utoipa::path(
-    get,
-    path = "/biblios/{id}/items",
-    tag = "biblios",
-    security(("bearer_auth" = [])),
-    params(
-        ("id" = i64, Path, description = "Biblio ID")
-    ),
-    responses(
-        (status = 200, description = "List of physical items (copies)", body = Vec<Item>),
-        (status = 404, description = "Biblio not found")
-    )
-)]
-pub async fn list_items(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    Path(biblio_id): Path<i64>,
-) -> AppResult<Json<Vec<Item>>> {
-    claims.require_read_items()?;
-
-    let items = state.services.catalog.get_items(biblio_id).await?;
-    Ok(Json(items))
-}
-
-/// Create a new physical item for a bibliographic record
-#[utoipa::path(
-    post,
-    path = "/biblios/{id}/items",
-    tag = "biblios",
-    security(("bearer_auth" = [])),
-    params(
-        ("id" = i64, Path, description = "Biblio ID")
-    ),
-    request_body = Item,
-    responses(
-        (status = 201, description = "Physical item created", body = Item),
-        (status = 404, description = "Biblio not found"),
-        (status = 409, description = "An item with this barcode already exists", body = crate::models::import_report::DuplicateItemBarcodeRequired)
-    )
-)]
-pub async fn create_item(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    ClientIp(ip): ClientIp,
-    Path(biblio_id): Path<i64>,
-    ValidatedJson(item): ValidatedJson<Item>,
-) -> AppResult<(StatusCode, Json<Item>)> {
-    claims.require_write_items()?;
-    let created = state
-        .services
-        .catalog
-        .create_item(biblio_id, item)
-        .await?;
-
-    state.services.audit.log(
-        audit::event::SPECIMEN_CREATED,
-        Some(claims.user_id),
-        Some("item"),
-        created.id,
-        ip,
-        Some((biblio_id, &created)),
-    );
-
-    Ok((StatusCode::CREATED, Json(created)))
-}
-
-/// Update a physical item
-#[utoipa::path(
-    put,
-    path = "/biblios/{biblio_id}/items/{item_id}",
-    tag = "biblios",
-    security(("bearer_auth" = [])),
-    params(
-        ("biblio_id" = i64, Path, description = "Biblio ID"),
-        ("item_id" = i64, Path, description = "Physical item ID")
-    ),
-    request_body = Item,
-    responses(
-        (status = 200, description = "Physical item updated", body = Item),
-        (status = 404, description = "Biblio or item not found"),
-        (status = 409, description = "An item with this barcode already exists")
-    )
-)]
-pub async fn update_item(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    ClientIp(ip): ClientIp,
-    Path(biblio_id): Path<i64>,
-    ValidatedJson(mut item): ValidatedJson<Item>,
-) -> AppResult<Json<Item>> {
-    claims.require_write_items()?;
-    let item_id = item.id;
-    state
-        .services
-        .catalog
-        .update_item(biblio_id, &mut item)
-        .await?;
-
-    state.services.audit.log(
-        audit::event::SPECIMEN_UPDATED,
-        Some(claims.user_id),
-        Some("item"),
-        item_id,
-        ip,
-        Some((biblio_id, &item)),
-    );
-
-    Ok(Json(item))
-}
-
-/// Delete a physical item
-#[utoipa::path(
-    delete,
-    path = "/biblios/{biblio_id}/items/{item_id}",
-    tag = "biblios",
-    security(("bearer_auth" = [])),
-    params(
-        ("biblio_id" = i64, Path, description = "Biblio ID"),
-        ("item_id" = i64, Path, description = "Physical item ID"),
-        ("force" = Option<bool>, Query, description = "Force delete even if borrowed")
-    ),
-    responses(
-        (status = 204, description = "Physical item deleted"),
+        (status = 204, description = "Item deleted"),
         (status = 404, description = "Item not found"),
-        (status = 409, description = "Item is borrowed")
+        (status = 409, description = "Item has borrowed specimens")
     )
 )]
 pub async fn delete_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
-    Path((biblio_id, item_id)): Path<(i64, i64)>,
+    Path(id): Path<i64>,
     Query(params): Query<DeleteItemParams>,
 ) -> AppResult<StatusCode> {
     claims.require_write_items()?;
     state
         .services
         .catalog
-        .delete_item(biblio_id, item_id, params.force.unwrap_or(false))
+        .delete_item(id, params.force.unwrap_or(false))
         .await?;
 
     state.services.audit.log(
-        audit::event::SPECIMEN_DELETED,
+        audit::event::ITEM_DELETED,
         Some(claims.user_id),
         Some("item"),
-        Some(item_id),
+        Some(id),
         ip,
-        Some(serde_json::json!({
-            "biblio_id": biblio_id,
-            "item_id": item_id,
-            "force": params.force.unwrap_or(false),
-        })),
+        Some(serde_json::json!({ "id": id, "force": params.force.unwrap_or(false) })),
     );
 
     Ok(StatusCode::NO_CONTENT)
@@ -586,59 +397,177 @@ pub struct DeleteItemParams {
     pub force: Option<bool>,
 }
 
-/// List all MARC batches currently cached in Redis.
+/// List specimens for an item
 #[utoipa::path(
     get,
-    path = "/biblios/list-marc-batches",
-    tag = "biblios",
-    security(("bearer_auth" = [])),
-    responses(
-        (status = 200, description = "List of cached MARC batches", body = Vec<MarcBatchInfo>),
-        (status = 401, description = "Not authenticated")
-    )
-)]
-pub async fn list_marc_batches(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-) -> AppResult<Json<Vec<MarcBatchInfo>>> {
-    claims.require_read_items()?;
-    let batches = state.services.marc.list_marc_batches().await?;
-    Ok(Json(batches))
-}
-
-/// Reload a cached MARC batch from Redis by its batch ID.
-#[utoipa::path(
-    get,
-    path = "/biblios/marc-batch/{batch_id}",
-    tag = "biblios",
+    path = "/items/{id}/specimens",
+    tag = "items",
     security(("bearer_auth" = [])),
     params(
-        ("batch_id" = String, Path, description = "MARC batch identifier (Snowflake ID as string)")
+        ("id" = i32, Path, description = "Item ID")
     ),
     responses(
-        (status = 200, description = "Cached MARC batch contents", body = EnqueueResult),
-        (status = 404, description = "Batch not found or expired"),
-        (status = 401, description = "Not authenticated")
+        (status = 200, description = "List of specimens", body = Vec<Specimen>),
+        (status = 404, description = "Item not found")
     )
 )]
-pub async fn load_marc_batch(
+pub async fn list_specimens(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
-    Path(batch_id): Path<i64>,
-) -> AppResult<Json<EnqueueResult>> {
+    Path(item_id): Path<i64>,
+) -> AppResult<Json<Vec<Specimen>>> {
     claims.require_read_items()?;
-    let result = state.services.marc.load_marc_batch(batch_id).await?;
-    Ok(Json(result))
+
+    let specimens = state.services.catalog.get_specimens(item_id).await?;
+    Ok(Json(specimens))
+}
+
+/// Create a new specimen for an item
+#[utoipa::path(
+    post,
+    path = "/items/{id}/specimens",
+    tag = "items",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i32, Path, description = "Item ID")
+    ),
+    request_body = Specimen,
+    responses(
+        (status = 201, description = "Specimen created", body = Specimen),
+        (status = 404, description = "Item not found"),
+        (status = 409, description = "A specimen with this barcode already exists")
+    )
+)]
+pub async fn create_specimen(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Path(item_id): Path<i64>,
+    ValidatedJson(specimen): ValidatedJson<Specimen>,
+) -> AppResult<(StatusCode, Json<Specimen>)> {
+    claims.require_write_items()?;
+    let created = state
+        .services
+        .catalog
+        .create_specimen(item_id, specimen)
+        .await?;
+
+    state.services.audit.log(
+        audit::event::SPECIMEN_CREATED,
+        Some(claims.user_id),
+        Some("specimen"),
+        created.id,
+        ip,
+        Some((item_id, &created)),
+    );
+
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+/// Update a specimen
+#[utoipa::path(
+    put,
+    path = "/items/{item_id}/specimens/{specimen_id}",
+    tag = "items",
+    security(("bearer_auth" = [])),
+    params(
+        ("item_id" = i32, Path, description = "Item ID"),
+        ("specimen_id" = i32, Path, description = "Specimen ID")
+    ),
+    request_body = Specimen,
+    responses(
+        (status = 200, description = "Specimen updated", body = Specimen),
+        (status = 404, description = "Item or specimen not found"),
+        (status = 409, description = "A specimen with this barcode already exists")
+    )
+)]
+pub async fn update_specimen(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Path(item_id): Path<i64>,
+    ValidatedJson(mut specimen): ValidatedJson<Specimen>,
+) -> AppResult<Json<Specimen>> {
+    claims.require_write_items()?;
+    let specimen_id = specimen.id;
+    state
+        .services
+        .catalog
+        .update_specimen(item_id, &mut specimen)
+        .await?;
+
+    state.services.audit.log(
+        audit::event::SPECIMEN_UPDATED,
+        Some(claims.user_id),
+        Some("specimen"),
+        specimen_id,
+        ip,
+        Some((item_id, &specimen)),
+    );
+
+    Ok(Json(specimen))
+}
+
+/// Delete a specimen
+#[utoipa::path(
+    delete,
+    path = "/items/{item_id}/specimens/{specimen_id}",
+    tag = "items",
+    security(("bearer_auth" = [])),
+    params(
+        ("item_id" = i32, Path, description = "Item ID"),
+        ("specimen_id" = i32, Path, description = "Specimen ID"),
+        ("force" = Option<bool>, Query, description = "Force delete even if borrowed")
+    ),
+    responses(
+        (status = 204, description = "Specimen deleted"),
+        (status = 404, description = "Specimen not found"),
+        (status = 409, description = "Specimen is borrowed")
+    )
+)]
+pub async fn delete_specimen(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Path((item_id, specimen_id)): Path<(i64, i64)>,
+    Query(params): Query<DeleteSpecimenParams>,
+) -> AppResult<StatusCode> {
+    claims.require_write_items()?;
+    state
+        .services
+        .catalog
+        .delete_specimen(item_id, specimen_id, params.force.unwrap_or(false))
+        .await?;
+
+    state.services.audit.log(
+        audit::event::SPECIMEN_DELETED,
+        Some(claims.user_id),
+        Some("specimen"),
+        Some(specimen_id),
+        ip,
+        Some(serde_json::json!({
+            "item_id": item_id,
+            "specimen_id": specimen_id,
+            "force": params.force.unwrap_or(false),
+        })),
+    );
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct DeleteSpecimenParams {
+    pub force: Option<bool>,
 }
 
 /// Export catalog as CSV
 ///
-/// Returns a UTF-8 CSV file with all bibliographic records matching the query.
-/// Streams all pages — does not paginate. Use the same query params as `GET /biblios`.
+/// Returns a UTF-8 CSV file with all items matching the query.
+/// Streams all pages — does not paginate. Use the same query params as `GET /items`.
 #[utoipa::path(
     get,
-    path = "/biblios/export.csv",
-    tag = "biblios",
+    path = "/items/export.csv",
+    tag = "items",
     security(("bearer_auth" = [])),
     params(
         ("title" = Option<String>, Query, description = "Filter by title"),
@@ -650,21 +579,22 @@ pub async fn load_marc_batch(
         (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse)
     )
 )]
-pub async fn export_biblios_csv(
+pub async fn export_items_csv(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
-    Query(mut query): Query<BiblioQuery>,
+    Query(mut query): Query<ItemQuery>,
 ) -> AppResult<axum::response::Response> {
     claims.require_read_catalog()?;
 
+    // Fetch all results (high per_page)
     query.page = Some(1);
     query.per_page = Some(10_000);
 
-    let (biblios, _) = state.services.catalog.search_biblios(&query).await?;
+    let (items, _) = state.services.catalog.search_items(&query).await?;
 
-    let mut csv = String::from("id,isbn,title,author,media_type,date,items\n");
-    for biblio in &biblios {
-        let author_name = biblio
+    let mut csv = String::from("id,isbn,title,author,media_type,date,specimens\n");
+    for item in &items {
+        let author_name = item
             .author
             .as_ref()
             .map(|a| {
@@ -679,13 +609,13 @@ pub async fn export_biblios_csv(
             .unwrap_or_default();
         csv.push_str(&format!(
             "{},{},{},{},{},{},{}\n",
-            biblio.id,
-            escape_csv(biblio.isbn.as_ref().map(|i| i.as_str()).unwrap_or("")),
-            escape_csv(biblio.title.as_deref().unwrap_or("")),
+            item.id,
+            escape_csv(item.isbn.as_ref().map(|i| i.as_str()).unwrap_or("")),
+            escape_csv(item.title.as_deref().unwrap_or("")),
             escape_csv(&author_name),
-            escape_csv(biblio.media_type.as_db_str()),
-            escape_csv(biblio.date.as_deref().unwrap_or("")),
-            biblio.items.len(),
+            escape_csv(item.media_type.as_db_str()),
+            escape_csv(item.date.as_deref().unwrap_or("")),
+            item.specimens.len(),
         ));
     }
 
@@ -711,4 +641,13 @@ fn escape_csv(s: &str) -> String {
     }
 }
 
-
+/// Build the items/specimens routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, post};
+    axum::Router::new()
+        .route("/items", get(list_items).post(create_item))
+        .route("/items/export.csv", get(export_items_csv))
+        .route("/items/{id}", get(get_item).put(update_item).delete(delete_item))
+        .route("/items/{item_id}/specimens", get(list_specimens).post(create_specimen).put(update_specimen))
+        .route("/items/{item_id}/specimens/{specimen_id}", delete(delete_specimen))
+}

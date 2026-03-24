@@ -62,7 +62,7 @@ impl SettingsService {
             encoding: row
                 .get::<Option<String>, _>("encoding")
                 .unwrap_or_else(|| "utf-8".to_string()),
-            is_active: row.get::<Option<i32>, _>("activated").unwrap_or(0) == 1,
+            is_active: row.get::<Option<bool>, _>("activated").unwrap_or(false),
         })
         .collect();
 

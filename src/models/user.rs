@@ -501,7 +501,6 @@ pub struct UserRights {
     pub loans_rights: Rights,
     pub borrows_rights: Rights,
     pub settings_rights: Rights,
-    pub items_archive_rights: Rights,
 }
 
 impl Default for UserRights {
@@ -512,7 +511,6 @@ impl Default for UserRights {
             loans_rights: Rights::None,
             borrows_rights: Rights::None,
             settings_rights: Rights::None,
-            items_archive_rights: Rights::None,
         }
     }
 }
@@ -659,6 +657,24 @@ impl UserClaims {
             Ok(())
         } else {
             Err(AppError::Authorization("Administrator privileges required".to_string()))
+        }
+    }
+
+    /// Allow access only when the caller is the target user, or a librarian/admin.
+    pub fn require_self_or_staff(&self, target_user_id: i64) -> Result<(), AppError> {
+        if self.user_id == target_user_id || self.is_librarian() {
+            Ok(())
+        } else {
+            Err(AppError::Authorization("Access denied".to_string()))
+        }
+    }
+
+    /// Allow access only when the caller is the target user, or an admin.
+    pub fn require_self_or_admin(&self, target_user_id: i64) -> Result<(), AppError> {
+        if self.user_id == target_user_id || self.is_admin() {
+            Ok(())
+        } else {
+            Err(AppError::Authorization("Access denied".to_string()))
         }
     }
 }

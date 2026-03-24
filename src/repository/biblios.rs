@@ -199,7 +199,6 @@ struct ItemShortRow {
     call_number: Option<String>,
     borrowable: bool,
     source_name: Option<String>,
-    availability: Option<i64>,
 }
 
 impl From<ItemShortRow> for ItemShort {
@@ -210,7 +209,6 @@ impl From<ItemShortRow> for ItemShort {
             call_number: r.call_number,
             borrowable: r.borrowable,
             source_name: r.source_name,
-            availability: r.availability,
         }
     }
 }
@@ -1298,10 +1296,12 @@ impl Repository {
             }
         }
 
+        // prefix barcode with ARCH_<timestamp>_<BARCODE>
         sqlx::query(
-            "UPDATE items SET archived_at = $1, updated_at = $1 WHERE biblio_id = $2 AND archived_at IS NULL"
+            "UPDATE items SET archived_at = $1, updated_at = $1, barcode = CONCAT('ARCH_', $2, '_', barcode) WHERE biblio_id = $3 AND archived_at IS NULL"
         )
         .bind(now)
+        .bind(now.format("%Y%m%d%H%M%S").to_string())
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -1773,9 +1773,10 @@ impl Repository {
         }
 
         sqlx::query(
-            "UPDATE items SET archived_at = $1, updated_at = $1 WHERE id = $2"
+            "UPDATE items SET archived_at = $1, updated_at = $1, barcode = CONCAT('ARCH_', $2, '_', barcode) WHERE biblio_id = $3 AND archived_at IS NULL"
         )
         .bind(now)
+        .bind(now.format("%Y%m%d%H%M%S").to_string())
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -1918,7 +1919,7 @@ impl Repository {
                        (SELECT COUNT(*) FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as availability
                 FROM items i
                 LEFT JOIN sources so ON i.source_id = so.id
-                WHERE i.barcode = $1 AND i.id != $2
+                WHERE i.barcode = $1 AND i.id != $2 AND i.archived_at IS NULL
                 LIMIT 1
                 "#,
             )
@@ -1934,7 +1935,7 @@ impl Repository {
                        (SELECT COUNT(*) FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as availability
                 FROM items i
                 LEFT JOIN sources so ON i.source_id = so.id
-                WHERE i.barcode = $1
+                WHERE i.barcode = $1 AND i.archived_at IS NULL
                 LIMIT 1
                 "#,
             )

@@ -297,7 +297,6 @@ impl Repository {
                 call_number: row.get("item_call_number"),
                 borrowable: row.get("item_borrowable"),
                 source_name: row.get("item_source_name"),
-                availability: Some(0),
             };
 
             LoanDetails {
@@ -545,7 +544,6 @@ impl Repository {
             call_number: biblio_row.get("item_call_number"),
             borrowable: biblio_row.get("item_borrowable"),
             source_name: biblio_row.get("item_source_name"),
-            availability: Some(1),
         };
 
         Ok(LoanDetails {

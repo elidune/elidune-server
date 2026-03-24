@@ -102,7 +102,6 @@ impl From<ImportItem> for Item {
             updated_at: None,
             archived_at: None,
             source_name: None,
-            availability: None,
         }
     }
 }

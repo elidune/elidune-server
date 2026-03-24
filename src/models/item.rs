@@ -45,13 +45,11 @@ pub struct Item {
     pub archived_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub source_name: Option<String>,
-    #[serde(default)]
-    pub availability: Option<i64>,
 }
 
 impl Item {
     pub fn is_available(&self) -> bool {
-        self.archived_at.is_none() && self.availability.unwrap_or(0) > 0
+        self.archived_at.is_none()
     }
 
     pub fn is_archived(&self) -> bool {
@@ -70,7 +68,6 @@ pub struct ItemShort {
     pub call_number: Option<String>,
     pub borrowable: bool,
     pub source_name: Option<String>,
-    pub availability: Option<i64>,
 }
 
 impl From<Item> for ItemShort {
@@ -81,7 +78,6 @@ impl From<Item> for ItemShort {
             call_number: item.call_number,
             borrowable: item.borrowable,
             source_name: item.source_name,
-            availability: item.availability,
         }
     }
 }

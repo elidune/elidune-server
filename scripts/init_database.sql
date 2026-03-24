@@ -29,11 +29,26 @@ CREATE TABLE IF NOT EXISTS account_types (
     settings_rights     VARCHAR(1)
 );
 
+INSERT INTO account_types (code, name, items_rights, users_rights, loans_rights, items_archive_rights, borrows_rights, settings_rights) VALUES
+    ('guest', 'Guest', 'r', 'r', 'n', 'n', 'n', 'r'),
+    ('reader', 'Reader', 'r', 'r', 'r', 'r', 'r', 'r'),
+    ('librarian', 'Librarian', 'w', 'w', 'w', 'w', 'w', 'r'),
+    ('admin', 'Administrator', 'w', 'w', 'w', 'w', 'w', 'w'),
+    ('group', 'Group', 'r', 'r', 'r', 'r', 'r', 'r');
+
+
+
 CREATE TABLE IF NOT EXISTS fees (
     code    VARCHAR(50)  PRIMARY KEY,
     name    VARCHAR(100),
     amount  INTEGER DEFAULT 0
 );
+
+-- insert some basic fees
+INSERT INTO fees (code, name, amount) VALUES
+    ('free', 'Free', 0),
+    ('local', 'Local', 0),
+    ('foreigner', 'Foreigner', 0);
 
 CREATE TABLE IF NOT EXISTS public_types (
     id                          BIGSERIAL   PRIMARY KEY,
@@ -46,6 +61,16 @@ CREATE TABLE IF NOT EXISTS public_types (
     max_loans                   SMALLINT,
     loan_duration_days          SMALLINT
 );
+
+INSERT INTO public_types (name, label, subscription_duration_days, age_min, age_max, subscription_price, max_loans, loan_duration_days) VALUES
+    ('child',  'Child',    365, 0,    12, 0,    10,   21),
+    ('adult',  'Adult',    365, 18,   99, 1500, 5,    21),
+    ('school', 'School',     365, NULL, NULL, 0,  50,   60),
+    ('staff',  'Staff', 365, NULL, NULL, NULL, NULL, NULL),
+    ('senior', 'Senior',    365, 60,   99, 0,    5,    21)
+ON CONFLICT (name) DO NOTHING;
+
+
 
 CREATE TABLE IF NOT EXISTS public_type_loan_settings (
     id              BIGSERIAL   PRIMARY KEY,
@@ -60,15 +85,7 @@ CREATE TABLE IF NOT EXISTS public_type_loan_settings (
 CREATE INDEX IF NOT EXISTS idx_public_type_loan_settings_public_type
     ON public_type_loan_settings(public_type_id);
 
--- Default public types (child=1, adult=2, school=3, staff=4, senior=5)
-INSERT INTO public_types (name, label, subscription_duration_days, age_min, age_max, subscription_price, max_loans, loan_duration_days)
-VALUES
-    ('child',  'Enfant',    365, 0,    12, 0,    10,   21),
-    ('adult',  'Adulte',    365, 18,   99, 1500, 5,    21),
-    ('school', 'École',     365, NULL, NULL, 0,  50,   60),
-    ('staff',  'Personnel', 365, NULL, NULL, NULL, NULL, NULL),
-    ('senior', 'Senior',    365, 60,   99, 0,    5,    21)
-ON CONFLICT (name) DO NOTHING;
+
 
 -- =============================================================================
 -- AUTHORS
@@ -150,6 +167,8 @@ CREATE TABLE IF NOT EXISTS sources (
 CREATE UNIQUE INDEX IF NOT EXISTS sources_default_unique
     ON sources ("default") WHERE "default" = TRUE;
 
+INSERT INTO sources (name, is_archive, "default") VALUES ('MyLibrary', 0, TRUE);
+
 -- =============================================================================
 -- USERS
 -- =============================================================================
@@ -189,7 +208,8 @@ CREATE TABLE IF NOT EXISTS users (
     two_factor_method   VARCHAR(20),
     totp_secret         TEXT,
     recovery_codes      TEXT,
-    recovery_codes_used TEXT
+    recovery_codes_used TEXT,
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_account_type ON users(account_type);
@@ -211,8 +231,8 @@ CREATE TABLE IF NOT EXISTS biblios (
     publication_date            VARCHAR(20),
     source_id                   BIGINT      REFERENCES sources(id) ON DELETE SET NULL,
     edition_id                  BIGINT      REFERENCES editions(id) ON DELETE SET NULL,
-    page_extent                 VARCHAR(30),
-    format                      VARCHAR(50),
+    page_extent                 TEXT,
+    format                      TEXT,
     table_of_contents           TEXT,
     accompanying_material       TEXT,
     abstract                    TEXT,
@@ -361,6 +381,11 @@ CREATE TABLE IF NOT EXISTS loans_settings (
     account_type VARCHAR(50)
 );
 
+INSERT INTO loans_settings (media_type, nb_max, nb_renews, duration, notes, account_type) VALUES
+    ('audio', 2, 2, 14, '', ''),
+    ('printedText', 3, 2, 21, '', ''),
+    ('periodic', 2, 2, 14, '', '');
+
 -- =============================================================================
 -- Z3950 SERVERS
 -- =============================================================================
@@ -378,6 +403,13 @@ CREATE TABLE IF NOT EXISTS z3950servers (
     format      VARCHAR(50),
     encoding    VARCHAR(20) DEFAULT 'utf-8'
 );
+
+
+INSERT INTO z3950servers (address, port, name, description, activated, login, password, database, format, encoding) VALUES
+    ('z3950.bnf.fr', 2211, 'BNF', 'Bibliothèque nationale de France', TRUE, 'Z3950', 'Z3950_BNF', 'TOUT-UTF8', 'UNIMARC', 'utf-8'),
+    ('z3950.loc.gov', 7090, 'Library of Congress', 'Library of Congress Z39.50 Server', TRUE, '', '', 'VOYAGER', 'MARC21', 'utf-8'),
+    ('opac.sudoc.abes.fr', 2200, 'SUDOC', 'Système Universitaire de Documentation', TRUE, '', '', 'abes', 'UNIMARC', 'utf-8');
+
 
 -- =============================================================================
 -- VISITOR COUNTS

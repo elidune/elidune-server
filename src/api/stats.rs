@@ -378,7 +378,11 @@ pub async fn get_stats(
     Ok(Json(stats))
 }
 
-/// Get advanced loan statistics
+/// Get advanced loan statistics.
+///
+/// **Scope narrowing:** non-admin callers who omit `user_id` will automatically
+/// receive their own statistics only. To query global statistics, admin privileges
+/// are required. Passing another user's `user_id` without admin rights returns 403.
 #[utoipa::path(
     get,
     path = "/stats/loans",
@@ -386,8 +390,8 @@ pub async fn get_stats(
     security(("bearer_auth" = [])),
     params(LoanStatsQuery),
     responses(
-        (status = 200, description = "Loan statistics", body = LoanStatsResponse),
-        (status = 403, description = "Insufficient permissions")
+        (status = 200, description = "Loan statistics (scoped to caller when not admin)", body = LoanStatsResponse),
+        (status = 403, description = "Insufficient permissions or querying another user without admin rights")
     )
 )]
 pub async fn get_loan_stats(

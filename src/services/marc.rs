@@ -31,12 +31,17 @@ pub struct CachedMarcRecord {
 }
 
 /// Error information for a single record during batch import.
+#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarcBatchImportError {
     /// Redis record key (`marc:record:<batch_id>:<id>`).
     pub record_key: String,
     /// Human-readable error message.
     pub error: String,
+    /// ID of the existing biblio when the failure is a duplicate ISBN conflict.
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub existing_id: Option<i64>,
 }
 
 /// Report returned after importing one or more records from a batch.
@@ -51,6 +56,20 @@ pub struct MarcBatchImportReport {
     pub imported: usize,
     /// Detailed list of records that failed to import.
     pub failed: Vec<MarcBatchImportError>,
+}
+
+/// Summary of a MARC batch cached in Redis.
+#[serde_as]
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MarcBatchInfo {
+    /// Unique batch identifier (Snowflake ID).
+    #[serde_as(as = "DisplayFromStr")]
+    #[schema(value_type = String)]
+    pub batch_id: i64,
+    /// Number of records in this batch.
+    pub record_count: usize,
+    /// Remaining TTL in seconds (-1 if no expiry, -2 if key gone).
+    pub ttl_seconds: i64,
 }
 
 /// Service handling MARC batch parsing, caching and import.
@@ -100,28 +119,141 @@ impl MarcService {
         let mut conn = self.redis.get_connection().await?;
 
         let mut biblios_short = Vec::with_capacity(records.len());
+        let mut index = 0;
 
-        for (idx, record) in records.into_iter().enumerate() {
-            let key = Self::redis_key(batch_id, idx);
+        for record in records.into_iter() {
 
-            let json_str: String = serde_json::to_string(&record)
+            
+            for (idx, _) in record.local.items.iter().enumerate() {
+
+                let mut record = record.clone();
+
+                record.local.items.swap(0, idx);
+                record.local.items.truncate(1);
+
+                let json_str: String = serde_json::to_string(&record)
                 .map_err(|e| AppError::Internal(format!("Failed to serialize MARC record: {}", e)))?;
 
-            // Store record
-            redis::cmd("SETEX")
-            .arg(&key)
-            .arg(60 * 60 * 24) // 24 hours
-            .arg(&json_str)
-            .query_async::<_, ()>(&mut conn)
+                // Store record
+                redis::cmd("SETEX")
+                .arg(&Self::redis_key(batch_id, index))
+                .arg(60 * 60 * 24) // 24 hours
+                .arg(&json_str)
+                .query_async::<_, ()>(&mut conn)
+                .await
+                .map_err(|e| AppError::Internal(format!("Failed to store MARC record in Redis: {}", e)))?;
+
+                // Build preview biblio from MARC record.
+                let mut biblio: Biblio = record.into();
+                biblio.id.replace(index as i64);
+
+                let short = BiblioShort::from(biblio);
+                biblios_short.push(short);
+
+                index += 1;
+            }
+
+
+          
+        }
+
+        Ok(EnqueueResult { batch_id, biblios: biblios_short })
+    }
+
+    /// List all MARC batches currently cached in Redis.
+    ///
+    /// Scans keys matching `marc:record:*`, groups them by `batch_id`, and
+    /// fetches the TTL of one representative key per batch.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn list_marc_batches(&self) -> AppResult<Vec<MarcBatchInfo>> {
+        let mut conn = self.redis.get_connection().await?;
+
+        let all_keys: Vec<String> = redis::cmd("KEYS")
+            .arg("marc:record:*")
+            .query_async::<_, Vec<String>>(&mut conn)
             .await
-            .map_err(|e| AppError::Internal(format!("Failed to store MARC record in Redis: {}", e)))?;
+            .map_err(|e| AppError::Internal(format!("Failed to list MARC batch keys in Redis: {}", e)))?;
 
-            // Build preview biblio from MARC record.
+        // Group keys by batch_id. Key format: marc:record:<batch_id>:<idx>
+        let mut batch_map: std::collections::HashMap<i64, (usize, String)> = std::collections::HashMap::new();
+        for key in &all_keys {
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() != 4 {
+                continue;
+            }
+            let Ok(batch_id) = parts[2].parse::<i64>() else {
+                continue;
+            };
+            let entry = batch_map.entry(batch_id).or_insert((0, key.clone()));
+            entry.0 += 1;
+        }
+
+        let mut batches = Vec::with_capacity(batch_map.len());
+        for (batch_id, (record_count, sample_key)) in batch_map {
+            let ttl_seconds: i64 = redis::cmd("TTL")
+                .arg(&sample_key)
+                .query_async::<_, i64>(&mut conn)
+                .await
+                .unwrap_or(-2);
+
+            batches.push(MarcBatchInfo { batch_id, record_count, ttl_seconds });
+        }
+
+        // Sort newest first (higher Snowflake ID = newer).
+        batches.sort_by(|a, b| b.batch_id.cmp(&a.batch_id));
+
+        Ok(batches)
+    }
+
+    /// Reload a cached MARC batch from Redis and return it as an [`EnqueueResult`].
+    ///
+    /// Useful to re-display a batch that was uploaded earlier without re-uploading
+    /// the file.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn load_marc_batch(&self, batch_id: i64) -> AppResult<EnqueueResult> {
+        let mut conn = self.redis.get_connection().await?;
+
+        let pattern = format!("marc:record:{}:*", batch_id);
+        let mut keys: Vec<String> = redis::cmd("KEYS")
+            .arg(&pattern)
+            .query_async::<_, Vec<String>>(&mut conn)
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to list MARC batch keys in Redis: {}", e)))?;
+
+        if keys.is_empty() {
+            return Err(AppError::NotFound(format!("MARC batch {} not found in cache", batch_id)));
+        }
+
+        // Sort by record index so the preview order matches the original upload.
+        keys.sort_by_key(|k| {
+            k.rsplit(':').next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(0)
+        });
+
+        let mut biblios_short = Vec::with_capacity(keys.len());
+
+        for key in &keys {
+            let record_idx: usize = key
+                .rsplit(':')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+
+            let json_str: Option<String> = conn
+                .get(key)
+                .await
+                .map_err(|e| AppError::Internal(format!("Failed to get MARC record from Redis: {}", e)))?;
+
+            let Some(json_str) = json_str else {
+                continue;
+            };
+
+            let record: MarcRecord = serde_json::from_str(&json_str)
+                .map_err(|e| AppError::Internal(format!("Failed to deserialize MARC record: {}", e)))?;
+
             let mut biblio: Biblio = record.into();
-            biblio.id.replace(idx as i64);
+            biblio.id.replace(record_idx as i64);
 
-            let short = BiblioShort::from(biblio);
-            biblios_short.push(short);
+            biblios_short.push(BiblioShort::from(biblio));
         }
 
         Ok(EnqueueResult { batch_id, biblios: biblios_short })
@@ -140,6 +272,8 @@ impl MarcService {
         batch_id: i64,
         source_id: i64,
         record_id: Option<usize>,
+        allow_duplicate_isbn: bool,
+        confirm_replace_existing_id: Option<i64>,
     ) -> AppResult<MarcBatchImportReport> {
         let mut conn = self.redis.get_connection().await?;
 
@@ -171,6 +305,7 @@ impl MarcService {
                 failed.push(MarcBatchImportError {
                     record_key: key.clone(),
                     error: "Record not found in Redis".to_string(),
+                    existing_id: None,
                 });
                 continue;
             };
@@ -181,6 +316,7 @@ impl MarcService {
                     failed.push(MarcBatchImportError {
                         record_key: key.clone(),
                         error: format!("JSON decode error: {}", e),
+                        existing_id: None,
                     });
                     continue;
                 }
@@ -191,14 +327,23 @@ impl MarcService {
                 item.source_id = Some(source_id);
             }
 
-            match self.catalog.create_biblio(biblio, false, None).await {
+            match self.catalog.create_biblio(biblio, allow_duplicate_isbn, confirm_replace_existing_id).await {
                 Ok((_biblio, _report)) => {
                     imported += 1;
+                }
+                Err(AppError::DuplicateNeedsConfirmation { existing_id, message, .. }) => {
+                    failed.push(MarcBatchImportError {
+                        record_key: key.clone(),
+                        error: message,
+                        existing_id: Some(existing_id),
+                    });
+                    continue;
                 }
                 Err(e) => {
                     failed.push(MarcBatchImportError {
                         record_key: key.clone(),
                         error: format!("Failed to create item: {}", e),
+                        existing_id: None,
                     });
                     continue;
                 }

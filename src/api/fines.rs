@@ -137,13 +137,15 @@ pub async fn waive_fine(
     security(("bearer_auth" = [])),
     responses(
         (status = 200, description = "Fine rules per media type", body = Vec<FineRule>),
-        (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse)
+        (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse),
+        (status = 403, description = "Insufficient permissions", body = crate::error::ErrorResponse)
     )
 )]
 pub async fn list_fine_rules(
     State(state): State<crate::AppState>,
-    AuthenticatedUser(_auth): AuthenticatedUser,
+    AuthenticatedUser(claims): AuthenticatedUser,
 ) -> AppResult<Json<Vec<FineRule>>> {
+    claims.require_read_settings()?;
     Ok(Json(state.services.fines.list_rules().await?))
 }
 
@@ -157,7 +159,7 @@ pub async fn list_fine_rules(
     responses(
         (status = 200, description = "Fine rule saved", body = FineRule),
         (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse),
-        (status = 403, description = "Admin access required", body = crate::error::ErrorResponse)
+        (status = 403, description = "Staff access required", body = crate::error::ErrorResponse)
     )
 )]
 pub async fn upsert_fine_rule(

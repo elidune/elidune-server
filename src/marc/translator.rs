@@ -3,7 +3,7 @@
 use z3950_rs::marc_rs::record::{
     Agent, BibliographicLevel, Description, Indexing, LinkType, Local, Note, NoteType,
     Publication, Record as MarcRecord, RecordStatus, RecordType,
-    Specimen as MarcSpecimen, Subject, SubjectType, Title,
+    Item as MarcItem, Subject, SubjectType, Title,
 };
 
 use crate::models::{
@@ -327,7 +327,7 @@ impl From<MarcRecord> for Biblio {
         }
 
         // --- Physical items (from local MARC data) ---
-        let items: Vec<Item> = record.local.specimens.iter().map(Item::from).collect();
+        let items: Vec<Item> = record.local.items.iter().map(Item::from).collect();
 
         let collection_volume_numbers: Vec<Option<i16>> =
             collection.as_ref().map(|c| vec![c.volume_number]).unwrap_or_default();
@@ -371,8 +371,8 @@ impl From<MarcRecord> for Biblio {
 
 // ── Item (physical copy) mapping from MARC local data ────────────────────────
 
-impl From<&MarcSpecimen> for Item {
-    fn from(s: &MarcSpecimen) -> Self {
+impl From<&MarcItem> for Item {
+    fn from(s: &MarcItem) -> Self {
         let notes = match (&s.section, &s.document_type) {
             (Some(sec), Some(doc)) => Some(format!("{} — {}", sec, doc)),
             (Some(sec), None) => Some(sec.clone()),
@@ -395,7 +395,6 @@ impl From<&MarcSpecimen> for Item {
             updated_at: None,
             archived_at: None,
             source_name: s.library.clone(),
-            availability: Some(0),
         }
     }
 }
@@ -511,11 +510,11 @@ impl From<&Biblio> for MarcRecord {
 
         // Local items (physical copies)
         record.local = Local {
-            specimens: item
+            items: item
                 .items
                 .iter()
                 .map(|s| {
-                    MarcSpecimen {
+                    MarcItem {
                         library: s.source_name.clone(),
                         sub_library: None,
                         section: None,
