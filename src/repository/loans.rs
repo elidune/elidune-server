@@ -31,6 +31,7 @@ pub trait LoansRepository: Send + Sync {
     async fn loans_count_active_for_item(&self, item_id: i64) -> AppResult<i64>;
     async fn loans_get_active_ids_for_item(&self, item_id: i64) -> AppResult<Vec<i64>>;
     async fn loans_get_active_ids_for_biblio(&self, biblio_id: i64) -> AppResult<Vec<i64>>;
+    async fn loans_get_active_ids_for_user(&self, user_id: i64) -> AppResult<Vec<i64>>;
     async fn loans_count_active_for_biblio(&self, biblio_id: i64) -> AppResult<i64>;
     async fn loans_count_active_for_user(&self, user_id: i64) -> AppResult<i64>;
     async fn loans_get_overdue_for_reminders(
@@ -98,6 +99,9 @@ impl LoansRepository for Repository {
     }
     async fn loans_get_active_ids_for_biblio(&self, biblio_id: i64) -> crate::error::AppResult<Vec<i64>> {
         Repository::loans_get_active_ids_for_biblio(self, biblio_id).await
+    }
+    async fn loans_get_active_ids_for_user(&self, user_id: i64) -> crate::error::AppResult<Vec<i64>> {
+        Repository::loans_get_active_ids_for_user(self, user_id).await
     }
     async fn loans_count_active_for_biblio(&self, biblio_id: i64) -> crate::error::AppResult<i64> {
         Repository::loans_count_active_for_biblio(self, biblio_id).await
@@ -689,6 +693,17 @@ impl Repository {
             "#
         )
         .bind(biblio_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(ids)
+    }
+
+    /// Get IDs of active loans for a user
+    pub async fn loans_get_active_ids_for_user(&self, user_id: i64) -> AppResult<Vec<i64>> {
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM loans WHERE user_id = $1 AND returned_at IS NULL"
+        )
+        .bind(user_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(ids)

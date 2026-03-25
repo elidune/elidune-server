@@ -92,17 +92,17 @@ impl<T: for<'a> ToSchema<'a>> PaginatedResponse<T> {
     tag = "biblios",
     security(("bearer_auth" = [])),
     params(
-        ("media_type" = Option<String>, Query, description = "Filter by media type"),
+        ("mediaType" = Option<String>, Query, description = "Filter by media type"),
         ("title" = Option<String>, Query, description = "Search in title"),
         ("author" = Option<String>, Query, description = "Search by author"),
         ("isbn" = Option<String>, Query, description = "Search by ISBN/ISSN"),
         ("freesearch" = Option<String>, Query, description = "Full-text search"),
         ("serie" = Option<String>, Query, description = "Filter by series name (substring)"),
-        ("serie_id" = Option<i64>, Query, description = "Filter by series ID (exact match)"),
+        ("serieId" = Option<i64>, Query, description = "Filter by series ID (exact match)"),
         ("collection" = Option<String>, Query, description = "Filter by collection name (substring)"),
-        ("collection_id" = Option<i64>, Query, description = "Filter by collection ID (exact match)"),
+        ("collectionId" = Option<i64>, Query, description = "Filter by collection ID (exact match)"),
         ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
-        ("per_page" = Option<i64>, Query, description = "Items per page (default: 20)")
+        ("perPage" = Option<i64>, Query, description = "Items per page (default: 20)")
     ),
     responses(
         (status = 200, description = "List of bibliographic records", body = PaginatedResponse<BiblioShort>),

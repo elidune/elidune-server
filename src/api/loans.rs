@@ -21,6 +21,22 @@ use crate::{
 
 use super::{AuthenticatedUser, ClientIp};
 
+
+/// Build the loans routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{get, post};
+    axum::Router::new()
+        .route("/loans", post(create_loan))
+        .route("/loans/overdue", get(get_overdue_loans))
+        .route("/loans/send-overdue-reminders", post(send_overdue_reminders))
+        .route("/loans/:id/return", post(return_loan))
+        .route("/loans/:id/renew", post(renew_loan))
+        .route("/loans/items/:item_id/return", post(return_loan_by_item))
+        .route("/loans/items/:item_id/renew", post(renew_loan_by_item))
+}
+
+
+
 /// Create loan request
 #[serde_as]
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -426,15 +442,3 @@ pub async fn send_overdue_reminders(
     Ok(Json(report))
 }
 
-/// Build the loans routes for this domain.
-pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{get, post};
-    axum::Router::new()
-        .route("/loans", post(create_loan))
-        .route("/loans/overdue", get(get_overdue_loans))
-        .route("/loans/send-overdue-reminders", post(send_overdue_reminders))
-        .route("/loans/:id/return", post(return_loan))
-        .route("/loans/:id/renew", post(renew_loan))
-        .route("/loans/items/:item_id/return", post(return_loan_by_item))
-        .route("/loans/items/:item_id/renew", post(renew_loan_by_item))
-}

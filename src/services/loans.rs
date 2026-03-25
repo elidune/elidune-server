@@ -195,6 +195,7 @@ mod tests {
         async fn loans_get_active_ids_for_item(&self, _: i64) -> AppResult<Vec<i64>> { Ok(vec![]) }
         async fn loans_count_active_for_item(&self, _: i64) -> AppResult<i64> { Ok(0) }
         async fn loans_get_active_ids_for_biblio(&self, _: i64) -> AppResult<Vec<i64>> { Ok(vec![]) }
+        async fn loans_get_active_ids_for_user(&self, _: i64) -> AppResult<Vec<i64>> { Ok(vec![]) }
         async fn loans_count_active_for_biblio(&self, _: i64) -> AppResult<i64> { Ok(0) }
         async fn loans_count_active_for_user(&self, _: i64) -> AppResult<i64> { Ok(0) }
         async fn loans_get_overdue_for_reminders(&self, _: u32) -> AppResult<Vec<crate::repository::loans::OverdueLoanRow>> { Ok(vec![]) }

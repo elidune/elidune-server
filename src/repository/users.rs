@@ -571,12 +571,18 @@ impl Repository {
     /// Delete a user (soft delete: anonymize data and set status to deleted)
     #[tracing::instrument(skip(self), err)]
     pub async fn users_delete(&self, id: i64, force: bool) -> AppResult<()> {
-        let active_loans = self.loans_count_active_for_user(id).await?;
+        let active_loans = self.loans_get_active_ids_for_user(id).await?;
 
-        if active_loans > 0 && !force {
-            return Err(AppError::BusinessRule(
-                "User has active loans. Use force=true to delete anyway.".to_string()
-            ));
+        if active_loans.len() > 0 {
+            if !force {
+                return Err(AppError::BusinessRule(
+                    "User has active loans. Use force=true to delete anyway.".to_string()
+                ));
+            } else {
+                for loan_id in active_loans {
+                    self.loans_return(loan_id).await?;
+                }
+            }
         }
 
         // Soft delete: anonymize personal data and set status to deleted

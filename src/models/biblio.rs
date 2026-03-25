@@ -665,6 +665,7 @@ pub struct UpdateCollection {
 
 /// Biblio query parameters (API). Filter values are strings; use `MarcFormat` when filtering by MARC format where applicable.
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BiblioQuery {
     pub media_type: Option<String>,
     pub isbn: Option<Isbn>,

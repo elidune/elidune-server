@@ -15,19 +15,32 @@ Key transformations:
     - account_types: id (int) -> code (slug)
     - fees: id (int) -> code (slug), "desc" -> "name"
     - users: account_type_id -> account_type (slug), fee_id -> fee (slug),
-             dates int -> timestamptz, passwords -> argon2 hash,
-             public_type int (97/106/117) -> FK to public_types table
-             removed: sex_id, subscription_type_id, occupation, profession
-             added: status, language
-    - items/specimens: complete schema refactor (see migrate_items / migrate_specimens)
-      - items: identification->isbn, title1->title, author columns -> item_authors table,
-               media_type/lang/audience_type now camelCase strings, removed legacy columns
-      - specimens: identification->barcode, cote->call_number, codestat->circulation_status,
-                   borrow_status(98/110)->borrowable bool, removed is_archive/lifecycle_status
-    - borrows -> loans (returned -> loans_archives)
-    - borrows_archives -> loans_archives (account_type_id -> account_type slug)
+             crea_date/modif_date/issue_date/archived_date (int) -> timestamptz,
+             passwords -> argon2 hash,
+             public_type int (97/106/117) -> FK to public_types table,
+             sex_id -> sex (preserved as SMALLINT)
+             removed: subscription_type_id, occupation, profession
+             added: status, language, must_change_password, 2FA fields
+    - items -> biblios: complete schema refactor (see migrate_items)
+      - identification->isbn, title1->title, author columns -> biblio_authors table,
+        serie_id -> biblio_series junction, collection_id -> biblio_collections junction,
+        media_type/lang/audience_type now camelCase strings,
+        crea_date/modif_date (int) -> created_at/updated_at (timestamptz)
+      - FK columns that were 0 in legacy (no link) -> NULL (source_id, edition_id, etc.)
+      - rows with both empty ISBN (identification) and no title (title1-4) are skipped;
+        linked specimens and loans on those rows are skipped for FK consistency
+      - biblios.title uses first non-empty among title1, title2, title3, title4
+    - specimens -> items: physical copies (see migrate_specimens)
+      - identification->barcode, cote->call_number, codestat->circulation_status,
+        status(98/110)->borrowable bool, id_item->biblio_id,
+        modif_date/archive_date/crea_date (int) -> updated_at/archived_at/created_at (timestamptz)
+    - borrows -> loans (active) + loans_archives (returned)
+      - specimen_id -> item_id (legacy_fk_id: 0/NULL skipped), renew_date/issue_date/returned_date (int) -> timestamptz
+    - borrows_archives -> loans_archives
+      - account_type_id -> account_type slug, specimen_id -> item_id (legacy_fk_id: 0 skipped),
+        issue_date/returned_date (int) -> timestamptz
     - borrows_settings -> loans_settings (account_type_id -> account_type slug)
-    - z3950servers: added encoding (default utf-8)
+    - z3950servers: activated int -> boolean, added encoding (default utf-8)
 
 Requirements:
     pip install psycopg2-binary argon2-cffi
@@ -262,6 +275,41 @@ def map_author_function(value):
     return AUTHOR_FUNCTION_TO_DB.get(s)
 
 
+def legacy_fk_id(value):
+    """Legacy DB used 0 as 'no reference'; PostgreSQL FKs must use NULL instead."""
+    if value is None:
+        return None
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return None
+    return None if v <= 0 else v
+
+
+def legacy_biblio_primary_title(title1, title2=None, title3=None, title4=None):
+    """First non-empty title among legacy title1..title4 (strip whitespace)."""
+    for t in (title1, title2, title3, title4):
+        if t is None:
+            continue
+        s = t.strip() if isinstance(t, str) else str(t).strip()
+        if s:
+            return s
+    return None
+
+
+def legacy_biblio_missing_isbn_and_title(identification, title1, title2=None, title3=None, title4=None):
+    """True when no usable title (title1-4) and no ISBN — skip biblio migration."""
+    if legacy_biblio_primary_title(title1, title2, title3, title4) is not None:
+        return False
+    if identification is None:
+        return True
+    s = str(identification).strip()
+    if not s:
+        return True
+    cleaned = re.sub(r'[^0-9X]', '', s, flags=re.IGNORECASE).upper()
+    return not cleaned
+
+
 # =============================================================================
 # SCHEMA MANAGEMENT
 # =============================================================================
@@ -355,14 +403,16 @@ def migrate_users(src, dst, hash_passwords=True):
     """Migrate users with password hashing and schema transformations.
 
     Source columns: id, login, password, firstname, lastname, email,
-        addr_street, addr_zip_code, addr_city, phone, sex_id (dropped),
-        account_type_id -> account_type (slug), subscription_type_id (dropped),
-        fee_id -> fee (slug), last_payement_date (dropped), group_id, barcode,
-        notes, occupation (dropped), created_at (int), update_at (int),
-        issue_at (int), profession (dropped), birthdate, archived_at (int),
+        addr_street, addr_zip_code, addr_city, phone,
+        sex_id -> sex (SMALLINT preserved),
+        account_type_id -> account_type (slug),
+        subscription_type_id (dropped), fee_id -> fee (slug),
+        last_payement_date (dropped), group_id, barcode, notes,
+        occupation (dropped), crea_date/modif_date/issue_date (int) -> timestamptz,
+        profession (dropped), birthdate, archived_date (int) -> timestamptz,
         public_type (int 97/106/117) -> FK to public_types
 
-    Target adds: status, language, 2FA fields (defaults)
+    Target adds: status, language, 2FA fields (defaults), must_change_password
     """
     print("Migrating users...")
 
@@ -385,8 +435,8 @@ def migrate_users(src, dst, hash_passwords=True):
         SELECT id, login, password, firstname, lastname, email,
                addr_street, addr_zip_code, addr_city, phone,
                account_type_id, fee_id, group_id, barcode,
-               notes, created_at, update_at, issue_at,
-               birthdate, archived_at, public_type
+               notes, crea_date, modif_date, issue_date,
+               birthdate, archived_date, public_type, sex_id
         FROM users
     """)
     rows = src_cur.fetchall()
@@ -413,11 +463,17 @@ def migrate_users(src, dst, hash_passwords=True):
         (uid, _, raw_pw, firstname, lastname, email,
          addr_street, addr_zip_code, addr_city, phone,
          account_type_id, fee_id, group_id, barcode,
-         notes, created_at, update_at, issue_at,
-         birthdate, archived_at, public_type_raw) = row
+         notes, crea_date, modif_date, issue_date,
+         birthdate, archived_date, public_type_raw, sex_id_raw) = row
 
         login = unique_logins.get(uid, f'user_{uid}')
         email = email.strip() if email and email.strip() else None
+
+        # UNIQUE(barcode): empty string would collide for many rows; store NULL instead
+        if barcode is None or (isinstance(barcode, str) and not barcode.strip()):
+            barcode = None
+        elif isinstance(barcode, str):
+            barcode = barcode.strip()
 
         password = None
         if hash_passwords and raw_pw:
@@ -428,10 +484,10 @@ def migrate_users(src, dst, hash_passwords=True):
         account_type = ACCOUNT_TYPE_ID_TO_CODE.get(account_type_id, 'guest')
         fee = FEE_ID_TO_CODE.get(fee_id) if fee_id else None
 
-        crea_dt = ts_to_datetime(created_at)
-        modif_dt = ts_to_datetime(update_at)
-        issue_dt = ts_to_datetime(issue_at)
-        archived_dt = ts_to_datetime(archived_at)
+        crea_dt = ts_to_datetime(crea_date)
+        modif_dt = ts_to_datetime(modif_date)
+        issue_dt = ts_to_datetime(issue_date)
+        archived_dt = ts_to_datetime(archived_date)
 
         status = 2 if archived_dt else 0
 
@@ -449,14 +505,14 @@ def migrate_users(src, dst, hash_passwords=True):
                 account_type, fee, group_id, barcode, notes,
                 public_type, status, birthdate,
                 created_at, update_at, issue_at, archived_at,
-                language
+                language, sex
             ) VALUES (
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s, %s,
                 %s, %s, %s, %s,
-                'french'
+                'french', %s
             ) ON CONFLICT (id) DO UPDATE SET
                 login = EXCLUDED.login,
                 password = EXCLUDED.password,
@@ -468,6 +524,7 @@ def migrate_users(src, dst, hash_passwords=True):
             account_type, fee, group_id, barcode, notes,
             pt_id, status, birthdate,
             crea_dt, modif_dt, issue_dt, archived_dt,
+            sex_id_raw,
         ))
         migrated += 1
 
@@ -565,6 +622,9 @@ def migrate_items(src, dst):
         table_of_contents, accompanying_material, abstract, notes, keywords (array),
         is_valid, created_at, updated_at, archived_at
     Legacy serie_id / serie_vol_number -> item_series junction (migration 044).
+
+    Rows with both empty/null `identification` (ISBN) and no text in `title1`..`title4` are skipped.
+    `title` is filled from the first non-empty of title1, title2, title3, title4.
     """
     print("Migrating items...")
     src_cur = src.cursor()
@@ -578,11 +638,13 @@ def migrate_items(src, dst):
     item_authors_batch = []
     item_series_batch = []
     item_collections_batch = []
+    skipped_biblio_ids = set()
+    skipped_biblios = 0
 
     while offset < total:
         src_cur.execute(f"""
             SELECT id, media_type, identification, publication_date,
-                   lang, lang_orig, title1,
+                   lang, lang_orig, title1, title2, title3, title4,
                    author1_ids, author1_functions,
                    author2_ids, author2_functions,
                    author3_ids, author3_functions,
@@ -591,13 +653,13 @@ def migrate_items(src, dst):
                    source_id, subject, public_type,
                    edition_id, nb_pages, format, content, addon,
                    abstract, notes, keywords, is_valid,
-                   is_archive, archived_timestamp, created_at, update_at
+                   is_archive, archived_timestamp, crea_date, modif_date
             FROM items ORDER BY id LIMIT {BATCH} OFFSET {offset}
         """)
 
         for row in src_cur.fetchall():
             (iid, media_type_raw, identification, publication_date,
-             lang_raw, lang_orig_raw, title1,
+             lang_raw, lang_orig_raw, title1, title2, title3, title4,
              author1_ids, author1_functions,
              author2_ids, author2_functions,
              author3_ids, author3_functions,
@@ -606,7 +668,22 @@ def migrate_items(src, dst):
              source_id, subject, public_type_raw,
              edition_id, nb_pages, fmt, content, addon,
              abstract_, notes, keywords, is_valid,
-             is_archive, archived_timestamp, created_at_raw, update_at_raw) = row
+             is_archive, archived_timestamp, crea_date_raw, modif_date_raw) = row
+
+            if legacy_biblio_missing_isbn_and_title(
+                identification, title1, title2, title3, title4
+            ):
+                skipped_biblio_ids.add(iid)
+                skipped_biblios += 1
+                continue
+
+            if identification is None:
+                isbn_norm = None
+            else:
+                isbn_norm = re.sub(r'[^0-9X]', '', str(identification).strip(), flags=re.IGNORECASE).upper()
+                isbn_norm = isbn_norm or None
+
+            title_for_biblio = legacy_biblio_primary_title(title1, title2, title3, title4)
 
             media_type = map_media_type(media_type_raw)
             lang = map_lang(lang_raw)
@@ -614,10 +691,15 @@ def migrate_items(src, dst):
             audience_type = map_audience_type(public_type_raw)
 
             archived_ts = ts_to_datetime(archived_timestamp)
-            crea_dt = ts_to_datetime(created_at_raw)
-            modif_dt = ts_to_datetime(update_at_raw)
+            crea_dt = ts_to_datetime(crea_date_raw)
+            modif_dt = ts_to_datetime(modif_date_raw)
 
             archived_at = archived_ts if (is_archive == 1) else None
+
+            source_id = legacy_fk_id(source_id)
+            edition_id = legacy_fk_id(edition_id)
+            serie_fk = legacy_fk_id(serie_id)
+            collection_fk = legacy_fk_id(collection_id)
 
             # keywords: legacy may be a comma-separated string
             keywords_arr = None
@@ -644,7 +726,7 @@ def migrate_items(src, dst):
                     %s,%s,%s
                 ) ON CONFLICT (id) DO NOTHING
             """, (
-                iid, media_type, identification, title1, subject, audience_type,
+                iid, media_type, isbn_norm, title_for_biblio, subject, audience_type,
                 lang, lang_orig, publication_date,
                 source_id, edition_id, nb_pages, fmt,
                 content, addon, abstract_, notes,
@@ -652,11 +734,11 @@ def migrate_items(src, dst):
                 crea_dt, modif_dt, archived_at,
             ))
 
-            if serie_id is not None:
-                item_series_batch.append((iid, int(serie_id), 1, serie_vol_number))
+            if serie_fk is not None:
+                item_series_batch.append((iid, serie_fk, 1, serie_vol_number))
 
-            if collection_id is not None:
-                item_collections_batch.append((iid, int(collection_id), 1, collection_vol_number))
+            if collection_fk is not None:
+                item_collections_batch.append((iid, collection_fk, 1, collection_vol_number))
 
             # Collect item_authors entries from legacy author arrays
             position = 1
@@ -669,18 +751,22 @@ def migrate_items(src, dst):
                     continue
                 func_list = [f.strip() for f in (funcs_str or '').split(',') if f.strip()]
                 for idx, author_id in enumerate(ids_arr):
-                    if author_id is None:
+                    aid = legacy_fk_id(author_id)
+                    if aid is None:
                         continue
                     raw_func = func_list[idx] if idx < len(func_list) else None
                     function = map_author_function(raw_func)
-                    item_authors_batch.append((iid, int(author_id), function, 0, position))
+                    item_authors_batch.append((iid, aid, function, 0, position))
                     position += 1
 
         dst.commit()
         offset += BATCH
         print(f"  {min(offset, total)}/{total} items")
 
-    print(f"  {total} items migrated")
+    print(
+        f"  {total - skipped_biblios} biblios migrated, "
+        f"{skipped_biblios} skipped (no ISBN and no title in title1-4)"
+    )
 
     print("  Migrating biblio_series...")
     for i in range(0, len(item_series_batch), 500):
@@ -727,26 +813,42 @@ def migrate_items(src, dst):
         dst.commit()
     print(f"  {ia_count} biblio_authors migrated")
 
+    return skipped_biblio_ids
 
-def migrate_specimens(src, dst):
+
+def migrate_specimens(src, dst, skipped_biblio_ids=None):
     """Migrate specimens (physical copies) into the new `items` table.
 
-    Source columns (legacy):
+    Source columns (legacy specimens):
         id, id_item, source_id, identification (barcode), cote (call_number),
         place, status (borrow_status: 98=borrowable, 110=not), codestat (circulation_status),
-        notes, price, update_at, is_archive, archived_at, created_at
+        notes, price, modif_date (int), is_archive, archive_date (int), crea_date (int)
 
     Target columns (items table):
         id, biblio_id, source_id, barcode, call_number, place,
         borrowable (bool), circulation_status, notes, price,
-        updated_at, archived_at, created_at
+        updated_at (timestamptz), archived_at (timestamptz), created_at (timestamptz)
+
+    Barcode: empty/whitespace -> NULL. Duplicate non-null barcodes (legacy data): keep first
+    by specimen id, set later rows to NULL to satisfy idx_items_barcode_unique.
+
+    Specimens whose legacy `id_item` points to a skipped biblio (no ISBN + no title) are not migrated.
     """
     print("Migrating specimens -> items...")
     src_cur = src.cursor()
     dst_cur = dst.cursor()
 
+    if skipped_biblio_ids is None:
+        skipped_biblio_ids = set()
+
     src_cur.execute("SELECT COUNT(*) FROM specimens")
     total = src_cur.fetchone()[0]
+
+    # UNIQUE(barcode) WHERE barcode IS NOT NULL: empty strings and duplicates must become NULL
+    seen_barcodes = set()
+    duplicate_barcode_dropped = 0
+    skipped_for_skipped_biblio = 0
+    migrated_specimen_ids = set()
 
     BATCH = 1000
     offset = 0
@@ -754,15 +856,25 @@ def migrate_specimens(src, dst):
     while offset < total:
         src_cur.execute(f"""
             SELECT id, id_item, source_id, identification, cote, place,
-                   status, codestat, notes, price, update_at,
-                   is_archive, archived_at, created_at
+                   status, codestat, notes, price, modif_date,
+                   is_archive, archive_date, crea_date
             FROM specimens ORDER BY id LIMIT {BATCH} OFFSET {offset}
         """)
 
         for row in src_cur.fetchall():
             (sid, id_item, source_id, identification, cote, place,
-             borrow_status, codestat, notes, price, update_at_raw,
-             is_archive, archived_at_raw, created_at_raw) = row
+             borrow_status, codestat, notes, price, modif_date_raw,
+             is_archive, archive_date_raw, crea_date_raw) = row
+
+            legacy_bid = None
+            if id_item is not None:
+                try:
+                    legacy_bid = int(id_item)
+                except (TypeError, ValueError):
+                    legacy_bid = None
+            if legacy_bid is not None and legacy_bid in skipped_biblio_ids:
+                skipped_for_skipped_biblio += 1
+                continue
 
             # 98 = borrowable, 110 = not borrowable; NULL defaults to True
             borrowable = True
@@ -771,13 +883,31 @@ def migrate_specimens(src, dst):
             elif borrow_status == 98:
                 borrowable = True
 
-            updated_dt = ts_to_datetime(update_at_raw)
-            archived_dt = ts_to_datetime(archived_at_raw)
-            created_dt = ts_to_datetime(created_at_raw)
+            updated_dt = ts_to_datetime(modif_date_raw)
+            archived_dt = ts_to_datetime(archive_date_raw)
+            created_dt = ts_to_datetime(crea_date_raw)
 
             # is_archive=1 means archived; ensure archived_at is set
             if is_archive == 1 and archived_dt is None:
                 archived_dt = datetime.now(tz=timezone.utc)
+
+            biblio_id = legacy_fk_id(id_item)
+            source_id = legacy_fk_id(source_id)
+
+            if identification is None:
+                barcode = None
+            elif isinstance(identification, str):
+                barcode = identification.strip() or None
+            else:
+                barcode = str(identification).strip() or None
+
+            if barcode is not None:
+                if barcode in seen_barcodes:
+                    barcode = None
+                    duplicate_barcode_dropped += 1
+                else:
+                    seen_barcodes.add(barcode)
+
 
             dst_cur.execute("""
                 INSERT INTO items (
@@ -787,23 +917,38 @@ def migrate_specimens(src, dst):
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO NOTHING
             """, (
-                sid, id_item, source_id, identification, cote, place,
+                sid, biblio_id, source_id, barcode, cote, place,
                 borrowable, codestat, notes, price,
                 updated_dt, archived_dt, created_dt,
             ))
+            migrated_specimen_ids.add(sid)
 
         dst.commit()
         offset += BATCH
         print(f"  {min(offset, total)}/{total} items (physical copies)")
 
-    print(f"  {total} items (physical copies) migrated")
+    print(
+        f"  {len(migrated_specimen_ids)} items (physical copies) migrated"
+        + (f", {skipped_for_skipped_biblio} skipped (biblio not migrated)" if skipped_for_skipped_biblio else "")
+    )
+    if duplicate_barcode_dropped:
+        print(
+            f"  {duplicate_barcode_dropped} duplicate barcodes cleared (NULL); "
+            "first specimen by id kept each barcode (idx_items_barcode_unique)"
+        )
+
+    return migrated_specimen_ids
 
 
-def migrate_loans(src, dst):
+def migrate_loans(src, dst, migrated_specimen_ids=None):
     """Migrate borrows -> loans + loans_archives.
 
-    Active loans (returned_at IS NULL or 0) -> loans table
-    Returned loans (returned_at set) -> loans_archives with user enrichment
+    Legacy borrows columns: id, user_id, specimen_id, date (int), renew_date (int),
+        nb_renews, issue_date (int), notes, returned_date (int), item_id
+    specimen_id -> item_id (new items = former specimens)
+
+    Active loans (returned_date IS NULL or 0) -> loans table
+    Returned loans (returned_date set) -> loans_archives with user enrichment
     """
     print("Migrating borrows -> loans/loans_archives...")
     src_cur = src.cursor()
@@ -821,8 +966,8 @@ def migrate_loans(src, dst):
     pt_name_to_id = {name: pid for pid, name in dst_cur.fetchall()}
 
     src_cur.execute("""
-        SELECT id, user_id, specimen_id, item_id, date, renew_at,
-               nb_renews, issue_at, notes, returned_at
+        SELECT id, user_id, specimen_id, item_id, date, renew_date,
+               nb_renews, issue_date, notes, returned_date
         FROM borrows
     """)
     borrows = src_cur.fetchall()
@@ -834,19 +979,22 @@ def migrate_loans(src, dst):
     for row in borrows:
         vals = list(row)
         user_id = vals[1]
-        specimen_id = vals[2]
+        item_id = legacy_fk_id(vals[2])  # legacy specimen_id -> items.id; 0 means no copy
         returned_date_raw = vals[9]
 
-        vals[4] = ts_to_datetime(vals[4])   # date
-        vals[5] = ts_to_datetime(vals[5])   # renew_at
-        vals[7] = ts_to_datetime(vals[7])   # issue_at
-        vals[9] = ts_to_datetime(vals[9])   # returned_at
+        vals[4] = ts_to_datetime(vals[4])   # date -> timestamptz
+        vals[5] = ts_to_datetime(vals[5])   # renew_date -> renew_at
+        vals[7] = ts_to_datetime(vals[7])   # issue_date -> issue_at
+        vals[9] = ts_to_datetime(vals[9])   # returned_date -> returned_at
+
+        if item_id is None:
+            skipped += 1
+            continue
+        if migrated_specimen_ids is not None and item_id not in migrated_specimen_ids:
+            skipped += 1
+            continue
 
         if returned_date_raw and returned_date_raw != 0:
-            if specimen_id is None:
-                skipped += 1
-                continue
-
             city, at_code, pt_raw = user_info.get(user_id, (None, 'guest', None))
 
             pt_id = None
@@ -857,13 +1005,13 @@ def migrate_loans(src, dst):
 
             dst_cur.execute("""
                 INSERT INTO loans_archives (
-                    id, user_id, specimen_id, date, nb_renews,
+                    id, user_id, item_id, date, nb_renews,
                     issue_at, returned_at, notes,
                     borrower_public_type, addr_city, account_type
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO NOTHING
             """, (
-                vals[0], user_id, specimen_id,
+                vals[0], user_id, item_id,
                 vals[4], vals[6], vals[7], vals[9], vals[8],
                 pt_id, city, at_code,
             ))
@@ -871,23 +1019,30 @@ def migrate_loans(src, dst):
         else:
             dst_cur.execute("""
                 INSERT INTO loans (
-                    id, user_id, specimen_id, date, renew_at,
+                    id, user_id, item_id, date, renew_at,
                     nb_renews, issue_at, notes, returned_at
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO NOTHING
-            """, (vals[0], vals[1], vals[2], vals[4], vals[5], vals[6], vals[7], vals[8], vals[9]))
+            """, (vals[0], vals[1], item_id, vals[4], vals[5], vals[6], vals[7], vals[8], vals[9]))
             active += 1
 
     dst.commit()
     print(f"  {len(borrows)} borrows processed: {active} active loans, {archived} archived")
     if skipped:
-        print(f"  {skipped} skipped (missing specimen_id)")
+        print(
+            f"  {skipped} skipped (invalid specimen_id, or item not migrated "
+            f"e.g. skipped biblio / specimen)"
+        )
 
 
-def migrate_loans_archives(src, dst):
+def migrate_loans_archives(src, dst, migrated_specimen_ids=None):
     """Migrate borrows_archives -> loans_archives.
 
-    Source has: sex_id (dropped), account_type_id -> account_type (slug), no user_id
+    Legacy columns: id, item_id, date (int), nb_renews, issue_date (int),
+        returned_date (int), notes, specimen_id, borrower_public_type,
+        occupation (dropped), addr_city, sex_id (dropped), account_type_id
+    specimen_id -> item_id (new items = former specimens)
+    account_type_id -> account_type (slug), no user_id in source
     """
     print("Migrating borrows_archives -> loans_archives...")
     src_cur = src.cursor()
@@ -898,8 +1053,8 @@ def migrate_loans_archives(src, dst):
     pt_name_to_id = {name: pid for pid, name in dst_cur.fetchall()}
 
     src_cur.execute("""
-        SELECT id, item_id, specimen_id, date, nb_renews, issue_at,
-               returned_at, notes, borrower_public_type,
+        SELECT id, item_id, specimen_id, date, nb_renews, issue_date,
+               returned_date, notes, borrower_public_type,
                addr_city, account_type_id
         FROM borrows_archives
     """)
@@ -910,11 +1065,14 @@ def migrate_loans_archives(src, dst):
 
     for row in rows:
         vals = list(row)
-        specimen_id = vals[2]
+        item_id = legacy_fk_id(vals[2])  # legacy specimen_id -> items.id; 0 means no copy
         at_id = vals[10]
         pt_raw = vals[8]
 
-        if specimen_id is None:
+        if item_id is None:
+            skipped += 1
+            continue
+        if migrated_specimen_ids is not None and item_id not in migrated_specimen_ids:
             skipped += 1
             continue
 
@@ -931,13 +1089,13 @@ def migrate_loans_archives(src, dst):
 
         dst_cur.execute("""
             INSERT INTO loans_archives (
-                id, specimen_id, date, nb_renews, issue_at,
+                id, item_id, date, nb_renews, issue_at,
                 returned_at, notes, borrower_public_type,
                 addr_city, account_type
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (id) DO NOTHING
         """, (
-            vals[0], specimen_id, date_val, vals[4], issue_dt,
+            vals[0], item_id, date_val, vals[4], issue_dt,
             returned_dt, vals[7], pt_id, vals[9], at_code,
         ))
         migrated += 1
@@ -945,7 +1103,10 @@ def migrate_loans_archives(src, dst):
     dst.commit()
     print(f"  {migrated}/{len(rows)} loans_archives migrated")
     if skipped:
-        print(f"  {skipped} skipped (missing specimen_id)")
+        print(
+            f"  {skipped} skipped (invalid specimen_id, or item not migrated "
+            f"e.g. skipped biblio / specimen)"
+        )
 
 
 def migrate_loans_settings(src, dst):
@@ -979,7 +1140,7 @@ def migrate_loans_settings(src, dst):
 
 
 def migrate_z3950servers(src, dst):
-    """Migrate z3950servers: add encoding (default utf-8)."""
+    """Migrate z3950servers: activated int->bool, add encoding (default utf-8)."""
     print("Migrating z3950servers...")
     src_cur = src.cursor()
     dst_cur = dst.cursor()
@@ -992,13 +1153,18 @@ def migrate_z3950servers(src, dst):
     rows = src_cur.fetchall()
 
     for row in rows:
+        (zid, address, port, name, description, activated_raw,
+         login, password, database, fmt) = row
+        activated = bool(activated_raw) if activated_raw is not None else True
+
         dst_cur.execute("""
             INSERT INTO z3950servers (
                 id, address, port, name, description, activated,
                 login, password, database, format, encoding
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s, 'utf-8')
             ON CONFLICT (id) DO NOTHING
-        """, row)
+        """, (zid, address, port, name, description, activated,
+              login, password, database, fmt))
 
     dst.commit()
     print(f"  {len(rows)} z3950servers migrated")
@@ -1108,12 +1274,13 @@ Examples:
         migrate_simple_table(src, dst, 'series', ['id', 'key', 'name'])
         migrate_simple_table(src, dst, 'sources', ['id', 'key', 'name'])
 
+        migrated_specimen_ids = None
         if not args.skip_items:
-            migrate_items(src, dst)
-            migrate_specimens(src, dst)
+            skipped_biblio_ids = migrate_items(src, dst)
+            migrated_specimen_ids = migrate_specimens(src, dst, skipped_biblio_ids)
 
-        migrate_loans(src, dst)
-        migrate_loans_archives(src, dst)
+        migrate_loans(src, dst, migrated_specimen_ids)
+        migrate_loans_archives(src, dst, migrated_specimen_ids)
         migrate_loans_settings(src, dst)
         migrate_z3950servers(src, dst)
 
