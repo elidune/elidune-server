@@ -8,6 +8,7 @@ use utoipa::ToSchema;
 /// Public type from database (borrower audience category)
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PublicType {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[schema(value_type = String)]
@@ -26,6 +27,7 @@ pub struct PublicType {
 /// Per-media-type loan settings override for a public type
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PublicTypeLoanSettings {
     #[serde_as(as = "serde_with::DisplayFromStr")]
     #[schema(value_type = String)]
@@ -41,6 +43,7 @@ pub struct PublicTypeLoanSettings {
 
 /// Create public type request
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreatePublicType {
     pub name: String,
     pub label: String,
@@ -54,6 +57,7 @@ pub struct CreatePublicType {
 
 /// Update public type request
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdatePublicType {
     pub name: Option<String>,
     pub label: Option<String>,

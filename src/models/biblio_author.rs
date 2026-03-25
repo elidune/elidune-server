@@ -27,6 +27,7 @@ impl From<i16> for AuthorType {
 /// Junction row linking a biblio to an author with role and position
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BiblioAuthor {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]

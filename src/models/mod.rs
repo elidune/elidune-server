@@ -15,6 +15,7 @@ pub mod public_type;
 pub mod reservation;
 pub mod schedule;
 pub mod source;
+pub mod task;
 pub mod user;
 pub mod visitor_count;
 

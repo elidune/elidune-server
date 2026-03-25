@@ -21,6 +21,7 @@ use crate::{
 /// Request body for sending an event announcement email.
 /// All fields are optional: if omitted, the default template is used.
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SendAnnouncementRequest {
     /// Override email subject (uses template if absent)
     pub subject: Option<String>,
@@ -32,6 +33,7 @@ pub struct SendAnnouncementRequest {
 
 /// Per-recipient error collected during a bulk send
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AnnouncementError {
     pub user_id: i64,
     pub email: String,
@@ -40,6 +42,7 @@ pub struct AnnouncementError {
 
 /// Summary returned after sending an event announcement
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AnnouncementReport {
     pub event_id: i64,
     /// Number of emails successfully sent

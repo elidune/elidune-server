@@ -395,6 +395,7 @@ impl From<&MarcItem> for Item {
             updated_at: None,
             archived_at: None,
             source_name: s.library.clone(),
+            borrowed: false,
         }
     }
 }

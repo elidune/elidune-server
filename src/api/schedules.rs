@@ -20,6 +20,20 @@ use crate::{
 
 use super::{AuthenticatedUser, ClientIp};
 
+
+/// Build the schedules routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, post, put};
+    axum::Router::new()
+        .route("/schedules/periods", get(list_periods).post(create_period))
+        .route("/schedules/periods/:id", put(update_period).delete(delete_period))
+        .route("/schedules/periods/:id/slots", get(list_slots).post(create_slot))
+        .route("/schedules/slots/:id", delete(delete_slot))
+        .route("/schedules/closures", get(list_closures).post(create_closure))
+        .route("/schedules/closures/:id", delete(delete_closure))
+}
+
+
 // ---- Periods ----
 
 /// List schedule periods
@@ -38,9 +52,7 @@ use super::{AuthenticatedUser, ClientIp};
 )]
 pub async fn list_periods(
     State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
 ) -> AppResult<Json<Vec<SchedulePeriod>>> {
-    claims.require_read_settings()?;
     let periods = state.services.schedules.list_periods().await?;
     Ok(Json(periods))
 }
@@ -147,10 +159,8 @@ pub async fn delete_period(
 )]
 pub async fn list_slots(
     State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
     Path(period_id): Path<i64>,
 ) -> AppResult<Json<Vec<ScheduleSlot>>> {
-    claims.require_read_settings()?;
     let slots = state.services.schedules.list_slots(period_id).await?;
     Ok(Json(slots))
 }
@@ -230,10 +240,8 @@ pub async fn delete_slot(
 )]
 pub async fn list_closures(
     State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
     Query(query): Query<ScheduleClosureQuery>,
 ) -> AppResult<Json<Vec<ScheduleClosure>>> {
-    claims.require_read_settings()?;
     let start = query.start_date.as_ref()
         .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
     let end = query.end_date.as_ref()
@@ -296,14 +304,3 @@ pub async fn delete_closure(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Build the schedules routes for this domain.
-pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post, put};
-    axum::Router::new()
-        .route("/schedules/periods", get(list_periods).post(create_period))
-        .route("/schedules/periods/:id", put(update_period).delete(delete_period))
-        .route("/schedules/periods/:id/slots", get(list_slots).post(create_slot))
-        .route("/schedules/slots/:id", delete(delete_slot))
-        .route("/schedules/closures", get(list_closures).post(create_closure))
-        .route("/schedules/closures/:id", delete(delete_closure))
-}

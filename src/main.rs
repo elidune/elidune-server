@@ -140,12 +140,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Connected to database");
 
     // Run migrations
-    sqlx::migrate!("./migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run database migrations");
-
-    tracing::info!("Database migrations completed");
+    // sqlx::migrate!("./migrations")
+    //     .run(&pool)
+    //     .await
+    //     .expect("Failed to run database migrations");
+    // tracing::info!("Database migrations completed");
 
     // Load DB settings overrides and build DynamicConfig
     let dynamic_config = {
@@ -261,10 +260,10 @@ async fn main() -> anyhow::Result<()> {
                 "║          INITIAL ADMIN ACCOUNT CREATED               ║"
             );
             tracing::warn!(
-                "║  Login    : {:<42}║", login
+                "║  Login    : {:<41}║", login
             );
             tracing::warn!(
-                "║  Password : {:<42}║", password
+                "║  Password : {:<41}║", password
             );
             tracing::warn!(
                 "║  Change the password immediately after first login.  ║"
@@ -415,6 +414,7 @@ fn create_router(state: AppState) -> Router {
         .merge(api::equipment::router())
         .merge(api::events::router())
         .merge(api::maintenance::router())
+        .merge(api::tasks::router())
         .with_state(state.clone());
 
     // OpenAPI documentation

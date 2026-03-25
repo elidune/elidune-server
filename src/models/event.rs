@@ -9,6 +9,7 @@ use utoipa::{IntoParams, ToSchema};
 /// Event record
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Event {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -45,6 +46,7 @@ pub struct Event {
 
 /// Create event request
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateEvent {
     pub name: String,
     /// Type (0=animation, 1=school_visit, 2=exhibition, 3=conference, 4=workshop, 5=show, 6=other)
@@ -68,6 +70,7 @@ pub struct CreateEvent {
 
 /// Update event request
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateEvent {
     pub name: Option<String>,
     pub event_type: Option<i16>,
@@ -86,6 +89,7 @@ pub struct UpdateEvent {
 
 /// Query parameters for events
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct EventQuery {
     /// Filter by start date (YYYY-MM-DD)
     pub start_date: Option<String>,

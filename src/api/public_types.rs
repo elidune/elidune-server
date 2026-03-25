@@ -18,6 +18,7 @@ use super::{AuthenticatedUser, ClientIp};
 
 /// Request body for upserting a loan setting override
 #[derive(Debug, serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpsertLoanSettingRequest {
     pub media_type: String,
     pub duration: Option<i16>,

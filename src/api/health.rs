@@ -5,6 +5,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct HealthResponse {
     /// Current status of the service
     pub status: String,
@@ -45,6 +46,7 @@ pub async fn readiness_check() -> Json<HealthResponse> {
 }
 
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct VersionResponse {
     /// Server version (from Cargo.toml)
     pub version: String,

@@ -19,6 +19,7 @@ use super::AuthenticatedUser;
 
 /// Query parameters for audit log
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]
+#[serde(rename_all = "camelCase")]
 pub struct AuditQueryRequest {
     pub event_type: Option<String>,
     pub entity_type: Option<String>,
@@ -32,6 +33,7 @@ pub struct AuditQueryRequest {
 
 /// Query parameters for audit log export
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]
+#[serde(rename_all = "camelCase")]
 pub struct AuditExportRequest {
     pub format: Option<String>,
     pub event_type: Option<String>,

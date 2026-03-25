@@ -9,6 +9,7 @@ use utoipa::ToSchema;
 /// Equipment record
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Equipment {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -32,6 +33,7 @@ pub struct Equipment {
 
 /// Create equipment request
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateEquipment {
     pub name: String,
     /// Type (0=computer, 1=tablet, 2=ereader, 3=other)
@@ -44,6 +46,7 @@ pub struct CreateEquipment {
 
 /// Update equipment request
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateEquipment {
     pub name: Option<String>,
     pub equipment_type: Option<i16>,

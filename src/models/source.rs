@@ -9,6 +9,7 @@ use utoipa::ToSchema;
 /// Source record
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Source {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -41,6 +42,7 @@ pub struct UpdateSource {
 /// Merge sources request
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct MergeSources {
     /// IDs of sources to merge
     #[serde_as(as = "Vec<DisplayFromStr>")]

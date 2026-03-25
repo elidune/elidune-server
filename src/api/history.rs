@@ -17,6 +17,7 @@ use super::{AuthenticatedUser, ClientIp};
 
 /// GDPR history preference update request
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateHistoryPreference {
     /// When false, loan records are anonymised on return (patron opts out of history)
     pub enabled: bool,
@@ -24,6 +25,7 @@ pub struct UpdateHistoryPreference {
 
 /// Patron history preference
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryPreference {
     pub user_id: String,
     pub history_enabled: bool,

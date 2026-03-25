@@ -12,6 +12,7 @@ use super::user::UserShort;
 /// Loan model from database
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct Loan {
     #[serde_as(as = "DisplayFromStr")]
     pub id: i64,
@@ -32,6 +33,7 @@ pub struct Loan {
 /// Loan with full details for display
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LoanDetails {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -50,6 +52,7 @@ pub struct LoanDetails {
 /// Create loan request
 #[serde_as]
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateLoan {
     #[serde_as(as = "DisplayFromStr")]
     pub user_id: i64,
@@ -62,6 +65,7 @@ pub struct CreateLoan {
 /// Loan settings by media type
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct LoanSettings {
     #[serde_as(as = "DisplayFromStr")]
     pub id: i64,
@@ -76,6 +80,7 @@ pub struct LoanSettings {
 /// Archived loan for statistics
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[serde(rename_all = "camelCase")]
 pub struct LoanArchive {
     #[serde_as(as = "DisplayFromStr")]
     pub id: i64,

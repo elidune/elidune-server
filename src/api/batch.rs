@@ -14,6 +14,7 @@ use super::{AuthenticatedUser, ClientIp};
 
 /// Batch return request — list of barcodes to return
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchReturnRequest {
     /// List of specimen barcodes to return
     pub barcodes: Vec<String>,
@@ -21,6 +22,7 @@ pub struct BatchReturnRequest {
 
 /// Result for a single barcode in a batch operation
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchReturnItemResult {
     pub barcode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -32,6 +34,7 @@ pub struct BatchReturnItemResult {
 
 /// Batch return response
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchReturnResponse {
     pub returned: u32,
     pub errors: u32,
@@ -108,12 +111,14 @@ pub async fn batch_return(
 
 /// Batch loan creation request
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchCreateLoanItem {
     pub barcode: String,
 }
 
 /// Batch create loans request — assign multiple specimens to the same user
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchCreateLoansRequest {
     pub user_id: String,
     pub barcodes: Vec<String>,
@@ -123,6 +128,7 @@ pub struct BatchCreateLoansRequest {
 
 /// Batch create response
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchCreateLoansResponse {
     pub created: u32,
     pub errors: u32,
@@ -130,6 +136,7 @@ pub struct BatchCreateLoansResponse {
 }
 
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchCreateLoanItemResult {
     pub barcode: String,
     pub success: bool,

@@ -18,6 +18,7 @@ use super::{AuthenticatedUser, ClientIp};
 
 /// Query parameters for listing sources
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SourcesQuery {
     /// Include archived sources (default: false)
     pub include_archived: Option<bool>,

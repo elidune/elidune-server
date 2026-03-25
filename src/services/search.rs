@@ -151,32 +151,33 @@ impl MeilisearchService {
         }
     }
 
-    /// Replace all documents in the index with the provided batch.
-    ///
-    /// The documents are pushed in chunks to avoid hitting request-size limits.
+    /// Delete all documents from the index (first step of a full reindex).
+    /// Returns `false` if the operation failed (logged as a warning).
     #[tracing::instrument(skip(self))]
-    pub async fn reindex_all(&self, docs: Vec<MeiliBiblioDocument>) {
+    pub async fn clear_index(&self) -> bool {
         let index = self.client.index(&self.index_name);
+        match index.delete_all_documents().await {
+            Ok(_) => true,
+            Err(e) => {
+                warn!("Meilisearch clear_index failed: {}", e);
+                false
+            }
+        }
+    }
 
-        if let Err(e) = index.delete_all_documents().await {
-            warn!("Meilisearch reindex_all: failed to clear index: {}", e);
+    /// Push a batch of documents to the index (`add_or_replace` semantics).
+    ///
+    /// Called repeatedly during a cursor-based reindex; each call corresponds
+    /// to one page fetched from the database.
+    #[tracing::instrument(skip(self, docs), fields(batch_len = docs.len()))]
+    pub async fn index_batch(&self, docs: &[MeiliBiblioDocument]) {
+        if docs.is_empty() {
             return;
         }
-
-        const CHUNK_SIZE: usize = 500;
-        let total = docs.len();
-        let mut indexed = 0usize;
-
-        for chunk in docs.chunks(CHUNK_SIZE) {
-            match index.add_documents(chunk, Some("id")).await {
-                Ok(_) => {
-                    indexed += chunk.len();
-                    info!("Meilisearch reindex: {}/{} documents queued", indexed, total);
-                }
-                Err(e) => {
-                    warn!("Meilisearch reindex chunk failed: {}", e);
-                }
-            }
+        let index = self.client.index(&self.index_name);
+        match index.add_documents(docs, Some("id")).await {
+            Ok(_) => info!("Meilisearch index_batch: {} documents queued", docs.len()),
+            Err(e) => warn!("Meilisearch index_batch failed: {}", e),
         }
     }
 }

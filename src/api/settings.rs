@@ -13,6 +13,7 @@ use super::{AuthenticatedUser, ClientIp};
 
 /// Loan settings by media type
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LoanSettings {
     /// Media type
     pub media_type: MediaType,
@@ -26,6 +27,7 @@ pub struct LoanSettings {
 
 /// Settings response
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SettingsResponse {
     /// Loan settings per media type
     pub loan_settings: Vec<LoanSettings>,
@@ -36,6 +38,7 @@ pub struct SettingsResponse {
 /// Z39.50 server configuration
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Z3950ServerConfig {
     /// Server ID
     #[serde_as(as = "DisplayFromStr")]
@@ -68,6 +71,7 @@ fn default_z3950_encoding() -> String {
 
 /// Update settings request
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateSettingsRequest {
     /// Loan settings to update
     pub loan_settings: Option<Vec<LoanSettings>>,

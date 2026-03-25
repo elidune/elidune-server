@@ -174,6 +174,7 @@ mod tests {
             recovery_codes: None,
             recovery_codes_used: None,
             receive_reminders: true,
+            must_change_password: false,
         }
     }
 
@@ -203,6 +204,8 @@ mod tests {
 
     #[async_trait::async_trait]
     impl UsersRepository for FakeRepo {
+        async fn users_count(&self) -> AppResult<i64> { Ok(0) }
+        async fn users_set_must_change_password(&self, _: i64, _: bool) -> AppResult<()> { Ok(()) }
         async fn users_get_by_id(&self, _: i64) -> AppResult<User> {
             self.user.clone().ok_or_else(|| AppError::NotFound("user not found".into()))
         }

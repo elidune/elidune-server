@@ -25,6 +25,7 @@ use crate::{
 
 /// Summary returned by a reminder run
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ReminderReport {
     /// Whether this was a dry run (no emails actually sent)
     pub dry_run: bool,
@@ -39,6 +40,7 @@ pub struct ReminderReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ReminderDetail {
     pub user_id: i64,
     pub email: String,
@@ -48,6 +50,7 @@ pub struct ReminderDetail {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ReminderError {
     pub user_id: i64,
     pub email: String,
@@ -56,6 +59,7 @@ pub struct ReminderError {
 
 /// Overdue loan item for the admin dashboard
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct OverdueLoanInfo {
     pub loan_id: i64,
     pub user_id: i64,
@@ -73,6 +77,7 @@ pub struct OverdueLoanInfo {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct OverdueLoansPage {
     pub loans: Vec<OverdueLoanInfo>,
     pub total: i64,

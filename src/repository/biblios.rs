@@ -33,7 +33,13 @@ pub trait BibliosRepository: Send + Sync {
     async fn biblios_get_by_series(&self, series_id: i64) -> AppResult<Vec<BiblioShort>>;
     async fn biblios_get_by_collection(&self, collection_id: i64) -> AppResult<Vec<BiblioShort>>;
     async fn biblios_get_meili_document(&self, id: i64) -> AppResult<Option<MeiliBiblioDocument>>;
-    async fn biblios_get_all_meili_documents(&self) -> AppResult<Vec<MeiliBiblioDocument>>;
+    /// Fetch a page of Meilisearch documents using a keyset cursor.
+    /// Returns biblios with `id > after_id`, up to `limit` rows, ordered by id.
+    async fn biblios_get_meili_documents_batch(
+        &self,
+        after_id: i64,
+        limit: i64,
+    ) -> AppResult<Vec<MeiliBiblioDocument>>;
     async fn biblios_get_short_by_ids_ordered(&self, ids: &[i64]) -> AppResult<Vec<BiblioShort>>;
     async fn biblios_create<'a>(&self, biblio: &'a mut Biblio) -> AppResult<&'a mut Biblio>;
     async fn biblios_update<'a>(&self, id: i64, biblio: &'a mut Biblio) -> AppResult<&'a mut Biblio>;
@@ -105,8 +111,8 @@ impl BibliosRepository for Repository {
     async fn biblios_get_meili_document(&self, id: i64) -> crate::error::AppResult<Option<crate::models::biblio::MeiliBiblioDocument>> {
         Repository::biblios_get_meili_document(self, id).await
     }
-    async fn biblios_get_all_meili_documents(&self) -> crate::error::AppResult<Vec<crate::models::biblio::MeiliBiblioDocument>> {
-        Repository::biblios_get_all_meili_documents(self).await
+    async fn biblios_get_meili_documents_batch(&self, after_id: i64, limit: i64) -> crate::error::AppResult<Vec<crate::models::biblio::MeiliBiblioDocument>> {
+        Repository::biblios_get_meili_documents_batch(self, after_id, limit).await
     }
     async fn biblios_get_short_by_ids_ordered(&self, ids: &[i64]) -> crate::error::AppResult<Vec<crate::models::biblio::BiblioShort>> {
         Repository::biblios_get_short_by_ids_ordered(self, ids).await
@@ -199,6 +205,7 @@ struct ItemShortRow {
     call_number: Option<String>,
     borrowable: bool,
     source_name: Option<String>,
+    borrowed: bool,
 }
 
 impl From<ItemShortRow> for ItemShort {
@@ -209,6 +216,7 @@ impl From<ItemShortRow> for ItemShort {
             call_number: r.call_number,
             borrowable: r.borrowable,
             source_name: r.source_name,
+            borrowed: r.borrowed,
         }
     }
 }
@@ -994,9 +1002,14 @@ impl Repository {
         Ok(doc)
     }
 
-    /// Build Meilisearch documents for all biblios (used for full reindex).
+    /// Fetch a page of Meilisearch documents using a keyset cursor.
+    /// Returns biblios with `id > after_id`, up to `limit` rows, ordered by id.
     #[tracing::instrument(skip(self), err)]
-    pub async fn biblios_get_all_meili_documents(&self) -> AppResult<Vec<MeiliBiblioDocument>> {
+    pub async fn biblios_get_meili_documents_batch(
+        &self,
+        after_id: i64,
+        limit: i64,
+    ) -> AppResult<Vec<MeiliBiblioDocument>> {
         let docs = sqlx::query_as::<_, MeiliBiblioDocument>(
             r#"
             SELECT
@@ -1043,10 +1056,14 @@ impl Repository {
             LEFT JOIN biblio_collections bcx ON bcx.biblio_id = b.id
             LEFT JOIN collections co ON co.id = bcx.collection_id
             LEFT JOIN items it ON it.biblio_id = b.id AND it.archived_at IS NULL
+            WHERE b.id > $1
             GROUP BY b.id, ed.publisher_name
             ORDER BY b.id
+            LIMIT $2
             "#,
         )
+        .bind(after_id)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
         Ok(docs)
@@ -1523,7 +1540,7 @@ impl Repository {
                    i.place, i.borrowable, i.circulation_status, i.notes, i.price,
                    i.created_at, i.updated_at, i.archived_at,
                    so.name as source_name,
-                   (SELECT COUNT(*) FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as availability
+                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed
             FROM items i
             LEFT JOIN sources so ON i.source_id = so.id
             WHERE i.biblio_id = $1 AND i.archived_at IS NULL
@@ -1550,7 +1567,7 @@ impl Repository {
             r#"
             SELECT i.biblio_id, i.id, i.barcode, i.call_number, i.borrowable,
                    so.name as source_name,
-                   (SELECT COUNT(*) FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as availability
+                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed
             FROM items i
             LEFT JOIN sources so ON i.source_id = so.id
             WHERE i.biblio_id = ANY($1) AND i.archived_at IS NULL
@@ -1866,7 +1883,7 @@ impl Repository {
                    i.place, i.borrowable, i.circulation_status, i.notes, i.price,
                    i.created_at, i.updated_at, i.archived_at,
                    so.name as source_name,
-                   (SELECT COUNT(*) FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as availability
+                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed
             FROM items i
             LEFT JOIN sources so ON i.source_id = so.id
             WHERE i.id = $1
@@ -1916,7 +1933,7 @@ impl Repository {
                 r#"
                 SELECT i.biblio_id, i.id, i.barcode, i.call_number, i.borrowable,
                        so.name as source_name,
-                       (SELECT COUNT(*) FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as availability
+                       EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed
                 FROM items i
                 LEFT JOIN sources so ON i.source_id = so.id
                 WHERE i.barcode = $1 AND i.id != $2 AND i.archived_at IS NULL
@@ -1932,7 +1949,7 @@ impl Repository {
                 r#"
                 SELECT i.biblio_id, i.id, i.barcode, i.call_number, i.borrowable,
                        so.name as source_name,
-                       (SELECT COUNT(*) FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as availability
+                       EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed
                 FROM items i
                 LEFT JOIN sources so ON i.source_id = so.id
                 WHERE i.barcode = $1 AND i.archived_at IS NULL

@@ -56,6 +56,7 @@ impl sqlx::Encode<'_, sqlx::Postgres> for InventoryStatus {
 /// Inventory session
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct InventorySession {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -73,6 +74,7 @@ pub struct InventorySession {
 
 /// Create inventory session request
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateInventorySession {
     pub name: String,
     pub location_filter: Option<String>,
@@ -82,6 +84,7 @@ pub struct CreateInventorySession {
 /// Individual scan within a session
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct InventoryScan {
     pub id: i64,
     #[serde_as(as = "DisplayFromStr")]
@@ -103,6 +106,7 @@ pub struct ScanBarcode {
 
 /// Discrepancy report for a closed session
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct InventoryReport {
     pub session_id: i64,
     pub total_scanned: i64,

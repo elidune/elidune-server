@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use super::{catalog::CatalogService, redis::RedisService};
+use super::{catalog::CatalogService, redis::RedisService, task_manager::TaskHandle};
 
 /// Internal value stored in Redis for a MARC record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,9 +33,9 @@ pub struct CachedMarcRecord {
 /// Error information for a single record during batch import.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MarcBatchImportError {
-    /// Redis record key (`marc:record:<batch_id>:<id>`).
-    pub record_key: String,
+    pub key: String,
     /// Human-readable error message.
     pub error: String,
     /// ID of the existing biblio when the failure is a duplicate ISBN conflict.
@@ -47,13 +47,14 @@ pub struct MarcBatchImportError {
 /// Report returned after importing one or more records from a batch.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct MarcBatchImportReport {
     /// Batch identifier.
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub batch_id: i64,
     /// Number of successfully imported records.
-    pub imported: usize,
+    pub imported: Vec<String>,
     /// Detailed list of records that failed to import.
     pub failed: Vec<MarcBatchImportError>,
 }
@@ -61,6 +62,7 @@ pub struct MarcBatchImportReport {
 /// Summary of a MARC batch cached in Redis.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct MarcBatchInfo {
     /// Unique batch identifier (Snowflake ID).
     #[serde_as(as = "DisplayFromStr")]
@@ -81,6 +83,7 @@ pub struct MarcService {
 
 #[serde_as]
 #[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct EnqueueResult {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -95,6 +98,10 @@ impl MarcService {
 
     fn redis_key(batch_id: i64, record_id: usize) -> String {
         format!("marc:record:{}:{}", batch_id, record_id)
+    }
+
+    fn item_key_from_record_key(record_key: &str) -> String {
+        record_key.rsplit(':').next().unwrap().to_string()
     }
 
     /// Read UNIMARC binary data, cache each record in Redis and return a
@@ -266,7 +273,10 @@ impl MarcService {
     ///
     /// On error for a given record, the error is captured in the report and
     /// processing continues with the next record.
-    #[tracing::instrument(skip(self), err)]
+    ///
+    /// When `task_handle` is provided, per-record progress is reported via
+    /// [`TaskHandle::set_progress`].
+    #[tracing::instrument(skip(self, task_handle), err)]
     pub async fn import_from_batch(
         &self,
         batch_id: i64,
@@ -274,6 +284,7 @@ impl MarcService {
         record_id: Option<usize>,
         allow_duplicate_isbn: bool,
         confirm_replace_existing_id: Option<i64>,
+        task_handle: Option<TaskHandle>,
     ) -> AppResult<MarcBatchImportReport> {
         let mut conn = self.redis.get_connection().await?;
 
@@ -290,10 +301,15 @@ impl MarcService {
                 })?
         };
 
-        let mut imported = 0usize;
+        let mut imported = Vec::new();
         let mut failed = Vec::new();
+        let total = keys.len();
 
-        for key in keys {
+        for (idx, key) in keys.iter().enumerate() {
+            let key = key.clone();
+            
+            
+            
             let json_str: Option<String> = conn
                 .get(&key)
                 .await
@@ -303,7 +319,7 @@ impl MarcService {
 
             let Some(json_str) = json_str else {
                 failed.push(MarcBatchImportError {
-                    record_key: key.clone(),
+                    key: Self::item_key_from_record_key(&key),
                     error: "Record not found in Redis".to_string(),
                     existing_id: None,
                 });
@@ -314,7 +330,7 @@ impl MarcService {
                 Ok(v) => v,
                 Err(e) => {
                     failed.push(MarcBatchImportError {
-                        record_key: key.clone(),
+                        key: Self::item_key_from_record_key(&key),
                         error: format!("JSON decode error: {}", e),
                         existing_id: None,
                     });
@@ -329,11 +345,11 @@ impl MarcService {
 
             match self.catalog.create_biblio(biblio, allow_duplicate_isbn, confirm_replace_existing_id).await {
                 Ok((_biblio, _report)) => {
-                    imported += 1;
+                    imported.push(Self::item_key_from_record_key(&key));
                 }
                 Err(AppError::DuplicateNeedsConfirmation { existing_id, message, .. }) => {
                     failed.push(MarcBatchImportError {
-                        record_key: key.clone(),
+                        key: Self::item_key_from_record_key(&key),
                         error: message,
                         existing_id: Some(existing_id),
                     });
@@ -341,13 +357,26 @@ impl MarcService {
                 }
                 Err(e) => {
                     failed.push(MarcBatchImportError {
-                        record_key: key.clone(),
+                        key: Self::item_key_from_record_key(&key),
                         error: format!("Failed to create item: {}", e),
                         existing_id: None,
                     });
                     continue;
                 }
             }
+            if let Some(ref handle) = task_handle {
+                handle
+                    .set_progress(
+                        idx + 1,
+                        total,
+                        Some(serde_json::json!({
+                            "imported": imported,
+                            "failed": failed,
+                        }))
+                    )
+                    .await;
+            }
+
         }
 
 

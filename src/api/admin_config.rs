@@ -23,6 +23,7 @@ use super::{AuthenticatedUser, ClientIp};
 
 /// A single config section with its current value and override status
 #[derive(Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ConfigSectionInfo {
     /// Section key (e.g. "email", "logging", "reminders", "audit")
     pub key: String,
@@ -314,6 +315,7 @@ pub async fn reindex_search(
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ReindexSearchResponse {
     pub items_queued: usize,
     pub meilisearch_available: bool,

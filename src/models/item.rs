@@ -17,6 +17,7 @@ fn default_borrowable() -> bool {
 /// Full item (physical copy) model from database.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema, Validate)]
+#[serde(rename_all = "camelCase")]
 pub struct Item {
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
@@ -45,6 +46,8 @@ pub struct Item {
     pub archived_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub source_name: Option<String>,
+    #[serde(default)]
+    pub borrowed: bool,
 }
 
 impl Item {
@@ -60,6 +63,7 @@ impl Item {
 /// Short item (physical copy) representation for lists
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ItemShort {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -68,6 +72,9 @@ pub struct ItemShort {
     pub call_number: Option<String>,
     pub borrowable: bool,
     pub source_name: Option<String>,
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub borrowed: bool,
 }
 
 impl From<Item> for ItemShort {
@@ -78,6 +85,7 @@ impl From<Item> for ItemShort {
             call_number: item.call_number,
             borrowable: item.borrowable,
             source_name: item.source_name,
+            borrowed: item.borrowed,
         }
     }
 }

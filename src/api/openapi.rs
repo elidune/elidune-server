@@ -5,7 +5,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, library_info, loans, maintenance, opac, public_types, schedules, series, settings, sources, stats, users, visitor_counts, z3950};
+use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, library_info, loans, maintenance, opac, public_types, schedules, series, settings, sources, stats, tasks, users, visitor_counts, z3950};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -134,6 +134,9 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         admin_config::test_email,
         // Maintenance
         maintenance::run_maintenance,
+        // Background tasks
+        tasks::list_tasks,
+        tasks::get_task,
         // Audit
         audit::get_audit_log,
         audit::export_audit_log,
@@ -281,6 +284,12 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
             maintenance::MaintenanceAction,
             maintenance::MaintenanceActionReport,
             maintenance::MaintenanceResponse,
+            // Background tasks
+            tasks::TaskAcceptedResponse,
+            crate::models::task::BackgroundTask,
+            crate::models::task::TaskKind,
+            crate::models::task::TaskStatus,
+            crate::models::task::TaskProgress,
             // Audit
             audit::AuditQueryRequest,
             audit::AuditExportRequest,
@@ -322,7 +331,8 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         (name = "public_types", description = "Borrower public types (child, adult, school, staff, senior)"),
         (name = "admin", description = "Admin runtime configuration"),
         (name = "audit", description = "Audit log"),
-        (name = "maintenance", description = "Data-quality maintenance operations (admin only)")
+        (name = "maintenance", description = "Data-quality maintenance operations (admin only)"),
+        (name = "tasks", description = "Background task status polling")
     ),
     modifiers(&SecurityAddon)
 )]

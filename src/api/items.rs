@@ -27,6 +27,7 @@ use crate::{
 use super::{AuthenticatedUser, ClientIp, ValidatedJson};
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct GetItemQuery {
     /// If true, include the full MARC record (marc_record JSONB) in the response
     #[serde(default)]
@@ -132,6 +133,7 @@ pub async fn get_item(
 /// Query params for create item
 #[serde_as]
 #[derive(Debug, Deserialize, Default, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateItemQuery {
     /// If true, allow creating an item even when another item has the same ISBN
     #[serde(default)]
@@ -142,6 +144,7 @@ pub struct CreateItemQuery {
 
 /// Response body for item creation (item + optional dedup report)
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateItemResponse {
     pub item: Item,
     pub import_report: ImportReport,
@@ -155,6 +158,7 @@ pub struct UploadUnimarcQuery {
 /// Query params for MARC batch import
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportMarcBatchQuery {
     /// Source ID
     #[serde_as(as = "DisplayFromStr")]
@@ -345,6 +349,7 @@ pub async fn update_item(
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateItemQuery {
     #[serde(default)]
     pub allow_duplicate_isbn: bool,

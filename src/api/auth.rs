@@ -55,6 +55,7 @@ struct UserIdAudit {
 
 /// Login request body
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginRequest {
     /// Username or login
     pub username: String,
@@ -66,6 +67,7 @@ pub struct LoginRequest {
 
 /// Login response with JWT token
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginResponse {
     /// JWT access token (None if 2FA is required)
     pub token: Option<String>,
@@ -88,6 +90,7 @@ pub struct LoginResponse {
 /// User information returned after login
 #[serde_as]
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserInfo {
     /// User ID
     #[serde_as(as = "DisplayFromStr")]
@@ -285,6 +288,7 @@ pub async fn me(
 /// Verify 2FA code request
 #[serde_as]
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Verify2FARequest {
     /// User ID (from login response)
     #[serde_as(as = "DisplayFromStr")]
@@ -300,6 +304,7 @@ pub struct Verify2FARequest {
 
 /// Verify 2FA code response
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Verify2FAResponse {
     /// JWT access token
     pub token: String,
@@ -366,6 +371,7 @@ pub async fn verify_2fa(
 /// Verify recovery code request
 #[serde_as]
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct VerifyRecoveryRequest {
     /// User ID (from login response)
     #[serde_as(as = "DisplayFromStr")]
@@ -377,6 +383,7 @@ pub struct VerifyRecoveryRequest {
 
 /// Password reset request
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct RequestPasswordResetRequest {
     /// Login or email used to find the account
     pub identifier: String,
@@ -386,6 +393,7 @@ pub struct RequestPasswordResetRequest {
 
 /// Password reset confirmation request
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ResetPasswordRequest {
     /// Reset token received by email
     pub token: String,
@@ -536,6 +544,7 @@ pub struct Setup2FARequest {
 
 /// Setup 2FA response
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Setup2FAResponse {
     /// Provisioning URI for TOTP method (to generate QR code on client)
     pub provisioning_uri: Option<String>,
@@ -622,6 +631,7 @@ pub async fn disable_2fa(
 
 /// First-login password change request
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ChangePasswordRequest {
     /// New password (min 4 chars)
     pub new_password: String,

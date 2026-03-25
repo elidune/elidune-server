@@ -65,6 +65,7 @@ impl sqlx::Encode<'_, sqlx::Postgres> for FineStatus {
 /// Fine record
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Fine {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -85,6 +86,7 @@ pub struct Fine {
 
 /// Fine rule per media type
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct FineRule {
     pub id: i32,
     pub media_type: Option<String>,

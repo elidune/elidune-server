@@ -325,6 +325,7 @@ impl Repository {
 
 /// Annual event statistics
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct EventAnnualStats {
     pub total_events: i64,
     pub total_attendees: i64,
@@ -336,6 +337,7 @@ pub struct EventAnnualStats {
 
 /// Event stats by type
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct EventTypeStats {
     pub event_type: i16,
     pub count: i64,

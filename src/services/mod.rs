@@ -21,6 +21,7 @@ pub mod search;
 pub mod settings;
 pub mod sources;
 pub mod stats;
+pub mod task_manager;
 pub mod users;
 pub mod visitor_counts;
 pub mod z3950;
@@ -63,6 +64,8 @@ pub struct Services {
     pub settings: settings::SettingsService,
     pub sources: sources::SourcesService,
     pub stats: stats::StatsService,
+    /// Background task registry (MARC imports, maintenance, …).
+    pub tasks: task_manager::TaskManager,
     pub users: users::UsersService,
     pub visitor_counts: visitor_counts::VisitorCountsService,
     pub z3950: z3950::Z3950Service,
@@ -148,6 +151,7 @@ impl Services {
             settings: settings::SettingsService::new(repository.clone()),
             sources: sources::SourcesService::new(repo.clone() as Arc<dyn SourcesRepository>),
             stats: stats::StatsService::new(repository.clone()),
+            tasks: task_manager::TaskManager::new(redis_service.clone()),
             users: users::UsersService::new(repository.clone(), auth_config, redis_service.clone()),
             visitor_counts: visitor_counts::VisitorCountsService::new(
                 repo.clone() as Arc<dyn VisitorCountsRepository>,

@@ -21,6 +21,7 @@ use super::{AuthenticatedUser, ClientIp};
 /// Create reservation request (for use in API — mirrors model)
 #[serde_as]
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateReservationRequest {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]

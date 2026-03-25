@@ -305,6 +305,7 @@ impl From<UserRow> for User {
 /// Full user model from database
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct User {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -392,6 +393,7 @@ impl From<UserShortRow> for UserShort {
 /// Short user representation for lists
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserShort {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -406,6 +408,7 @@ pub struct UserShort {
 
 /// User query parameters
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserQuery {
     pub name: Option<String>,
     pub barcode: Option<String>,
@@ -416,6 +419,7 @@ pub struct UserQuery {
 /// User create/update body. `login` is required when creating; omit fields for partial update.
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserPayload {
     pub barcode: Option<String>,
     /// Login (username); required on create, optional on update
@@ -456,6 +460,7 @@ pub struct UserPayload {
 
 /// Update own profile request (for authenticated users)
 #[derive(Debug, Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateProfile {
     /// First name
     pub firstname: Option<String>,
@@ -495,6 +500,7 @@ pub struct UpdateAccountType {
 
 /// User rights structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserRights {
     pub items_rights: Rights,
     pub users_rights: Rights,

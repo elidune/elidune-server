@@ -19,7 +19,7 @@ pub struct DuplicateCandidate {
 
 /// What happened during import.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub enum ImportAction {
     Created,
     MergedBibliographic,
@@ -30,6 +30,7 @@ pub enum ImportAction {
 /// Report returned alongside the imported/updated biblio.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportReport {
     pub action: ImportAction,
     #[serde_as(as = "Option<DisplayFromStr>")]
@@ -45,6 +46,7 @@ pub struct ImportReport {
 /// Body returned on 409 when confirmation is required (duplicate ISBN).
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct DuplicateConfirmationRequired {
     pub code: String,
     #[serde_as(as = "DisplayFromStr")]
@@ -57,6 +59,7 @@ pub struct DuplicateConfirmationRequired {
 /// Body returned on 409 when a physical item barcode conflict is detected.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct DuplicateItemBarcodeRequired {
     pub code: String,
     #[serde_as(as = "DisplayFromStr")]
@@ -92,8 +95,8 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"code\":\"duplicate_isbn_needs_confirmation\""));
-        assert!(json.contains("\"existing_id\":\"42\""));
-        assert!(json.contains("\"existing_biblio\""));
+        assert!(json.contains("\"existingId\":\"42\""));
+        assert!(json.contains("\"existingBiblio\""));
         assert!(json.contains("\"title\":\"Test Book\""));
     }
 
@@ -108,7 +111,7 @@ mod tests {
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"action\":\"created\""));
         assert!(json.contains("\"No ISBN\""));
-        assert!(!json.contains("\"existing_id\""));
+        assert!(!json.contains("\"existingId\""));
         assert!(!json.contains("\"message\""));
     }
 
@@ -121,8 +124,8 @@ mod tests {
             message: Some("Merged into 42".to_string()),
         };
         let json = serde_json::to_string(&report).unwrap();
-        assert!(json.contains("\"action\":\"merged_bibliographic\""));
-        assert!(json.contains("\"existing_id\":\"42\""));
+        assert!(json.contains("\"action\":\"mergedBibliographic\""));
+        assert!(json.contains("\"existingId\":\"42\""));
         assert!(json.contains("\"message\":\"Merged into 42\""));
         assert!(!json.contains("\"warnings\""));
     }

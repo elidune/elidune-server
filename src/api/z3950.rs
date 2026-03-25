@@ -23,6 +23,7 @@ use super::AuthenticatedUser;
 /// Z39.50 search query parameters
 #[serde_as]
 #[derive(Deserialize, IntoParams, ToSchema, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct Z3950SearchQuery {
     pub query: String,
     #[serde_as(as = "Option<DisplayFromStr>")]
@@ -32,6 +33,7 @@ pub struct Z3950SearchQuery {
 }
 
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Z3950SearchResponse {
     /// Total results found
     pub total: i32,
@@ -44,6 +46,7 @@ pub struct Z3950SearchResponse {
 /// Z39.50 import request
 #[serde_as]
 #[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Z3950ImportRequest {
     /// Remote biblio ID to import
     #[serde_as(as = "DisplayFromStr")]
@@ -59,6 +62,7 @@ pub struct Z3950ImportRequest {
 
 #[serde_as]
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportItem {
     /// Item barcode (must be unique when provided)
     pub barcode: Option<String>,
@@ -102,12 +106,14 @@ impl From<ImportItem> for Item {
             updated_at: None,
             archived_at: None,
             source_name: None,
+            borrowed: false,
         }
     }
 }
 
 /// Response body for Z39.50 import (biblio + dedup report)
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Z3950ImportResponse {
     /// The imported or updated bibliographic record
     pub biblio: Biblio,

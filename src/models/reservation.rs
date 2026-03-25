@@ -72,6 +72,7 @@ impl sqlx::Encode<'_, sqlx::Postgres> for ReservationStatus {
 /// `item_id` references the physical copy (items table).
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Reservation {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -94,6 +95,7 @@ pub struct Reservation {
 /// Reservation with full item and user details
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ReservationDetails {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -111,6 +113,7 @@ pub struct ReservationDetails {
 /// Create reservation request — `item_id` must be a physical copy ID (items table).
 #[serde_as]
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateReservation {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]

@@ -13,6 +13,7 @@ use utoipa::{IntoParams, ToSchema};
 /// A named schedule period (e.g. "Winter hours 2025")
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SchedulePeriod {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -30,6 +31,7 @@ pub struct SchedulePeriod {
 
 /// Create schedule period request
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSchedulePeriod {
     pub name: String,
     /// Start date (YYYY-MM-DD)
@@ -41,6 +43,7 @@ pub struct CreateSchedulePeriod {
 
 /// Update schedule period request
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateSchedulePeriod {
     pub name: Option<String>,
     pub start_date: Option<String>,
@@ -55,6 +58,7 @@ pub struct UpdateSchedulePeriod {
 /// A time slot within a schedule period
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ScheduleSlot {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -74,6 +78,7 @@ pub struct ScheduleSlot {
 
 /// Create schedule slot request
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateScheduleSlot {
     /// Day of week (0=Monday, 6=Sunday)
     pub day_of_week: i16,
@@ -90,6 +95,7 @@ pub struct CreateScheduleSlot {
 /// An exceptional closure day
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ScheduleClosure {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -103,6 +109,7 @@ pub struct ScheduleClosure {
 
 /// Create closure request
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateScheduleClosure {
     /// Closure date (YYYY-MM-DD)
     pub closure_date: String,
@@ -111,6 +118,7 @@ pub struct CreateScheduleClosure {
 
 /// Query parameters for schedule closures
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ScheduleClosureQuery {
     /// Filter closures from this date (YYYY-MM-DD)
     pub start_date: Option<String>,

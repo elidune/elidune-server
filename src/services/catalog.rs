@@ -244,7 +244,8 @@ impl CatalogService {
         }
         self.sync_index(id).await;
 
-        Ok(biblio)
+        self.repository.biblios_get_by_id_or_isbn(&id.to_string()).await
+       
     }
 
     /// Delete a biblio (soft delete)
@@ -409,15 +410,59 @@ impl CatalogService {
     // =========================================================================
 
     /// Trigger a full reindex of all catalog biblios in Meilisearch.
+    ///
+    /// Streams records through the database in fixed-size batches using a keyset
+    /// cursor (`WHERE id > last_seen_id`) to avoid loading the entire catalog into
+    /// memory at once.
+    ///
     /// Returns `(total_biblios_queued, bool_meilisearch_available)`.
     #[tracing::instrument(skip(self), err)]
     pub async fn reindex_search(&self) -> AppResult<(usize, bool)> {
         let Some(ref svc) = self.search else {
             return Ok((0, false));
         };
-        let docs = self.repository.biblios_get_all_meili_documents().await?;
-        let count = docs.len();
-        svc.reindex_all(docs).await;
-        Ok((count, true))
+
+        if !svc.clear_index().await {
+            return Err(AppError::Internal("Meilisearch clear_index failed".into()));
+        }
+
+        const BATCH_SIZE: i64 = 500;
+        const LOG_EVERY: usize = 5_000;
+
+        let mut cursor: i64 = 0;
+        let mut total = 0usize;
+        let mut since_last_log = 0usize;
+
+        loop {
+            let batch = self
+                .repository
+                .biblios_get_meili_documents_batch(cursor, BATCH_SIZE)
+                .await?;
+
+            if batch.is_empty() {
+                break;
+            }
+
+            let batch_len = batch.len();
+            // Safety: batch is non-empty.
+            cursor = batch.last().unwrap().id;
+
+            svc.index_batch(&batch).await;
+
+            total += batch_len;
+            since_last_log += batch_len;
+
+            if since_last_log >= LOG_EVERY {
+                tracing::info!("Meilisearch reindex progress: {} documents queued so far", total);
+                since_last_log = 0;
+            }
+
+            if (batch_len as i64) < BATCH_SIZE {
+                break;
+            }
+        }
+
+        tracing::info!("Meilisearch reindex complete: {} documents queued", total);
+        Ok((total, true))
     }
 }

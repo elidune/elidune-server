@@ -26,6 +26,7 @@ pub mod settings;
 pub mod sources;
 pub mod sse;
 pub mod stats;
+pub mod tasks;
 pub mod users;
 pub mod visitor_counts;
 pub mod z3950;

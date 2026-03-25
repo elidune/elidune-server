@@ -18,13 +18,14 @@ use crate::{
         import_report::ImportReport,
         item::Item,
     },
+    models::task::TaskKind,
     services::{
         audit::{self},
-        marc::{EnqueueResult, MarcBatchImportReport, MarcBatchInfo},
+        marc::{EnqueueResult, MarcBatchInfo},
     },
 };
 
-use super::{AuthenticatedUser, ClientIp, ValidatedJson};
+use super::{tasks::TaskAcceptedResponse, AuthenticatedUser, ClientIp, ValidatedJson};
 
 
 /// Build the biblios and items routes for this domain.
@@ -43,6 +44,7 @@ pub fn router() -> axum::Router<crate::AppState> {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct GetBiblioQuery {
     /// If true, include the full MARC record (marc_record JSONB) in the response
     #[serde(default)]
@@ -151,6 +153,7 @@ pub async fn get_biblio(
 /// Query params for create biblio
 #[serde_as]
 #[derive(Debug, Deserialize, Default, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateBiblioQuery {
     /// If true, allow creating a biblio even when another has the same ISBN
     #[serde(default)]
@@ -161,6 +164,7 @@ pub struct CreateBiblioQuery {
 
 /// Response body for biblio creation (biblio + optional dedup report)
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateBiblioResponse {
     pub biblio: Biblio,
     pub import_report: ImportReport,
@@ -172,7 +176,8 @@ pub struct UploadUnimarcQuery {}
 
 /// Query params for MARC batch import
 #[serde_as]
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportMarcBatchQuery {
     /// Source ID
     #[serde_as(as = "DisplayFromStr")]
@@ -283,19 +288,24 @@ pub async fn load_marc(
 }
 
 /// Import cached MARC records from a batch into the catalog.
+///
+/// Returns `202 Accepted` immediately with a `taskId`.  Poll `GET /tasks/:id`
+/// until `status` is `completed` or `failed`.  The `result` field of the
+/// completed task contains a `MarcBatchImportReport`.
 #[utoipa::path(
     post,
     path = "/biblios/import-marc-batch",
     tag = "biblios",
     security(("bearer_auth" = [])),
     params(
-        ("batch_id" = String, Query, description = "MARC batch identifier returned by upload_unimarc"),
-        ("record_id" = Option<String>, Query, description = "Optional record id inside batch; if omitted, import all records"),
+        ("batch_id" = String, Query, description = "MARC batch identifier returned by load-marc"),
+        ("source_id" = String, Query, description = "Source ID to attach to imported biblios"),
+        ("record_id" = Option<usize>, Query, description = "Optional single record index; if omitted, all records in the batch are imported"),
         ("allow_duplicate_isbn" = Option<bool>, Query, description = "Allow creating a biblio even when another has the same ISBN (default: false)"),
-        ("confirm_replace_existing_id" = Option<i64>, Query, description = "Set to the existing biblio ID to confirm replacement of a duplicate")
+        ("confirm_replace_existing_id" = Option<i64>, Query, description = "Confirm replacement of an existing biblio by its ID")
     ),
     responses(
-        (status = 200, description = "MARC batch import report", body = MarcBatchImportReport),
+        (status = 202, description = "Import task accepted", body = TaskAcceptedResponse),
         (status = 401, description = "Not authenticated")
     )
 )]
@@ -304,30 +314,46 @@ pub async fn import_marc_batch(
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
     Query(params): Query<ImportMarcBatchQuery>,
-) -> AppResult<Json<MarcBatchImportReport>> {
+) -> AppResult<(StatusCode, Json<TaskAcceptedResponse>)> {
     claims.require_write_items()?;
-    let report = state
-        .services
-        .marc
-        .import_from_batch(
-            params.batch_id,
-            params.source_id,
-            params.record_id,
-            params.allow_duplicate_isbn,
-            params.confirm_replace_existing_id,
-        )
-        .await?;
 
-    state.services.audit.log(
-        audit::event::IMPORT_MARC_BATCH,
-        Some(claims.user_id),
-        None,
-        None,
-        ip,
-        Some(&params),
+    let marc = state.services.marc.clone();
+    let audit = state.services.audit.clone();
+    let p = params.clone();
+
+    let task_id = state.services.tasks.spawn_task(
+        TaskKind::MarcBatchImport,
+        claims.user_id,
+        move |handle| async move {
+            match marc
+                .import_from_batch(
+                    p.batch_id,
+                    p.source_id,
+                    p.record_id,
+                    p.allow_duplicate_isbn,
+                    p.confirm_replace_existing_id,
+                    Some(handle.clone()),
+                )
+                .await
+            {
+                Ok(report) => {
+                    audit.log(
+                        audit::event::IMPORT_MARC_BATCH,
+                        Some(claims.user_id),
+                        None,
+                        None,
+                        ip,
+                        Some(&p),
+                    );
+                    let result = serde_json::to_value(&report).unwrap_or_default();
+                    handle.complete(result).await;
+                }
+                Err(e) => handle.fail(e.to_string()).await,
+            }
+        },
     );
 
-    Ok(Json(report))
+    Ok((StatusCode::ACCEPTED, Json(TaskAcceptedResponse { task_id })))
 }
 
 /// Update an existing bibliographic record
@@ -371,6 +397,7 @@ pub async fn update_biblio(
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateBiblioQuery {
     #[serde(default)]
     pub allow_duplicate_isbn: bool,
@@ -419,6 +446,7 @@ pub async fn delete_biblio(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteBiblioParams {
     pub force: Option<bool>,
 }
@@ -582,6 +610,7 @@ pub async fn delete_item(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteItemParams {
     pub force: Option<bool>,
 }

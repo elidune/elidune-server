@@ -12,6 +12,7 @@ use super::AuthenticatedUser;
 
 /// Statistics response
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct StatsResponse {
     /// Item statistics
     pub items: ItemStats,
@@ -22,6 +23,7 @@ pub struct StatsResponse {
 }
 
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ItemStats {
     /// Total number of items
     pub total: i64,
@@ -40,6 +42,7 @@ pub struct ItemStats {
 }
 
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserStats {
     /// Total number of users
     pub total: i64,
@@ -50,6 +53,7 @@ pub struct UserStats {
 }
 
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LoanStats {
     /// Active loans
     pub active: i64,
@@ -71,7 +75,7 @@ pub struct StatEntry {
 
 /// Sorting options for user loan statistics
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub enum UserStatsSortBy {
     /// Sort by total number of loans (active + historical)
     TotalLoans,
@@ -83,7 +87,7 @@ pub enum UserStatsSortBy {
 
 /// Mode for user statistics endpoint
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub enum UserStatsMode {
     /// Leaderboard-style response (list of users with their loan counts)
     Leaderboard,
@@ -93,6 +97,7 @@ pub enum UserStatsMode {
 
 /// Query parameters for user loan statistics
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserStatsQuery {
     /// Field to sort by (total_loans, active_loans, overdue_loans) - only used in leaderboard mode
     #[serde(default)]
@@ -111,6 +116,7 @@ pub struct UserStatsQuery {
 /// User loan statistics entry
 #[serde_as]
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserLoanStats {
     /// User ID
     #[serde_as(as = "DisplayFromStr")]
@@ -130,7 +136,7 @@ pub struct UserLoanStats {
 
 /// Query parameters for main library statistics (GET /stats)
 #[derive(Debug, Default, Clone, Deserialize, IntoParams, ToSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub struct StatsQuery {
     /// Reference year (e.g. 2024) — stats computed as of 31 December of this year
     pub year: Option<i32>,
@@ -146,7 +152,7 @@ pub struct StatsQuery {
 
 /// Time interval for grouping statistics
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub enum Interval {
     Day,
     Week,
@@ -157,7 +163,7 @@ pub enum Interval {
 
 /// Advanced loan statistics query parameters
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub struct LoanStatsQuery {
     /// Start date (ISO 8601 format)
     pub start_date: Option<String>,
@@ -175,6 +181,7 @@ pub struct LoanStatsQuery {
 
 /// Loan statistics response with time series data
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LoanStatsResponse {
     /// Total number of loans in the period
     pub total_loans: i64,
@@ -188,6 +195,7 @@ pub struct LoanStatsResponse {
 
 /// Aggregated user statistics for E1 section (new users, active borrowers)
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserStatsAggregate {
     /// Total number of users (all users, with or without loans)
     pub users_total: i64,
@@ -211,7 +219,7 @@ pub struct UserStatsAggregate {
 
 /// User statistics response, either leaderboard-style or aggregate
 #[derive(Serialize, ToSchema)]
-#[serde(tag = "mode", rename_all = "snake_case")]
+#[serde(tag = "mode", rename_all = "camelCase")]
 pub enum UserStatsResponse {
     /// Leaderboard-style statistics
     Leaderboard {
@@ -224,6 +232,7 @@ pub enum UserStatsResponse {
 
 /// Time series entry for loan statistics
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct TimeSeriesEntry {
     /// Period label (e.g., "2024-01-15" for day, "2024-W03" for week)
     pub period: String,
@@ -235,6 +244,7 @@ pub struct TimeSeriesEntry {
 
 /// Query parameters for catalog statistics (GET /stats/catalog)
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogStatsQuery {
     /// Start date (ISO 8601 format) for period-based statistics
     pub start_date: Option<String>,
@@ -253,6 +263,7 @@ pub struct CatalogStatsQuery {
 
 /// Catalog statistics response
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogStatsResponse {
     /// Aggregated totals
     pub totals: CatalogStatsTotals,
@@ -269,6 +280,7 @@ pub struct CatalogStatsResponse {
 
 /// Aggregated catalog statistics totals
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogStatsTotals {
     /// Number of active items/physical copies (not archived)
     pub active_items: i64,
@@ -283,6 +295,7 @@ pub struct CatalogStatsTotals {
 /// Catalog statistics per source
 #[serde_as]
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogSourceStats {
     /// Source ID
     #[serde_as(as = "DisplayFromStr")]
@@ -308,6 +321,7 @@ pub struct CatalogSourceStats {
 
 /// Catalog statistics breakdown (by media_type or public_type)
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CatalogBreakdownStats {
     /// Label (media type code or public type name)
     pub label: String,

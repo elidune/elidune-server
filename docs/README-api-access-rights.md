@@ -205,7 +205,7 @@ All auth routes are rate-limited via GovernorLayer.
 | `/public-types` | `require_read_settings()` | `require_write_settings()` |
 | `/equipment` | `require_read_settings()` | `require_write_settings()` |
 | `/events` (cultural events) | `require_read_settings()` | `require_write_settings()` |
-| `/schedules` | `require_read_settings()` | `require_write_settings()` |
+| `/schedules` | Public | `require_write_settings()` |
 | `/visitor-counts` | `require_read_settings()` | `require_write_settings()` |
 
 ## Admin

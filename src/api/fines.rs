@@ -18,6 +18,7 @@ use super::{AuthenticatedUser, ClientIp, StaffUser};
 
 /// Upsert fine rule request
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpsertFineRuleRequest {
     pub media_type: Option<String>,
     pub daily_rate: Decimal,
@@ -28,6 +29,7 @@ pub struct UpsertFineRuleRequest {
 
 /// Unpaid fine summary for a user
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UnpaidFinesSummary {
     pub total_unpaid: Decimal,
     pub fines: Vec<Fine>,

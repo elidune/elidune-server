@@ -264,6 +264,7 @@ impl Repository {
                    it.id as item_copy_id, it.barcode as item_barcode,
                    it.call_number as item_call_number, it.borrowable as item_borrowable,
                    so.name as item_source_name,
+
                    b.id as biblio_id, b.media_type, b.isbn as biblio_isbn,
                    b.title, b.publication_date,
                    {author_subquery}
@@ -297,6 +298,7 @@ impl Repository {
                 call_number: row.get("item_call_number"),
                 borrowable: row.get("item_borrowable"),
                 source_name: row.get("item_source_name"),
+                borrowed: true,
             };
 
             LoanDetails {
@@ -380,12 +382,13 @@ impl Repository {
             return Err(AppError::BusinessRule("Item is not borrowable".to_string()));
         }
 
-        let user_public_type: Option<i64> = sqlx::query_scalar(
+        let user_public_type: Option<i64> = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT public_type FROM users WHERE id = $1"
         )
         .bind(loan.user_id)
         .fetch_optional(&self.pool)
-        .await?;
+        .await?
+        .flatten();
 
         let (duration_days, nb_max_media, nb_max_total, _) = self
             .resolve_loan_settings(user_public_type, media_type.as_deref())
@@ -544,6 +547,7 @@ impl Repository {
             call_number: biblio_row.get("item_call_number"),
             borrowable: biblio_row.get("item_borrowable"),
             source_name: biblio_row.get("item_source_name"),
+            borrowed: true,
         };
 
         Ok(LoanDetails {
@@ -590,12 +594,13 @@ impl Repository {
 
         let media_type: Option<String> = item_row.get("media_type");
 
-        let user_public_type: Option<i64> = sqlx::query_scalar(
+        let user_public_type: Option<i64> = sqlx::query_scalar::<_, Option<i64>>(
             "SELECT public_type FROM users WHERE id = $1"
         )
         .bind(loan.user_id)
         .fetch_optional(&self.pool)
-        .await?;
+        .await?
+        .flatten();
 
         let (duration_days, _nb_max_media, _nb_max_total, max_renews) = self
             .resolve_loan_settings(user_public_type, media_type.as_deref())

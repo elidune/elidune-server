@@ -134,6 +134,7 @@ pub mod event {
 
 /// A single audit log entry returned from queries
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AuditLogEntry {
     pub id: i64,
     pub event_type: String,
@@ -147,6 +148,7 @@ pub struct AuditLogEntry {
 
 /// Query parameters for audit log pagination and filtering
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AuditQueryParams {
     pub event_type: Option<String>,
     pub entity_type: Option<String>,
@@ -160,6 +162,7 @@ pub struct AuditQueryParams {
 
 /// Paginated audit log response
 #[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AuditLogPage {
     pub entries: Vec<AuditLogEntry>,
     pub total: i64,

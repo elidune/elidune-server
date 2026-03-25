@@ -9,6 +9,7 @@ use utoipa::{IntoParams, ToSchema};
 /// Visitor count record
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct VisitorCount {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -25,6 +26,7 @@ pub struct VisitorCount {
 
 /// Create visitor count request
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateVisitorCount {
     /// Date of the count (YYYY-MM-DD)
     pub count_date: String,
@@ -37,6 +39,7 @@ pub struct CreateVisitorCount {
 
 /// Query parameters for visitor counts
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct VisitorCountQuery {
     /// Start date (YYYY-MM-DD)
     pub start_date: Option<String>,

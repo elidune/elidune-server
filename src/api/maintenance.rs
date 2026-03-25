@@ -2,24 +2,25 @@
 
 use std::collections::BTreeMap;
 
-use axum::{extract::State, Json};
+use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::{
     error::AppResult,
+    models::task::TaskKind,
     repository::{maintenance::MaintenanceRepository, Repository},
     services::audit,
     AppState,
 };
 
-use super::{AdminUser, ClientIp};
+use super::{tasks::TaskAcceptedResponse, AdminUser, ClientIp};
 
 // ─── Request / Response types ─────────────────────────────────────────────────
 
 /// Maintenance action identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub enum MaintenanceAction {
     /// Strip surrounding double-quotes from series names; delete orphan series.
     CleanupSeries,
@@ -40,13 +41,13 @@ pub enum MaintenanceAction {
 impl MaintenanceAction {
     fn as_str(self) -> &'static str {
         match self {
-            Self::CleanupSeries => "cleanup_series",
-            Self::CleanupCollections => "cleanup_collections",
-            Self::CleanupOrphanAuthors => "cleanup_orphan_authors",
-            Self::MergeDuplicateSeries => "merge_duplicate_series",
-            Self::MergeDuplicateCollections => "merge_duplicate_collections",
-            Self::CleanupDanglingBiblioSeries => "cleanup_dangling_biblio_series",
-            Self::CleanupDanglingBiblioCollections => "cleanup_dangling_biblio_collections",
+            Self::CleanupSeries => "cleanupSeries",
+            Self::CleanupCollections => "cleanupCollections",
+            Self::CleanupOrphanAuthors => "cleanupOrphanAuthors",
+            Self::MergeDuplicateSeries => "mergeDuplicateSeries",
+            Self::MergeDuplicateCollections => "mergeDuplicateCollections",
+            Self::CleanupDanglingBiblioSeries => "cleanupDanglingBiblioSeries",
+            Self::CleanupDanglingBiblioCollections => "cleanupDanglingBiblioCollections",
         }
     }
 }
@@ -85,8 +86,12 @@ pub struct MaintenanceResponse {
 
 /// Run one or more maintenance actions (admin only).
 ///
-/// Each action is executed sequentially and independently — a failure in one action
-/// does not prevent the others from running.
+/// Returns `202 Accepted` immediately with a `taskId`.  Poll `GET /tasks/:id`
+/// until `status` is `completed` or `failed`.  The `result` field of the
+/// completed task contains a `MaintenanceResponse` with per-action reports.
+///
+/// Each action is executed sequentially and independently — a failure in one
+/// action does not prevent the others from running.
 #[utoipa::path(
     post,
     path = "/maintenance",
@@ -94,7 +99,7 @@ pub struct MaintenanceResponse {
     security(("bearer_auth" = [])),
     request_body = MaintenanceRequest,
     responses(
-        (status = 200, description = "Maintenance report", body = MaintenanceResponse),
+        (status = 202, description = "Maintenance task accepted", body = TaskAcceptedResponse),
         (status = 400, description = "Invalid request"),
         (status = 403, description = "Admin access required")
     )
@@ -104,68 +109,93 @@ pub async fn run_maintenance(
     AdminUser(claims): AdminUser,
     ClientIp(ip): ClientIp,
     Json(req): Json<MaintenanceRequest>,
-) -> AppResult<Json<MaintenanceResponse>> {
+) -> AppResult<(StatusCode, Json<TaskAcceptedResponse>)> {
     if req.actions.is_empty() {
         return Err(crate::error::AppError::Validation(
             "actions list must not be empty".into(),
         ));
     }
 
-    let repo = Repository::new(state.services.repository_pool().clone());
-    let mut reports = Vec::with_capacity(req.actions.len());
+    let pool = state.services.repository_pool().clone();
+    let audit = state.services.audit.clone();
 
-    for action in &req.actions {
-        let result = dispatch_action(&repo, *action).await;
+    let task_id = state.services.tasks.spawn_task(
+        TaskKind::Maintenance,
+        claims.user_id,
+        move |handle| async move {
+            let repo = Repository::new(pool);
+            let total = req.actions.len();
+            let mut reports = Vec::with_capacity(total);
 
-        let report = match result {
-            Ok(detail) => {
-                let details: BTreeMap<String, i64> =
-                    detail.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+            for (idx, action) in req.actions.iter().enumerate() {
+                handle
+                    .set_progress(
+                        idx,
+                        total,
+                        Some(serde_json::json!({
+                            "action": action,
+                            "step": idx + 1,
+                            "total": total,
+                        })),
+                    )
+                    .await;
 
-                tracing::info!(
-                    action = action.as_str(),
-                    ?details,
-                    "maintenance action completed"
-                );
+                let result = dispatch_action(&repo, *action).await;
 
-                MaintenanceActionReport {
-                    action: action.as_str().to_string(),
-                    success: true,
-                    details,
-                    error: None,
-                }
+                let report = match result {
+                    Ok(detail) => {
+                        let details: BTreeMap<String, i64> =
+                            detail.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+                        tracing::info!(
+                            action = action.as_str(),
+                            ?details,
+                            "maintenance action completed"
+                        );
+                        MaintenanceActionReport {
+                            action: action.as_str().to_string(),
+                            success: true,
+                            details,
+                            error: None,
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            action = action.as_str(),
+                            error = %e,
+                            "maintenance action failed"
+                        );
+                        MaintenanceActionReport {
+                            action: action.as_str().to_string(),
+                            success: false,
+                            details: BTreeMap::new(),
+                            error: Some(e.to_string()),
+                        }
+                    }
+                };
+
+                reports.push(report);
             }
-            Err(e) => {
-                tracing::warn!(action = action.as_str(), error = %e, "maintenance action failed");
-                MaintenanceActionReport {
-                    action: action.as_str().to_string(),
-                    success: false,
-                    details: BTreeMap::new(),
-                    error: Some(e.to_string()),
-                }
+
+            audit.log(
+                audit::event::MAINTENANCE_RUN,
+                Some(claims.user_id),
+                Some("maintenance"),
+                None,
+                ip,
+                Some(serde_json::json!({
+                    "actions": req.actions.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
+                })),
+            );
+
+            let response = MaintenanceResponse { reports };
+            match serde_json::to_value(&response) {
+                Ok(v) => handle.complete(v).await,
+                Err(e) => handle.fail(format!("Serialisation error: {e}")).await,
             }
-        };
-
-        reports.push(report);
-    }
-
-    state.services.audit.log(
-        audit::event::MAINTENANCE_RUN,
-        Some(claims.user_id),
-        Some("maintenance"),
-        None,
-        ip,
-        Some(serde_json::json!({
-            "actions": req.actions.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
-            "reports": reports.iter().map(|r| serde_json::json!({
-                "action": r.action,
-                "success": r.success,
-                "details": r.details,
-            })).collect::<Vec<_>>(),
-        })),
+        },
     );
 
-    Ok(Json(MaintenanceResponse { reports }))
+    Ok((StatusCode::ACCEPTED, Json(TaskAcceptedResponse { task_id })))
 }
 
 async fn dispatch_action(

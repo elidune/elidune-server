@@ -12,6 +12,7 @@ use super::{AuthenticatedUser, ClientIp};
 
 /// Library global information
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryInfo {
     /// Library name
     pub name: Option<String>,
@@ -35,6 +36,7 @@ pub struct LibraryInfo {
 
 /// Update library information request
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateLibraryInfoRequest {
     /// Library name
     pub name: Option<String>,

@@ -21,6 +21,7 @@ use super::{AuthenticatedUser, ClientIp};
 
 /// Paginated events response
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct EventsListResponse {
     pub events: Vec<Event>,
     pub total: i64,

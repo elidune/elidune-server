@@ -24,6 +24,7 @@ use super::{AuthenticatedUser, ClientIp};
 /// Create loan request
 #[serde_as]
 #[derive(Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateLoanRequest {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -68,6 +69,7 @@ struct ReminderBatchManualAudit {
 /// Loan response with calculated dates
 #[serde_as]
 #[derive(Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LoanResponse {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
@@ -85,6 +87,7 @@ pub struct ReturnResponse {
 
 /// Query parameters for overdue loans list
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]
+#[serde(rename_all = "camelCase")]
 pub struct OverdueLoansQuery {
     pub page: Option<i64>,
     pub per_page: Option<i64>,
@@ -92,6 +95,7 @@ pub struct OverdueLoansQuery {
 
 /// Query parameters for sending reminders
 #[derive(Debug, Deserialize, ToSchema, IntoParams)]
+#[serde(rename_all = "camelCase")]
 pub struct SendRemindersQuery {
     /// If true, no emails are sent; only shows what would be sent
     pub dry_run: Option<bool>,
