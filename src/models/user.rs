@@ -640,6 +640,11 @@ impl UserClaims {
     }
 
     pub fn require_write_settings(&self) -> Result<(), AppError> {
+        println!("account_type: {:?}", self.account_type);
+        println!("rights: {:?}", self.rights);
+        println!("require_write_settings: {:?}", self.rights.settings_rights);
+        println!("Rights::Write: {:?}", Rights::Write as u8);
+        println!("self.rights.settings_rights as u8: {:?}", self.rights.settings_rights as u8);
         if self.rights.settings_rights as u8 >= Rights::Write as u8 {
             Ok(())
         } else {

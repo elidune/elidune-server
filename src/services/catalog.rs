@@ -143,7 +143,7 @@ impl CatalogService {
     #[tracing::instrument(skip(self), err)]
     pub async fn get_biblio(&self, id: i64) -> AppResult<Biblio> {
         self.repository
-            .biblios_get_by_id_or_isbn(&id.to_string())
+            .biblios_get_by_id(id)
             .await
     }
 
@@ -227,7 +227,7 @@ impl CatalogService {
     #[tracing::instrument(skip(self), err)]
     pub async fn update_biblio(&self, id: i64, mut biblio: Biblio, allow_duplicate_isbn: bool) -> AppResult<Biblio> {
         self.repository
-            .biblios_get_by_id_or_isbn(&id.to_string())
+            .biblios_get_by_id(id)
             .await?;
 
         if !allow_duplicate_isbn {
@@ -244,7 +244,7 @@ impl CatalogService {
         }
         self.sync_index(id).await;
 
-        self.repository.biblios_get_by_id_or_isbn(&id.to_string()).await
+        self.repository.biblios_get_by_id(id).await
        
     }
 
@@ -264,7 +264,7 @@ impl CatalogService {
     #[tracing::instrument(skip(self), err)]
     pub async fn get_items(&self, biblio_id: i64) -> AppResult<Vec<Item>> {
         self.repository
-            .biblios_get_by_id_or_isbn(&biblio_id.to_string())
+            .biblios_get_by_id(biblio_id)
             .await?;
         self.repository.biblios_get_items(biblio_id).await
     }
@@ -274,7 +274,7 @@ impl CatalogService {
     #[tracing::instrument(skip(self), err)]
     pub async fn create_item(&self, biblio_id: i64, item: Item) -> AppResult<Item> {
         self.repository
-            .biblios_get_by_id_or_isbn(&biblio_id.to_string())
+            .biblios_get_by_id(biblio_id)
             .await?;
 
         if let Some(ref barcode) = item.barcode {
@@ -294,7 +294,7 @@ impl CatalogService {
         })?;
 
         self.repository
-            .biblios_get_by_id_or_isbn(&biblio_id.to_string())
+            .biblios_get_by_id(biblio_id)
             .await?;
 
         let items = self.repository.biblios_get_items(biblio_id).await?;

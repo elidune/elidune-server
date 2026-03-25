@@ -27,7 +27,7 @@ use async_trait::async_trait;
 /// `Arc<dyn BibliosRepository>` for substitution in tests.
 #[async_trait]
 pub trait BibliosRepository: Send + Sync {
-    async fn biblios_get_by_id_or_isbn(&self, id_or_isbn: &str) -> AppResult<Biblio>;
+    async fn biblios_get_by_id(&self, id: i64) -> AppResult<Biblio>;
     async fn biblios_get_short_by_id(&self, id: i64) -> AppResult<BiblioShort>;
     async fn biblios_search(&self, query: &BiblioQuery) -> AppResult<(Vec<BiblioShort>, i64)>;
     async fn biblios_get_by_series(&self, series_id: i64) -> AppResult<Vec<BiblioShort>>;
@@ -93,8 +93,8 @@ pub trait BibliosRepository: Send + Sync {
 
 #[async_trait::async_trait]
 impl BibliosRepository for Repository {
-    async fn biblios_get_by_id_or_isbn(&self, id_or_isbn: &str) -> crate::error::AppResult<crate::models::biblio::Biblio> {
-        Repository::biblios_get_by_id_or_isbn(self, id_or_isbn).await
+    async fn biblios_get_by_id(&self, id: i64) -> crate::error::AppResult<crate::models::biblio::Biblio> {
+        Repository::biblios_get_by_id(self, id).await
     }
     async fn biblios_get_short_by_id(&self, id: i64) -> crate::error::AppResult<crate::models::biblio::BiblioShort> {
         Repository::biblios_get_short_by_id(self, id).await
@@ -274,7 +274,7 @@ impl Repository {
 
     /// Get biblio by numeric ID or by ISBN.
     #[tracing::instrument(skip(self), err)]
-    pub async fn biblios_get_by_id_or_isbn(&self, id_or_isbn: &str) -> AppResult<Biblio> {
+    pub async fn biblios_get_by_id(&self, id: i64) -> AppResult<Biblio> {
 
         let query = r#"
             SELECT id, media_type, isbn,
@@ -286,21 +286,17 @@ impl Repository {
                    is_valid,
                    created_at, updated_at, archived_at
             FROM biblios
-            WHERE (id = $1 OR isbn = $2)
+            WHERE id = $1
             "#;
 
-        let numeric_id = id_or_isbn.parse::<i64>().unwrap_or(0);
-        let isbn_str = Isbn::new(id_or_isbn).to_string();
-
         let mut biblio = sqlx::query_as::<_, Biblio>(query)
-            .bind(numeric_id)
-            .bind(&isbn_str)
+            .bind(id)
             .fetch_optional(&self.pool)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("Biblio '{}' not found", id_or_isbn)))?;
+            .ok_or_else(|| AppError::NotFound(format!("Biblio '{}' not found", id)))?;
 
         if biblio.archived_at.is_some() {
-            return Err(AppError::Gone(format!("Biblio '{}' has been archived", id_or_isbn)));
+            return Err(AppError::Gone(format!("Biblio '{}' has been archived", id)));
         }
 
         let id = biblio.id.ok_or_else(|| AppError::Internal("Biblio id is null".to_string()))?;

@@ -320,7 +320,7 @@ impl Z3950Service {
                 }
                 biblio = self
                     .repository
-                    .biblios_get_by_id_or_isbn(&created_biblio_id.to_string())
+                    .biblios_get_by_id(created_biblio_id)
                     .await?;
             }
         }
