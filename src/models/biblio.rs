@@ -5,7 +5,8 @@
 //! from marc-rs types are provided where applicable.
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize};
+use serde::de::Visitor;
 use serde_with::{serde_as, DisplayFromStr};
 use sqlx::FromRow;
 use utoipa::{IntoParams, ToSchema};
@@ -17,10 +18,13 @@ use super::item::Item;
 // Re-exports: canonical MARC data types from marc-rs (via z3950-rs).
 pub use crate::marc::{MarcFormat, MarcRecord};
 
-/// Normalized ISBN/identifier stored without any special characters.
+/// Normalized ISBN/ISSN-style identifier: only ASCII letters and digits are kept.
 ///
-/// Construction from a string strips all non-ASCII alphanumeric characters
-/// and uppercases ASCII letters (so `x` becomes `X`).
+/// Input may be formatted (dashes, spaces, `ISBN` prefix, underscores, etc.); all such
+/// characters are stripped. Check digits `x` / `X` are uppercased.
+///
+/// JSON deserialization, [`FromStr`], and database reads all apply this normalization.
+/// Serialization and SQL encoding use the normalized string only.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, ToSchema)]
 #[schema(value_type = String)]
 pub struct Isbn(String);
@@ -760,7 +764,7 @@ mod tests {
 
     #[test]
     fn biblio_short_id_deserializes_from_string() {
-        let json = r#"{"id":"12345","media_type":"unknown","isbn":null,"title":"Test","date":null,"status":0,"is_valid":null,"archived_at":null,"author":null,"items":[]}"#;
+        let json = r#"{"id":"12345","mediaType":"unknown","isbn":null,"title":"Test","date":null,"status":0,"isValid":null,"archivedAt":null,"author":null,"items":[]}"#;
         let biblio: BiblioShort = serde_json::from_str(json).unwrap();
         assert_eq!(biblio.id, 12345);
     }
@@ -775,5 +779,18 @@ mod tests {
 
         let isbn = Isbn::new("isbn: 978_2_07");
         assert_eq!(isbn.as_str(), "ISBN978207");
+    }
+
+    #[test]
+    fn isbn_deserializes_from_json_formatted_string() {
+        let v: Isbn = serde_json::from_value(serde_json::json!("978-2-07-040850-4")).unwrap();
+        assert_eq!(v.as_str(), "9782070408504");
+    }
+
+    #[test]
+    fn isbn_biblio_short_deserializes_formatted_isbn_via_display_from_str() {
+        let json = r#"{"id":"1","mediaType":"unknown","isbn":"978-2-07-040850-4","title":null,"date":null,"status":0,"isValid":null,"archivedAt":null,"author":null,"items":[]}"#;
+        let short: BiblioShort = serde_json::from_str(json).unwrap();
+        assert_eq!(short.isbn.as_ref().map(|i| i.as_str()), Some("9782070408504"));
     }
 }

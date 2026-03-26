@@ -14,6 +14,15 @@ use crate::{
     models::biblio::{BiblioQuery, BiblioShort},
 };
 
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::get;
+    axum::Router::new()
+        .route("/opac/biblios", get(opac_search))
+        .route("/opac/biblios/:id", get(opac_get_biblio))
+        .route("/opac/biblios/:id/availability", get(opac_availability))
+}
+
+
 /// Public catalog search — no auth required
 #[utoipa::path(
     get,
@@ -92,10 +101,3 @@ pub async fn opac_availability(
     })))
 }
 
-pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::get;
-    axum::Router::new()
-        .route("/opac/biblios", get(opac_search))
-        .route("/opac/biblios/:id", get(opac_get_biblio))
-        .route("/opac/biblios/:id/availability", get(opac_availability))
-}

@@ -34,6 +34,8 @@ overridable = true
 
 [redis]
 url = "redis://127.0.0.1:6379"
+z3950_cache_ttl_seconds = 604800  # 7 days in seconds
+
 
 [reminders]
 enabled = true

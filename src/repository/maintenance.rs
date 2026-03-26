@@ -76,11 +76,63 @@ impl MaintenanceRepository for Repository {
         .await?
         .rows_affected() as i64;
 
+    // delete from series where name is empty or null
+    let deleted_series = sqlx::query("DELETE FROM series WHERE name IS NULL OR name = ''")
+        .execute(&mut *tx)
+        .await?
+        .rows_affected() as i64;
+
+
+    // force collection key to be normalized
+    let series = sqlx::query_as::<_, (i64, String)>("SELECT id, name FROM series")
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut series_merged = 0;
+    let mut series_updated = 0;
+    for (id, name) in series {
+    let normalized_key = Repository::normalize_key(&name);
+
+    // check if another collection with the same key exists
+    let another_series = sqlx::query_scalar::<_, i64>("SELECT id  FROM series WHERE key = $1 AND id != $2")
+        .bind(&normalized_key)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+    if another_series.is_some() {
+        //update biblio_series to use the new series id
+        sqlx::query("UPDATE biblio_series SET series_id = $1 WHERE series_id = $2")
+            .bind(another_series.unwrap())
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
+        //delete the old series
+        sqlx::query("DELETE FROM series WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        series_merged += 1;
+    } else {
+        //update the collection key
+        sqlx::query("UPDATE series SET key = $1 WHERE id = $2")
+            .bind(&normalized_key)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        series_updated += 1;
+    }
+    }
+
+
         tx.commit().await?;
 
         let mut detail = MaintenanceDetail::new();
         detail.insert("quoted_names_fixed", quoted_fixed);
         detail.insert("orphans_deleted", orphans_deleted);
+        detail.insert("series_deleted", deleted_series);
+        detail.insert("series_merged", series_merged);
+        detail.insert("series_updated", series_updated);
         Ok(detail)
     }
 
@@ -114,11 +166,63 @@ impl MaintenanceRepository for Repository {
         .await?
         .rows_affected() as i64;
 
+        // delete from collections where name is empty or null
+        let deleted_collections = sqlx::query("DELETE FROM collections WHERE name IS NULL OR name = ''")
+            .execute(&mut *tx)
+            .await?
+            .rows_affected() as i64;
+
+
+
+        // force collection key to be normalized
+        let collections = sqlx::query_as::<_, (i64, String)>("SELECT id, name FROM collections")
+            .fetch_all(&mut *tx)
+            .await?;
+        let mut collections_merged = 0;
+        let mut collections_updated = 0;
+        for (id, name) in collections {
+            let normalized_key = Repository::normalize_key(&name);
+
+        // check if another collection with the same key exists
+            let another_collection = sqlx::query_scalar::<_, i64>("SELECT id  FROM collections WHERE key = $1 AND id != $2")
+                .bind(&normalized_key)
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+
+            if another_collection.is_some() {
+                //update biblio_collections to use the new collection id
+                sqlx::query("UPDATE biblio_collections SET collection_id = $1 WHERE collection_id = $2")
+                    .bind(another_collection.unwrap())
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                //delete the old collection
+                sqlx::query("DELETE FROM collections WHERE id = $1")
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+                collections_merged += 1;
+            } else {
+                //update the collection key
+                sqlx::query("UPDATE collections SET key = $1 WHERE id = $2")
+                    .bind(&normalized_key)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+                collections_updated += 1;
+            }
+        }
+
         tx.commit().await?;
 
         let mut detail = MaintenanceDetail::new();
         detail.insert("quoted_names_fixed", quoted_fixed);
         detail.insert("orphans_deleted", orphans_deleted);
+        detail.insert("collections_deleted", deleted_collections);
+        detail.insert("collections_merged", collections_merged);
+        detail.insert("collections_updated", collections_updated);
         Ok(detail)
     }
 

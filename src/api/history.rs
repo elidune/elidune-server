@@ -1,11 +1,11 @@
 //! Patron borrowing history with GDPR controls
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     error::AppResult,
@@ -13,7 +13,7 @@ use crate::{
     services::audit,
 };
 
-use super::{AuthenticatedUser, ClientIp};
+use super::{biblios::PaginatedResponse, AuthenticatedUser, ClientIp};
 
 /// GDPR history preference update request
 #[derive(Deserialize, ToSchema)]
@@ -31,15 +31,28 @@ pub struct HistoryPreference {
     pub history_enabled: bool,
 }
 
-/// Get a user's borrowing history (returned loans)
+/// Query for paginated borrowing history
+#[derive(Debug, Deserialize, Default, ToSchema, IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryQuery {
+    /// Page number (1-based, default 1)
+    pub page: Option<i64>,
+    /// Page size (default 20, max 200)
+    pub per_page: Option<i64>,
+}
+
+/// Get a user's borrowing history (returned loans), paginated
 #[utoipa::path(
     get,
     path = "/users/{id}/history",
     tag = "history",
     security(("bearer_auth" = [])),
-    params(("id" = i64, Path, description = "User ID")),
+    params(
+        ("id" = i64, Path, description = "User ID"),
+        HistoryQuery
+    ),
     responses(
-        (status = 200, description = "Borrowing history", body = Vec<LoanDetails>),
+        (status = 200, description = "Borrowing history", body = PaginatedResponse<LoanDetails>),
         (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse),
         (status = 403, description = "Access denied", body = crate::error::ErrorResponse),
         (status = 404, description = "User not found", body = crate::error::ErrorResponse)
@@ -49,10 +62,17 @@ pub async fn get_history(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     Path(user_id): Path<i64>,
-) -> AppResult<Json<Vec<LoanDetails>>> {
+    Query(query): Query<HistoryQuery>,
+) -> AppResult<Json<PaginatedResponse<LoanDetails>>> {
     claims.require_self_or_staff(user_id)?;
-    let history = state.services.loans.get_user_archived_loans(user_id).await?;
-    Ok(Json(history))
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(20).clamp(1, 200);
+    let (items, total) = state
+        .services
+        .loans
+        .get_user_archived_loans(user_id, page, per_page)
+        .await?;
+    Ok(Json(PaginatedResponse::new(items, total, page, per_page)))
 }
 
 /// Get a user's GDPR history preference

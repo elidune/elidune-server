@@ -65,13 +65,13 @@ impl Z3950Service {
         let server_query = if let Some(server_id) = query.server_id {
             tracing::debug!("Searching specific server ID: {}", server_id);
             sqlx::query(
-                "SELECT id, name, address, port, database, format, login, password, encoding FROM z3950servers WHERE id = $1 AND activated = 1"
+                "SELECT id, name, address, port, database, format, login, password, encoding FROM z3950servers WHERE id = $1 AND activated = TRUE"
             )
             .bind(server_id)
         } else {
             tracing::debug!("Searching all active servers");
             sqlx::query(
-                "SELECT id, name, address, port, database, format, login, password, encoding FROM z3950servers WHERE activated = 1"
+                "SELECT id, name, address, port, database, format, login, password, encoding FROM z3950servers WHERE activated = TRUE"
             )
         };
 

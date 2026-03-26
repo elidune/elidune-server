@@ -64,7 +64,7 @@ impl CatalogEntitiesRepository for Repository {
 }
 
 impl Repository {
-    fn normalize_key(s: &str) -> String {
+    pub(crate) fn normalize_key(s: &str) -> String {
         s.to_lowercase()
             .chars()
             .map(|c| match c {

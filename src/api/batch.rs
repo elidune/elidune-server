@@ -12,6 +12,15 @@ use crate::{
 
 use super::{AuthenticatedUser, ClientIp};
 
+
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::post;
+    axum::Router::new()
+        .route("/loans/batch-return", post(batch_return))
+        .route("/loans/batch-create", post(batch_create_loans))
+}
+
+
 /// Batch return request — list of barcodes to return
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -189,14 +198,14 @@ pub async fn batch_create_loans(
             force: req.force,
         };
         match state.services.loans.create_loan(loan_data).await {
-            Ok((loan_id, issue_at)) => {
+            Ok((loan_id, expiry_at)) => {
                 state.services.audit.log(
                     audit::event::LOAN_CREATED,
                     Some(claims.user_id),
                     Some("loan"),
                     Some(loan_id),
                     ip.clone(),
-                    Some(serde_json::json!({ "barcode": barcode, "userId": user_id.to_string(), "batch": true, "issueAt": issue_at })),
+                    Some(serde_json::json!({ "barcode": barcode, "userId": user_id.to_string(), "batch": true, "expiryAt": expiry_at })),
                 );
                 created += 1;
                 results.push(BatchCreateLoanItemResult {
@@ -221,9 +230,3 @@ pub async fn batch_create_loans(
     Ok(Json(BatchCreateLoansResponse { created, errors, results }))
 }
 
-pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::post;
-    axum::Router::new()
-        .route("/loans/batch-return", post(batch_return))
-        .route("/loans/batch-create", post(batch_create_loans))
-}

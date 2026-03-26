@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use super::{AuthenticatedUser, ClientIp};
+use super::{biblios::PaginatedResponse, AuthenticatedUser, ClientIp};
 
 
 /// Build the loans routes for this domain.
@@ -58,19 +58,19 @@ struct LoanCreatedAudit {
     item_id: Option<i64>,
     item_identification: Option<String>,
     force: bool,
-    issue_at: DateTime<Utc>,
+    expiry_at: DateTime<Utc>,
 }
 
 #[derive(Serialize)]
 struct RenewLoanAudit {
-    new_issue_at: DateTime<Utc>,
+    new_expiry_at: DateTime<Utc>,
     renew_count: i16,
 }
 
 #[derive(Serialize)]
 struct RenewLoanByItemAudit {
     item_identification: String,
-    new_issue_at: DateTime<Utc>,
+    new_expiry_at: DateTime<Utc>,
     renew_count: i16,
 }
 
@@ -90,7 +90,7 @@ pub struct LoanResponse {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub id: i64,
-    pub issue_at: DateTime<Utc>,
+    pub expiry_at: DateTime<Utc>,
     pub message: String,
 }
 
@@ -117,7 +117,7 @@ pub struct SendRemindersQuery {
     pub dry_run: Option<bool>,
 }
 
-/// Get loans for a specific user
+/// Get loans for a specific user (paginated).
 #[utoipa::path(
     get,
     path = "/users/{id}/loans",
@@ -125,10 +125,10 @@ pub struct SendRemindersQuery {
     security(("bearer_auth" = [])),
     params(
         ("id" = i64, Path, description = "User ID"),
-        ("archived" = Option<bool>, Query, description = "If true, return past (returned) loans")
+        GetUserLoansQuery
     ),
     responses(
-        (status = 200, description = "User's loans", body = Vec<LoanDetails>),
+        (status = 200, description = "User's loans", body = PaginatedResponse<LoanDetails>),
         (status = 404, description = "User not found")
     )
 )]
@@ -137,20 +137,34 @@ pub async fn get_user_loans(
     AuthenticatedUser(claims): AuthenticatedUser,
     Path(user_id): Path<i64>,
     Query(query): Query<GetUserLoansQuery>,
-) -> AppResult<Json<Vec<LoanDetails>>> {
+) -> AppResult<Json<PaginatedResponse<LoanDetails>>> {
     claims.require_read_users()?;
 
-    let loans = if query.archived.unwrap_or(false) {
-        state.services.loans.get_user_archived_loans(user_id).await?
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(20).clamp(1, 200);
+
+    let (items, total) = if query.archived.unwrap_or(false) {
+        state
+            .services
+            .loans
+            .get_user_archived_loans(user_id, page, per_page)
+            .await?
     } else {
-        state.services.loans.get_user_loans(user_id).await?
+        state.services.loans.get_user_loans(user_id, page, per_page).await?
     };
-    Ok(Json(loans))
+
+    Ok(Json(PaginatedResponse::new(items, total, page, per_page)))
 }
 
-#[derive(Debug, Deserialize, Default, ToSchema)]
+#[derive(Debug, Deserialize, Default, ToSchema, IntoParams)]
+#[serde(rename_all = "camelCase")]
 pub struct GetUserLoansQuery {
+    /// If true, return past (returned) loans from the archive table
     pub archived: Option<bool>,
+    /// Page number (1-based, default 1)
+    pub page: Option<i64>,
+    /// Page size (default 20, max 200)
+    pub per_page: Option<i64>,
 }
 
 /// Create a new loan (borrow an item)
@@ -181,7 +195,7 @@ pub async fn create_loan(
         force: request.force.unwrap_or(false),
     };
 
-    let (loan_id, issue_at) = state.services.loans.create_loan(loan).await?;
+    let (loan_id, expiry_at) = state.services.loans.create_loan(loan).await?;
 
     state.services.audit.log(
         audit::event::LOAN_CREATED,
@@ -194,7 +208,7 @@ pub async fn create_loan(
             item_id: request.item_id,
             item_identification: request.item_identification.clone(),
             force: request.force.unwrap_or(false),
-            issue_at,
+            expiry_at,
         }),
     );
 
@@ -202,7 +216,7 @@ pub async fn create_loan(
         StatusCode::CREATED,
         Json(LoanResponse {
             id: loan_id,
-            issue_at,
+            expiry_at,
             message: "Item borrowed successfully".to_string(),
         }),
     ))
@@ -262,7 +276,7 @@ pub async fn renew_loan(
     Path(loan_id): Path<i64>,
 ) -> AppResult<Json<LoanResponse>> {
     claims.require_write_borrows()?;
-    let (new_issue_date, renew_count) = state.services.loans.renew_loan(loan_id).await?;
+    let (new_expiry_date, renew_count) = state.services.loans.renew_loan(loan_id).await?;
 
     state.services.audit.log(
         audit::event::LOAN_RENEWED,
@@ -271,14 +285,14 @@ pub async fn renew_loan(
         Some(loan_id),
         ip,
         Some(RenewLoanAudit {
-            new_issue_at: new_issue_date,
+            new_expiry_at: new_expiry_date,
             renew_count,
         }),
     );
 
     Ok(Json(LoanResponse {
         id: loan_id,
-        issue_at: new_issue_date,
+        expiry_at: new_expiry_date,
         message: format!("Loan renewed ({} renewals)", renew_count),
     }))
 }
@@ -338,7 +352,7 @@ pub async fn renew_loan_by_item(
     Path(item_id): Path<String>,
 ) -> AppResult<Json<LoanResponse>> {
     claims.require_write_borrows()?;
-    let (loan_id, new_issue_date, renew_count) = state
+    let (loan_id, new_expiry_date, renew_count) = state
         .services
         .loans
         .renew_loan_by_item(&item_id)
@@ -352,14 +366,14 @@ pub async fn renew_loan_by_item(
         ip,
         Some(RenewLoanByItemAudit {
             item_identification: item_id,
-            new_issue_at: new_issue_date,
+            new_expiry_at: new_expiry_date,
             renew_count,
         }),
     );
 
     Ok(Json(LoanResponse {
         id: loan_id,
-        issue_at: new_issue_date,
+        expiry_at: new_expiry_date,
         message: format!("Loan renewed ({} renewals)", renew_count),
     }))
 }

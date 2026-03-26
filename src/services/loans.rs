@@ -23,16 +23,26 @@ impl LoansService {
         Self { repository }
     }
 
-    /// Get active loans for a user
-    pub async fn get_user_loans(&self, user_id: i64) -> AppResult<Vec<LoanDetails>> {
+    /// Get active loans for a user (paginated). `page` and `per_page` must be valid (≥1, capped by caller).
+    pub async fn get_user_loans(
+        &self,
+        user_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> AppResult<(Vec<LoanDetails>, i64)> {
         self.repository.users_get_by_id(user_id).await?;
-        self.repository.loans_get_for_user(user_id).await
+        self.repository.loans_get_for_user(user_id, page, per_page).await
     }
 
-    /// Get archived (returned) loans for a user
-    pub async fn get_user_archived_loans(&self, user_id: i64) -> AppResult<Vec<LoanDetails>> {
+    /// Get archived (returned) loans for a user (paginated).
+    pub async fn get_user_archived_loans(
+        &self,
+        user_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> AppResult<(Vec<LoanDetails>, i64)> {
         self.repository.users_get_by_id(user_id).await?;
-        self.repository.loans_archives_get_for_user(user_id).await
+        self.repository.loans_archives_get_for_user(user_id, page, per_page).await
     }
 
     /// Create a new loan (borrow an item).
@@ -43,25 +53,24 @@ impl LoansService {
     pub async fn create_loan(&self, loan: CreateLoan) -> AppResult<(i64, DateTime<Utc>)> {
         let user = self.repository.users_get_by_id(loan.user_id).await?;
 
-        let status = UserStatus::from(user.status);
-
+        let status = user.status.unwrap_or(UserStatus::Active);
         if status == UserStatus::Deleted {
             return Err(AppError::BusinessRule(
                 "Cannot create a loan for a deleted user account".to_string(),
             ));
         }
 
-        if status == UserStatus::Blocked && !loan.force {
+        if !user.can_borrow() && !loan.force {
             return Err(AppError::BusinessRule(
-                "User account is blocked — use force=true to override".to_string(),
+                "User account is not active or cannot borrow — use force=true to override".to_string()
             ));
         }
 
-        if let Some(issue_at) = user.issue_at {
-            if issue_at < Utc::now() && !loan.force {
+        if let Some(expiry_at) = user.expiry_at {
+            if expiry_at < Utc::now() && !loan.force {
                 return Err(AppError::BusinessRule(format!(
                     "User subscription expired on {} — use force=true to override",
-                    issue_at.format("%Y-%m-%d")
+                    expiry_at.format("%Y-%m-%d")
                 )));
             }
         }
@@ -82,6 +91,14 @@ impl LoansService {
 
     /// Renew a loan
     pub async fn renew_loan(&self, loan_id: i64) -> AppResult<(DateTime<Utc>, i16)> {
+        let loan = self.repository.loans_get_by_id(loan_id).await?;
+        let user = self.repository.users_get_by_id(loan.user_id).await?;
+
+        if !user.can_borrow() {
+            return Err(AppError::BusinessRule(
+                "User account is not active or cannot borrow — use force=true to override".to_string()
+            ));
+        }
         self.repository.loans_renew(loan_id).await
     }
 
@@ -89,8 +106,8 @@ impl LoansService {
     pub async fn renew_loan_by_item(&self, item_identification: &str) -> AppResult<(i64, DateTime<Utc>, i16)> {
         let loan = self.repository.loans_get_by_item_identification(item_identification).await?;
         let loan_id = loan.id;
-        let (new_issue_date, renew_count) = self.repository.loans_renew(loan_id).await?;
-        Ok((loan_id, new_issue_date, renew_count))
+        let (new_expiry_date, renew_count) = self.repository.loans_renew(loan_id).await?;
+        Ok((loan_id, new_expiry_date, renew_count))
     }
 
     /// Count active loans
@@ -125,9 +142,9 @@ mod tests {
         error::AppError,
         models::{
             loan::CreateLoan,
-            user::{AccountTypeSlug, User},
+            user::{AccountTypeSlug, User, UserStatus},
         },
-        repository::{LoansRepository, LoansServiceRepository, UsersRepository},
+        repository::{LoansRepository, UsersRepository},
     };
     // ----- Minimal test double implementing both required traits -----
 
@@ -138,11 +155,12 @@ mod tests {
         loan_id: i64,
     }
 
-    fn make_user(id: i64, status: Option<i16>, issue_at: Option<chrono::DateTime<Utc>>) -> User {
+    fn make_user(id: i64, status: Option<UserStatus>, expiry_at: Option<chrono::DateTime<Utc>>) -> User {
         User {
             id,
-            status,
-            issue_at,
+            // NULL status in DB is treated as active; tests pass None for the default happy path.
+            status: status.or(Some(UserStatus::Active)),
+            expiry_at,
             account_type: AccountTypeSlug::Reader,
             group_id: None,
             barcode: None,
@@ -182,8 +200,22 @@ mod tests {
     impl LoansRepository for FakeRepo {
         async fn loans_get_by_id(&self, _: i64) -> AppResult<crate::models::loan::Loan> { unimplemented!() }
         async fn loans_get_by_item_identification(&self, _: &str) -> AppResult<crate::models::loan::Loan> { unimplemented!() }
-        async fn loans_get_for_user(&self, _: i64) -> AppResult<Vec<LoanDetails>> { Ok(vec![]) }
-        async fn loans_archives_get_for_user(&self, _: i64) -> AppResult<Vec<LoanDetails>> { Ok(vec![]) }
+        async fn loans_get_for_user(
+            &self,
+            _: i64,
+            _: i64,
+            _: i64,
+        ) -> AppResult<(Vec<LoanDetails>, i64)> {
+            Ok((vec![], 0))
+        }
+        async fn loans_archives_get_for_user(
+            &self,
+            _: i64,
+            _: i64,
+            _: i64,
+        ) -> AppResult<(Vec<LoanDetails>, i64)> {
+            Ok((vec![], 0))
+        }
         async fn loans_create(&self, _: &CreateLoan) -> AppResult<(i64, chrono::DateTime<Utc>)> {
             Ok((self.loan_id, Utc::now()))
         }
@@ -256,7 +288,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_loan_blocked_user_rejected() {
-        let user = make_user(2, Some(1), None); // status=1 → Blocked
+        let user = make_user(2, Some(UserStatus::Blocked), None);
         let svc = make_service(Some(user), 0);
         assert!(matches!(
             svc.create_loan(make_loan(2, false)).await,
@@ -266,14 +298,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_loan_blocked_user_with_force_succeeds() {
-        let user = make_user(3, Some(1), None); // Blocked but force=true
+        let user = make_user(3, Some(UserStatus::Blocked), None);
         let svc = make_service(Some(user), 101);
         assert!(svc.create_loan(make_loan(3, true)).await.is_ok());
     }
 
     #[tokio::test]
     async fn test_create_loan_deleted_user_always_rejected() {
-        let user = make_user(4, Some(2), None); // status=2 → Deleted
+        let user = make_user(4, Some(UserStatus::Deleted), None);
         let svc = make_service(Some(user), 0);
         // force=true should NOT override a deleted account
         assert!(matches!(

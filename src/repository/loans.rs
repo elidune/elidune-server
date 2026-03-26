@@ -20,8 +20,18 @@ use crate::{
 pub trait LoansRepository: Send + Sync {
     async fn loans_get_by_id(&self, id: i64) -> AppResult<Loan>;
     async fn loans_get_by_item_identification(&self, item_identification: &str) -> AppResult<Loan>;
-    async fn loans_get_for_user(&self, user_id: i64) -> AppResult<Vec<LoanDetails>>;
-    async fn loans_archives_get_for_user(&self, user_id: i64) -> AppResult<Vec<LoanDetails>>;
+    async fn loans_get_for_user(
+        &self,
+        user_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> AppResult<(Vec<LoanDetails>, i64)>;
+    async fn loans_archives_get_for_user(
+        &self,
+        user_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> AppResult<(Vec<LoanDetails>, i64)>;
     async fn loans_create(&self, loan: &CreateLoan) -> AppResult<(i64, DateTime<Utc>)>;
     async fn loans_return(&self, loan_id: i64) -> AppResult<LoanDetails>;
     async fn loans_renew(&self, loan_id: i64) -> AppResult<(DateTime<Utc>, i16)>;
@@ -67,11 +77,21 @@ impl LoansRepository for Repository {
     async fn loans_get_by_item_identification(&self, identification: &str) -> crate::error::AppResult<Loan> {
         Repository::loans_get_by_item_identification(self, identification).await
     }
-    async fn loans_get_for_user(&self, user_id: i64) -> crate::error::AppResult<Vec<LoanDetails>> {
-        Repository::loans_get_for_user(self, user_id).await
+    async fn loans_get_for_user(
+        &self,
+        user_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> crate::error::AppResult<(Vec<LoanDetails>, i64)> {
+        Repository::loans_get_for_user(self, user_id, page, per_page).await
     }
-    async fn loans_archives_get_for_user(&self, user_id: i64) -> crate::error::AppResult<Vec<LoanDetails>> {
-        Repository::loans_archives_get_for_user(self, user_id).await
+    async fn loans_archives_get_for_user(
+        &self,
+        user_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> crate::error::AppResult<(Vec<LoanDetails>, i64)> {
+        Repository::loans_archives_get_for_user(self, user_id, page, per_page).await
     }
     async fn loans_create(&self, loan: &CreateLoan) -> crate::error::AppResult<(i64, chrono::DateTime<chrono::Utc>)> {
         Repository::loans_create(self, loan).await
@@ -215,8 +235,22 @@ impl Repository {
         .ok_or_else(|| AppError::NotFound(format!("No active loan found for item {}", item_identification)))
     }
 
-    /// Get active loans for a user
-    pub async fn loans_get_for_user(&self, user_id: i64) -> AppResult<Vec<LoanDetails>> {
+    /// Get active loans for a user (paginated).
+    pub async fn loans_get_for_user(
+        &self,
+        user_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> AppResult<(Vec<LoanDetails>, i64)> {
+        let offset = (page - 1) * per_page;
+
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM loans l WHERE l.user_id = $1 AND l.returned_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+
         let author_subquery = r#"
             (SELECT jsonb_build_object(
                 'id', a.id::text, 'lastname', a.lastname, 'firstname', a.firstname,
@@ -226,7 +260,7 @@ impl Repository {
         "#;
 
         let sql = format!(r#"
-            SELECT l.id, l.date, l.renew_at, l.nb_renews, l.issue_at,
+            SELECT l.id, l.date, l.renew_at, l.nb_renews, l.expiry_at,
                    l.returned_at,
                    it.barcode as item_identification,
                    it.id as item_copy_id, it.barcode as item_barcode,
@@ -240,19 +274,36 @@ impl Repository {
             LEFT JOIN sources so ON it.source_id = so.id
             JOIN biblios b ON it.biblio_id = b.id
             WHERE l.user_id = $1 AND l.returned_at IS NULL
-            ORDER BY l.issue_at
+            ORDER BY l.expiry_at
+            LIMIT $2 OFFSET $3
         "#);
 
         let rows = sqlx::query(&sql)
             .bind(user_id)
+            .bind(per_page)
+            .bind(offset)
             .fetch_all(&self.pool)
             .await?;
 
-        Ok(Self::map_loan_rows(rows))
+        Ok((Self::map_loan_rows(rows), total))
     }
 
-    /// Get archived (returned) loans for a user
-    pub async fn loans_archives_get_for_user(&self, user_id: i64) -> AppResult<Vec<LoanDetails>> {
+    /// Get archived (returned) loans for a user (paginated).
+    pub async fn loans_archives_get_for_user(
+        &self,
+        user_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> AppResult<(Vec<LoanDetails>, i64)> {
+        let offset = (page - 1) * per_page;
+
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM loans_archives la WHERE la.user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+
         let author_subquery = r#"
             (SELECT jsonb_build_object(
                 'id', a.id::text, 'lastname', a.lastname, 'firstname', a.firstname,
@@ -263,7 +314,7 @@ impl Repository {
 
         let sql = format!(r#"
             SELECT la.id, la.date, NULL::timestamptz as renew_at, la.nb_renews,
-                   la.issue_at, la.returned_at,
+                   la.expiry_at, la.returned_at,
                    it.barcode as item_identification,
                    it.id as item_copy_id, it.barcode as item_barcode,
                    it.call_number as item_call_number, it.borrowable as item_borrowable,
@@ -278,21 +329,24 @@ impl Repository {
             JOIN biblios b ON it.biblio_id = b.id
             WHERE la.user_id = $1
             ORDER BY la.returned_at DESC
+            LIMIT $2 OFFSET $3
         "#);
 
         let rows = sqlx::query(&sql)
             .bind(user_id)
+            .bind(per_page)
+            .bind(offset)
             .fetch_all(&self.pool)
             .await?;
 
-        Ok(Self::map_loan_rows(rows))
+        Ok((Self::map_loan_rows(rows), total))
     }
 
     fn map_loan_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<LoanDetails> {
         let now = Utc::now();
         rows.into_iter().map(|row| {
             let start_date: DateTime<Utc> = row.get("date");
-            let issue_at: Option<DateTime<Utc>> = row.get("issue_at");
+            let expiry_at: Option<DateTime<Utc>> = row.get("expiry_at");
             let renew_at: Option<DateTime<Utc>> = row.get("renew_at");
             let returned_at: Option<DateTime<Utc>> = row.get("returned_at");
 
@@ -308,7 +362,7 @@ impl Repository {
             LoanDetails {
                 id: row.get("id"),
                 start_date,
-                issue_at: issue_at.unwrap_or(now),
+                expiry_at: expiry_at.unwrap_or(now),
                 renewal_date: renew_at,
                 nb_renews: row.get::<Option<i16>, _>("nb_renews").unwrap_or(0),
                 returned_at,
@@ -330,7 +384,7 @@ impl Repository {
                 },
                 user: None,
                 item_identification: row.get("item_identification"),
-                is_overdue: returned_at.is_none() && issue_at.map(|d| d < now).unwrap_or(false),
+                is_overdue: returned_at.is_none() && expiry_at.map(|d| d < now).unwrap_or(false),
             }
         }).collect()
     }
@@ -398,7 +452,7 @@ impl Repository {
             .resolve_loan_settings(user_public_type, media_type.as_deref())
             .await?;
 
-        let issue_at = now + Duration::days(duration_days as i64);
+        let expiry_at = now + Duration::days(duration_days as i64);
 
         let current_loans_total: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM loans WHERE user_id = $1 AND returned_at IS NULL"
@@ -448,7 +502,7 @@ impl Repository {
 
         let loan_id = sqlx::query_scalar::<_, i64>(
             r#"
-            INSERT INTO loans (user_id, item_id, date, issue_at, nb_renews)
+            INSERT INTO loans (user_id, item_id, date, expiry_at, nb_renews)
             VALUES ($1, $2, $3, $4, 0)
             RETURNING id
             "#
@@ -456,11 +510,11 @@ impl Repository {
         .bind(loan.user_id)
         .bind(item_id)
         .bind(now)
-        .bind(issue_at)
+        .bind(expiry_at)
         .fetch_one(&self.pool)
         .await?;
 
-        Ok((loan_id, issue_at))
+        Ok((loan_id, expiry_at))
     }
 
     /// Return a loan (moves it to loans_archives).
@@ -487,7 +541,7 @@ impl Repository {
         sqlx::query(
             r#"
             INSERT INTO loans_archives (
-                user_id, item_id, date, nb_renews, issue_at,
+                user_id, item_id, date, nb_renews, expiry_at,
                 returned_at, notes, borrower_public_type,
                 addr_city, account_type
             )
@@ -498,7 +552,7 @@ impl Repository {
         .bind(loan.item_id)
         .bind(loan.date)
         .bind(loan.nb_renews)
-        .bind(loan.issue_at)
+        .bind(loan.expiry_at)
         .bind(now)
         .bind(&loan.notes)
         .bind(user_row.as_ref().and_then(|r| r.get::<Option<i64>, _>("public_type")))
@@ -534,6 +588,7 @@ impl Repository {
         let user_short_row = sqlx::query_as::<_, UserShortRow>(
             r#"
             SELECT u.id, u.firstname, u.lastname, u.account_type, u.public_type,
+                   u.status, u.created_at, u.expiry_at,
                    0::bigint as nb_loans, 0::bigint as nb_late_loans
             FROM users u
             WHERE u.id = $1
@@ -557,7 +612,7 @@ impl Repository {
         Ok(LoanDetails {
             id: loan.id,
             start_date: loan.date,
-            issue_at: loan.issue_at.unwrap_or(now),
+            expiry_at: loan.expiry_at.unwrap_or(now),
             renewal_date: loan.renew_at,
             nb_renews: loan.nb_renews.unwrap_or(0),
             returned_at: Some(now),
@@ -619,20 +674,20 @@ impl Repository {
             )));
         }
 
-        let new_issue_date = now + Duration::days(duration_days as i64);
+        let new_expiry_date = now + Duration::days(duration_days as i64);
         let new_renews = current_renews + 1;
 
         sqlx::query(
-            "UPDATE loans SET issue_at = $1, renew_at = $2, nb_renews = $3 WHERE id = $4"
+            "UPDATE loans SET expiry_at = $1, renew_at = $2, nb_renews = $3 WHERE id = $4"
         )
-        .bind(new_issue_date)
+        .bind(new_expiry_date)
         .bind(now)
         .bind(new_renews)
         .bind(loan_id)
         .execute(&self.pool)
         .await?;
 
-        Ok((new_issue_date, new_renews))
+        Ok((new_expiry_date, new_renews))
     }
 
     /// Get loan settings
@@ -654,7 +709,7 @@ impl Repository {
     /// Count overdue loans
     pub async fn loans_count_overdue(&self) -> AppResult<i64> {
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM loans WHERE returned_at IS NULL AND issue_at < NOW()"
+            "SELECT COUNT(*) FROM loans WHERE returned_at IS NULL AND expiry_at < NOW()"
         )
         .fetch_one(&self.pool)
         .await?;
@@ -746,7 +801,7 @@ impl Repository {
                 l.id as loan_id,
                 l.user_id,
                 l.date as loan_date,
-                l.issue_at,
+                l.expiry_at,
                 l.last_reminder_sent_at,
                 l.reminder_count,
                 u.firstname,
@@ -767,7 +822,7 @@ impl Repository {
             JOIN biblios b ON it.biblio_id = b.id
             JOIN users u ON l.user_id = u.id
             WHERE l.returned_at IS NULL
-              AND l.issue_at < NOW()
+              AND l.expiry_at < NOW()
               AND (
                   l.last_reminder_sent_at IS NULL
                   OR l.last_reminder_sent_at < NOW() - ($1 || ' days')::INTERVAL
@@ -775,7 +830,7 @@ impl Repository {
               AND u.email IS NOT NULL
               AND u.email != ''
               AND u.receive_reminders = TRUE
-            ORDER BY u.id, l.issue_at
+            ORDER BY u.id, l.expiry_at
             "#,
         )
         .bind(frequency_days as i64)
@@ -788,7 +843,7 @@ impl Repository {
                 loan_id: row.get("loan_id"),
                 user_id: row.get("user_id"),
                 loan_date: row.get("loan_date"),
-                issue_at: row.get("issue_at"),
+                expiry_at: row.get("expiry_at"),
                 last_reminder_sent_at: row.get("last_reminder_sent_at"),
                 reminder_count: row.get::<Option<i32>, _>("reminder_count").unwrap_or(0),
                 firstname: row.get("firstname"),
@@ -812,7 +867,7 @@ impl Repository {
         let offset = (page - 1) * per_page;
 
         let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM loans WHERE returned_at IS NULL AND issue_at < NOW()"
+            "SELECT COUNT(*) FROM loans WHERE returned_at IS NULL AND expiry_at < NOW()"
         )
         .fetch_one(&self.pool)
         .await?;
@@ -823,7 +878,7 @@ impl Repository {
                 l.id as loan_id,
                 l.user_id,
                 l.date as loan_date,
-                l.issue_at,
+                l.expiry_at,
                 l.last_reminder_sent_at,
                 l.reminder_count,
                 u.firstname,
@@ -844,8 +899,8 @@ impl Repository {
             JOIN biblios b ON it.biblio_id = b.id
             JOIN users u ON l.user_id = u.id
             WHERE l.returned_at IS NULL
-              AND l.issue_at < NOW()
-            ORDER BY l.issue_at ASC
+              AND l.expiry_at < NOW()
+            ORDER BY l.expiry_at ASC
             LIMIT $1 OFFSET $2
             "#,
         )
@@ -860,7 +915,7 @@ impl Repository {
                 loan_id: row.get("loan_id"),
                 user_id: row.get("user_id"),
                 loan_date: row.get("loan_date"),
-                issue_at: row.get("issue_at"),
+                expiry_at: row.get("expiry_at"),
                 last_reminder_sent_at: row.get("last_reminder_sent_at"),
                 reminder_count: row.get::<Option<i32>, _>("reminder_count").unwrap_or(0),
                 firstname: row.get("firstname"),
@@ -903,7 +958,7 @@ pub struct OverdueLoanRow {
     pub loan_id: i64,
     pub user_id: i64,
     pub loan_date: DateTime<Utc>,
-    pub issue_at: Option<DateTime<Utc>>,
+    pub expiry_at: Option<DateTime<Utc>>,
     pub last_reminder_sent_at: Option<DateTime<Utc>>,
     pub reminder_count: i32,
     pub firstname: Option<String>,

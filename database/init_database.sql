@@ -1,8 +1,8 @@
 -- =============================================================================
 -- Elidune Database Initialization Script
 -- =============================================================================
--- This file represents the canonical target schema after all migrations
--- (001 through 044). Use it to create a fresh database for migration or testing.
+-- This file represents the canonical target schema (align with sqlx migrations).
+-- Use it to create a fresh database for migration or testing.
 --
 -- Run order: extensions → lookup tables → core domain → junction/relation tables
 --            → operational tables → stats/audit/config tables
@@ -191,11 +191,11 @@ CREATE TABLE IF NOT EXISTS users (
     barcode             VARCHAR(100) UNIQUE,
     notes               TEXT,
     public_type         BIGINT       REFERENCES public_types(id),
-    status              SMALLINT     DEFAULT 0,
+    status              VARCHAR(32)  DEFAULT 'active',
     birthdate           VARCHAR(20),
     created_at          TIMESTAMPTZ  DEFAULT NOW(),
     update_at           TIMESTAMPTZ,
-    issue_at            TIMESTAMPTZ,
+    expiry_at           TIMESTAMPTZ,
     archived_at         TIMESTAMPTZ,
     language            VARCHAR(32)  DEFAULT 'french',
     sex                 SMALLINT     DEFAULT 85,
@@ -335,7 +335,7 @@ CREATE TABLE IF NOT EXISTS loans (
     date                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     renew_at                TIMESTAMPTZ,
     nb_renews               SMALLINT    DEFAULT 0,
-    issue_at                TIMESTAMPTZ,
+    expiry_at               TIMESTAMPTZ,
     notes                   TEXT,
     returned_at             TIMESTAMPTZ,
     last_reminder_sent_at   TIMESTAMPTZ,
@@ -356,7 +356,7 @@ CREATE TABLE IF NOT EXISTS loans_archives (
     item_id                 BIGINT      REFERENCES items(id) ON DELETE SET NULL,
     date                    TIMESTAMPTZ,
     nb_renews               SMALLINT    DEFAULT 0,
-    issue_at                TIMESTAMPTZ,
+    expiry_at               TIMESTAMPTZ,
     returned_at             TIMESTAMPTZ,
     notes                   TEXT,
     borrower_public_type    BIGINT      REFERENCES public_types(id) ON DELETE SET NULL,
@@ -553,3 +553,271 @@ CREATE TABLE IF NOT EXISTS library_info (
 );
 
 INSERT INTO library_info (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- =============================================================================
+-- SAVED STATS QUERIES (flexible builder; migration 001)
+-- =============================================================================
+-- Default shared templates (migrations 002–003) are inserted below when at least
+-- one user row exists. Names and JSON payloads are English.
+
+CREATE TABLE IF NOT EXISTS saved_queries (
+    id          BIGSERIAL   PRIMARY KEY,
+    name        VARCHAR(200) NOT NULL,
+    description TEXT,
+    query_json  JSONB       NOT NULL,
+    user_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    is_shared   BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_queries_user_id ON saved_queries(user_id);
+CREATE INDEX IF NOT EXISTS idx_saved_queries_shared ON saved_queries(is_shared) WHERE is_shared = TRUE;
+
+INSERT INTO saved_queries (name, description, query_json, user_id, is_shared)
+SELECT
+    'Registrations — by audience type',
+    'Patron count by audience type label (public_types).',
+    $$
+    {
+      "entity": "users",
+      "joins": ["public_types"],
+      "select": [
+        {"field": "public_types.label", "alias": "audienceType"}
+      ],
+      "filters": [],
+      "aggregations": [
+        {"fn": "count", "field": "users.id", "alias": "registeredCount"}
+      ],
+      "groupBy": [
+        {"field": "public_types.label", "alias": "audienceType"}
+      ],
+      "having": [],
+      "orderBy": [{"field": "registeredCount", "dir": "desc"}],
+      "limit": 100,
+      "offset": 0
+    }
+    $$::jsonb,
+    u.id,
+    true
+FROM (SELECT id FROM users ORDER BY id LIMIT 1) AS u
+WHERE EXISTS (SELECT 1 FROM users LIMIT 1);
+
+INSERT INTO saved_queries (name, description, query_json, user_id, is_shared)
+SELECT
+    'Registrations — by month',
+    'New patron records per month (created_at).',
+    $$
+    {
+      "entity": "users",
+      "joins": [],
+      "select": [],
+      "filters": [],
+      "aggregations": [
+        {"fn": "count", "field": "users.id", "alias": "newRegistrations"}
+      ],
+      "groupBy": [],
+      "having": [],
+      "timeBucket": {"field": "users.created_at", "granularity": "month", "alias": "month"},
+      "orderBy": [{"field": "month", "dir": "asc"}],
+      "limit": 120,
+      "offset": 0
+    }
+    $$::jsonb,
+    u.id,
+    true
+FROM (SELECT id FROM users ORDER BY id LIMIT 1) AS u
+WHERE EXISTS (SELECT 1 FROM users LIMIT 1);
+
+INSERT INTO saved_queries (name, description, query_json, user_id, is_shared)
+SELECT
+    'Loans — by month',
+    'Loan volume per month (loan date).',
+    $$
+    {
+      "entity": "loans",
+      "joins": [],
+      "select": [],
+      "filters": [],
+      "aggregations": [
+        {"fn": "count", "field": "loans.id", "alias": "loanCount"}
+      ],
+      "groupBy": [],
+      "having": [],
+      "timeBucket": {"field": "loans.date", "granularity": "month", "alias": "month"},
+      "orderBy": [{"field": "month", "dir": "asc"}],
+      "limit": 120,
+      "offset": 0
+    }
+    $$::jsonb,
+    u.id,
+    true
+FROM (SELECT id FROM users ORDER BY id LIMIT 1) AS u
+WHERE EXISTS (SELECT 1 FROM users LIMIT 1);
+
+INSERT INTO saved_queries (name, description, query_json, user_id, is_shared)
+SELECT
+    'Loans — by audience and media type',
+    'Loan counts cross-tabulated by audience (public_types) and biblio media type.',
+    $$
+    {
+      "entity": "loans",
+      "joins": ["users.public_types", "items.biblios"],
+      "select": [
+        {"field": "public_types.label", "alias": "audienceType"},
+        {"field": "biblios.media_type", "alias": "media"}
+      ],
+      "filters": [],
+      "aggregations": [
+        {"fn": "count", "field": "loans.id", "alias": "loanCount"}
+      ],
+      "groupBy": [
+        {"field": "public_types.label", "alias": "audienceType"},
+        {"field": "biblios.media_type", "alias": "media"}
+      ],
+      "having": [],
+      "orderBy": [{"field": "loanCount", "dir": "desc"}],
+      "limit": 500,
+      "offset": 0
+    }
+    $$::jsonb,
+    u.id,
+    true
+FROM (SELECT id FROM users ORDER BY id LIMIT 1) AS u
+WHERE EXISTS (SELECT 1 FROM users LIMIT 1);
+
+INSERT INTO saved_queries (name, description, query_json, user_id, is_shared)
+SELECT
+    'Loans — unique borrowers per month',
+    'Distinct borrowers per month (count distinct user_id).',
+    $$
+    {
+      "entity": "loans",
+      "joins": [],
+      "select": [],
+      "filters": [],
+      "aggregations": [
+        {"fn": "countDistinct", "field": "loans.user_id", "alias": "uniqueBorrowers"}
+      ],
+      "groupBy": [],
+      "having": [],
+      "timeBucket": {"field": "loans.date", "granularity": "month", "alias": "month"},
+      "orderBy": [{"field": "month", "dir": "asc"}],
+      "limit": 120,
+      "offset": 0
+    }
+    $$::jsonb,
+    u.id,
+    true
+FROM (SELECT id FROM users ORDER BY id LIMIT 1) AS u
+WHERE EXISTS (SELECT 1 FROM users LIMIT 1);
+
+INSERT INTO saved_queries (name, description, query_json, user_id, is_shared)
+SELECT
+    'Registrations — by city',
+    'Patron distribution by city (addr_city); empty values appear as a blank row.',
+    $$
+    {
+      "entity": "users",
+      "joins": [],
+      "select": [
+        {"field": "users.addr_city", "alias": "city"}
+      ],
+      "filters": [],
+      "aggregations": [
+        {"fn": "count", "field": "users.id", "alias": "registeredCount"}
+      ],
+      "groupBy": [
+        {"field": "users.addr_city", "alias": "city"}
+      ],
+      "having": [],
+      "orderBy": [{"field": "registeredCount", "dir": "desc"}],
+      "limit": 200,
+      "offset": 0
+    }
+    $$::jsonb,
+    u.id,
+    true
+FROM (SELECT id FROM users ORDER BY id LIMIT 1) AS u
+WHERE EXISTS (SELECT 1 FROM users LIMIT 1);
+
+INSERT INTO saved_queries (name, description, query_json, user_id, is_shared)
+SELECT
+    'Registrations — by account type',
+    'Patron count by account type (guest, reader, librarian, …).',
+    $$
+    {
+      "entity": "users",
+      "joins": ["account_types"],
+      "select": [
+        {"field": "account_types.name", "alias": "accountType"}
+      ],
+      "filters": [],
+      "aggregations": [
+        {"fn": "count", "field": "users.id", "alias": "registeredCount"}
+      ],
+      "groupBy": [
+        {"field": "account_types.name", "alias": "accountType"}
+      ],
+      "having": [],
+      "orderBy": [{"field": "registeredCount", "dir": "desc"}],
+      "limit": 50,
+      "offset": 0
+    }
+    $$::jsonb,
+    u.id,
+    true
+FROM (SELECT id FROM users ORDER BY id LIMIT 1) AS u
+WHERE EXISTS (SELECT 1 FROM users LIMIT 1);
+
+INSERT INTO saved_queries (name, description, query_json, user_id, is_shared)
+SELECT
+    'Loans (archived) — by month',
+    'Historical loan volume (loans_archives) per month.',
+    $$
+    {
+      "entity": "loans_archives",
+      "joins": [],
+      "select": [],
+      "filters": [],
+      "aggregations": [
+        {"fn": "count", "field": "loans_archives.id", "alias": "archivedLoanCount"}
+      ],
+      "groupBy": [],
+      "having": [],
+      "timeBucket": {"field": "loans_archives.date", "granularity": "month", "alias": "month"},
+      "orderBy": [{"field": "month", "dir": "asc"}],
+      "limit": 120,
+      "offset": 0
+    }
+    $$::jsonb,
+    u.id,
+    true
+FROM (SELECT id FROM users ORDER BY id LIMIT 1) AS u
+WHERE EXISTS (SELECT 1 FROM users LIMIT 1);
+
+INSERT INTO saved_queries (name, description, query_json, user_id, is_shared)
+SELECT
+    'Loans — average renewals per month',
+    'Average number of renewals (nb_renews) per loan month.',
+    $$
+    {
+      "entity": "loans",
+      "joins": [],
+      "select": [],
+      "filters": [],
+      "aggregations": [
+        {"fn": "avg", "field": "loans.nb_renews", "alias": "avgRenewals"}
+      ],
+      "groupBy": [],
+      "having": [],
+      "timeBucket": {"field": "loans.date", "granularity": "month", "alias": "month"},
+      "orderBy": [{"field": "month", "dir": "asc"}],
+      "limit": 120,
+      "offset": 0
+    }
+    $$::jsonb,
+    u.id,
+    true
+FROM (SELECT id FROM users ORDER BY id LIMIT 1) AS u
+WHERE EXISTS (SELECT 1 FROM users LIMIT 1);

@@ -3,10 +3,7 @@ name: Build & Push Docker Image
 on:
   push:
     branches:
-      - main        # déclenche sur chaque push sur main
-  # ou sur un tag :
-  # tags:
-  #   - 'v*'
+      - main
 
 env:
   REGISTRY: ghcr.io
@@ -17,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write       # indispensable pour pousser sur GHCR
+      packages: write
 
     steps:
       - name: Checkout
@@ -28,13 +25,12 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}   # token automatique, rien à configurer
-
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build & Push
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile.complete
+          file: ./docker/Dockerfile.complete
           push: true
           tags: |
             ghcr.io/jcollonville/elidune-complete:latest

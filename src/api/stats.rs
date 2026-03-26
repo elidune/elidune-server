@@ -1,14 +1,57 @@
 //! Statistics endpoints
 
-use axum::{extract::Query, extract::State, Json};
+use axum::extract::Path;
+use axum::routing::{get, post, put};
+use axum::{extract::Query, extract::State, Json, Router};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::{error::AppResult, models::biblio::MediaType};
+use crate::{
+    error::AppResult,
+    models::biblio::MediaType,
+    models::stats_builder::{SavedStatsQuery, SavedStatsQueryWrite, StatsBuilderBody, StatsTableResponse},
+    services::stats::{discovery_json, run_stats_query},
+    services::stats::saved_queries,
+};
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, StaffUser};
+
+
+/// Build the stats routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    let governor_conf: &'static _ = Box::leak(Box::new(
+        GovernorConfigBuilder::default()
+            .per_second(1)
+            .burst_size(30)
+            .finish()
+            .expect("stats governor config"),
+    ));
+
+    Router::new()
+        .route("/stats", get(get_stats))
+        .route("/stats/loans", get(get_loan_stats))
+        .route("/stats/users", get(get_user_stats))
+        .route("/stats/catalog", get(get_catalog_stats))
+        .route("/stats/schema", get(get_stats_schema))
+        .route("/stats/query", post(post_stats_query))
+        .route(
+            "/stats/saved",
+            get(list_saved_queries).post(create_saved_query),
+        )
+        .route(
+            "/stats/saved/:id",
+            put(update_saved_query).delete(delete_saved_query),
+        )
+        .route("/stats/saved/:id/run", get(run_saved_query))
+        .layer(GovernorLayer {
+            config: governor_conf,
+        })
+
+       
+}
 
 /// Statistics response
 #[derive(Serialize, ToSchema)]
@@ -655,12 +698,166 @@ pub async fn get_catalog_stats(
     Ok(Json(stats))
 }
 
-/// Build the stats routes for this domain.
-pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::get;
-    axum::Router::new()
-        .route("/stats", get(get_stats))
-        .route("/stats/loans", get(get_loan_stats))
-        .route("/stats/users", get(get_user_stats))
-        .route("/stats/catalog", get(get_catalog_stats))
+// --- Flexible stats builder (whitelist SQL) ---------------------------------
+
+/// Discovery document for the visual query builder (`entities`, `operators`, …).
+#[utoipa::path(
+    get,
+    path = "/stats/schema",
+    tag = "stats",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Stats schema for builder UI"),
+        (status = 403, description = "Staff only")
+    )
+)]
+pub async fn get_stats_schema(
+    _staff: StaffUser,
+) -> AppResult<Json<serde_json::Value>> {
+    Ok(Json(discovery_json()))
+}
+
+/// Run a declarative stats query (tabular result, paginated).
+#[utoipa::path(
+    post,
+    path = "/stats/query",
+    tag = "stats",
+    security(("bearer_auth" = [])),
+    request_body = StatsBuilderBody,
+    responses(
+        (status = 200, description = "Tabular stats", body = StatsTableResponse),
+        (status = 400, description = "Invalid query"),
+        (status = 403, description = "Staff only")
+    )
+)]
+pub async fn post_stats_query(
+    State(state): State<crate::AppState>,
+    _staff: StaffUser,
+    Json(body): Json<StatsBuilderBody>,
+) -> AppResult<Json<StatsTableResponse>> {
+    let pool = state.services.repository_pool();
+    let res = run_stats_query(pool, Some(&state.services.redis), &body).await?;
+    Ok(Json(res))
+}
+
+/// List saved stats queries (own + shared; admins see all).
+#[utoipa::path(
+    get,
+    path = "/stats/saved",
+    tag = "stats",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Saved queries", body = [SavedStatsQuery]),
+        (status = 403, description = "Staff only")
+    )
+)]
+pub async fn list_saved_queries(
+    State(state): State<crate::AppState>,
+    StaffUser(claims): StaffUser,
+) -> AppResult<Json<Vec<SavedStatsQuery>>> {
+    let pool = state.services.repository_pool();
+    let list = saved_queries::list_for_user(pool, claims.user_id, claims.is_admin()).await?;
+    Ok(Json(list))
+}
+
+/// Save a stats query for reuse.
+#[utoipa::path(
+    post,
+    path = "/stats/saved",
+    tag = "stats",
+    security(("bearer_auth" = [])),
+    request_body = SavedStatsQueryWrite,
+    responses(
+        (status = 200, description = "Created saved query", body = SavedStatsQuery),
+        (status = 403, description = "Staff only")
+    )
+)]
+pub async fn create_saved_query(
+    State(state): State<crate::AppState>,
+    StaffUser(claims): StaffUser,
+    Json(body): Json<SavedStatsQueryWrite>,
+) -> AppResult<Json<SavedStatsQuery>> {
+    let pool = state.services.repository_pool();
+    let row = saved_queries::insert(pool, claims.user_id, &body).await?;
+    Ok(Json(row))
+}
+
+/// Update a saved query (owner or admin).
+#[utoipa::path(
+    put,
+    path = "/stats/saved/{id}",
+    tag = "stats",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i64, Path, description = "Saved query id")
+    ),
+    request_body = SavedStatsQueryWrite,
+    responses(
+        (status = 200, description = "Updated", body = SavedStatsQuery),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Not found")
+    )
+)]
+pub async fn update_saved_query(
+    State(state): State<crate::AppState>,
+    StaffUser(claims): StaffUser,
+    Path(id): Path<i64>,
+    Json(body): Json<SavedStatsQueryWrite>,
+) -> AppResult<Json<SavedStatsQuery>> {
+    let pool = state.services.repository_pool();
+    let row = saved_queries::update(pool, id, claims.user_id, claims.is_admin(), &body).await?;
+    Ok(Json(row))
+}
+
+/// Delete a saved query (owner or admin).
+#[utoipa::path(
+    delete,
+    path = "/stats/saved/{id}",
+    tag = "stats",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i64, Path, description = "Saved query id")
+    ),
+    responses(
+        (status = 200, description = "Deleted"),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Not found")
+    )
+)]
+pub async fn delete_saved_query(
+    State(state): State<crate::AppState>,
+    StaffUser(claims): StaffUser,
+    Path(id): Path<i64>,
+) -> AppResult<Json<serde_json::Value>> {
+    let pool = state.services.repository_pool();
+    saved_queries::delete_by_id(pool, id, claims.user_id, claims.is_admin()).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Execute a saved query by id (same body as `POST /stats/query` would use).
+#[utoipa::path(
+    get,
+    path = "/stats/saved/{id}/run",
+    tag = "stats",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i64, Path, description = "Saved query id")
+    ),
+    responses(
+        (status = 200, description = "Tabular stats", body = StatsTableResponse),
+        (status = 403, description = "Forbidden"),
+        (status = 404, description = "Not found")
+    )
+)]
+pub async fn run_saved_query(
+    State(state): State<crate::AppState>,
+    StaffUser(claims): StaffUser,
+    Path(id): Path<i64>,
+) -> AppResult<Json<StatsTableResponse>> {
+    let pool = state.services.repository_pool();
+    let saved = saved_queries::get_by_id(pool, id, claims.user_id, claims.is_admin())
+        .await?
+        .ok_or_else(|| crate::error::AppError::NotFound("Saved query not found".into()))?;
+    let res = run_stats_query(pool, Some(&state.services.redis), &saved.query).await?;
+    Ok(Json(res))
 }

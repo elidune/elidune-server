@@ -22,15 +22,15 @@ pub mod event {
     pub const USER_DELETED: &str = "user.deleted";
     pub const USER_ACCOUNT_TYPE_CHANGED: &str = "user.account_type_changed";
 
+    // Biblios
+    pub const BIBLIO_CREATED: &str = "biblio.created";
+    pub const BIBLIO_UPDATED: &str = "biblio.updated";
+    pub const BIBLIO_DELETED: &str = "biblio.deleted";
+
     // Items
     pub const ITEM_CREATED: &str = "item.created";
     pub const ITEM_UPDATED: &str = "item.updated";
     pub const ITEM_DELETED: &str = "item.deleted";
-
-    // Specimens
-    pub const SPECIMEN_CREATED: &str = "specimen.created";
-    pub const SPECIMEN_UPDATED: &str = "specimen.updated";
-    pub const SPECIMEN_DELETED: &str = "specimen.deleted";
 
     // Loans
     pub const LOAN_CREATED: &str = "loan.created";

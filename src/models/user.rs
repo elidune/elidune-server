@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
-use sqlx::{Decode, Encode, FromRow, Postgres};
+use sqlx::{Decode, Encode, FromRow, Postgres, Type};
 use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
@@ -194,29 +194,65 @@ impl From<FeeSlug> for Option<String> {
 // Note: FeeSlug conversions are handled manually in repository code
 // because SQLx doesn't support custom Decode/Encode for enums with Other(String) variant
 
-/// User status
+/// User account status (persisted as camelCase strings in PostgreSQL: `active`, `blocked`, `deleted`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[repr(i16)]
+#[serde(rename_all = "camelCase")]
 pub enum UserStatus {
-    Active = 0,
-    Blocked = 1,
-    Deleted = 2,
+    Active,
+    Blocked,
+    Deleted,
 }
 
-impl From<i16> for UserStatus {
-    fn from(v: i16) -> Self {
-        match v {
-            0 => UserStatus::Active,
-            1 => UserStatus::Blocked,
-            2 => UserStatus::Deleted,
-            _ => UserStatus::Active,
+impl UserStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            UserStatus::Active => "active",
+            UserStatus::Blocked => "blocked",
+            UserStatus::Deleted => "deleted",
         }
     }
 }
 
-impl From<Option<i16>> for UserStatus {
-    fn from(v: Option<i16>) -> Self {
-        v.map(UserStatus::from).unwrap_or(UserStatus::Active)
+impl std::fmt::Display for UserStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for UserStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "" | "active" => Ok(UserStatus::Active),
+            "blocked" => Ok(UserStatus::Blocked),
+            "deleted" => Ok(UserStatus::Deleted),
+            _ => Err(format!("Invalid user status: {}", s)),
+        }
+    }
+}
+
+impl Type<Postgres> for UserStatus {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <String as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl<'r> Decode<'r, Postgres> for UserStatus {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        let s: String = Decode::<Postgres>::decode(value)?;
+        s.parse().map_err(|e: String| e.into())
+    }
+}
+
+impl Encode<'_, Postgres> for UserStatus {
+    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> sqlx::encode::IsNull {
+        let s: String = self.as_str().to_string();
+        <String as Encode<Postgres>>::encode(s, buf)
     }
 }
 
@@ -238,12 +274,12 @@ pub struct UserRow {
     birthdate: Option<String>,
     created_at: Option<DateTime<Utc>>,
     update_at: Option<DateTime<Utc>>,
-    issue_at: Option<DateTime<Utc>>,
+    expiry_at: Option<DateTime<Utc>>,
     account_type: String,
     fee: Option<String>,
     public_type: Option<i64>,
     notes: Option<String>,
-    status: Option<i16>,
+    status: Option<UserStatus>,
     archived_at: Option<DateTime<Utc>>,
     language: Option<Language>,
     sex: Option<i16>,
@@ -278,7 +314,7 @@ impl From<UserRow> for User {
             birthdate: row.birthdate,
             created_at: row.created_at,
             update_at: row.update_at,
-            issue_at: row.issue_at,
+            expiry_at: row.expiry_at,
             account_type: row.account_type.parse().unwrap_or(AccountTypeSlug::Guest),
             fee: row.fee.map(|f| f.parse().unwrap_or(FeeSlug::Free)),
             public_type: row.public_type,
@@ -328,14 +364,15 @@ pub struct User {
     pub birthdate: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
     pub update_at: Option<DateTime<Utc>>,
-    pub issue_at: Option<DateTime<Utc>>,
+    /// Membership / subscription expiry (UTC); borrowing may be denied after this date.
+    pub expiry_at: Option<DateTime<Utc>>,
     pub account_type: AccountTypeSlug,
     pub fee: Option<FeeSlug>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub public_type: Option<i64>,
     pub notes: Option<String>,
-    pub status: Option<i16>,
+    pub status: Option<UserStatus>,
     pub archived_at: Option<DateTime<Utc>>,
     /// User preferred language
     pub language: Option<Language>,
@@ -364,6 +401,18 @@ pub struct User {
     pub must_change_password: bool,
 }
 
+
+impl User {
+    
+    pub fn is_active(&self) -> bool {
+        self.status == Some(UserStatus::Active) && self.archived_at.is_none()
+    }
+
+    pub fn can_borrow(&self) -> bool {
+        self.is_active() && self.account_type != AccountTypeSlug::Guest
+    }
+}
+
 /// Internal row structure for UserShort queries
 #[derive(Debug, Clone, FromRow)]
 pub struct UserShortRow {
@@ -374,6 +423,9 @@ pub struct UserShortRow {
     public_type: Option<i64>,
     nb_loans: Option<i64>,
     nb_late_loans: Option<i64>,
+    status: Option<UserStatus>,
+    created_at: Option<DateTime<Utc>>,
+    expiry_at: Option<DateTime<Utc>>,
 }
 
 impl From<UserShortRow> for UserShort {
@@ -386,6 +438,9 @@ impl From<UserShortRow> for UserShort {
             public_type: row.public_type,
             nb_loans: row.nb_loans,
             nb_late_loans: row.nb_late_loans,
+            status: row.status,
+            created_at: row.created_at,
+            expiry_at: row.expiry_at,
         }
     }
 }
@@ -404,6 +459,9 @@ pub struct UserShort {
     pub public_type: Option<i64>,
     pub nb_loans: Option<i64>,
     pub nb_late_loans: Option<i64>,
+    pub status: Option<UserStatus>,
+    pub created_at: Option<DateTime<Utc>>,
+    pub expiry_at: Option<DateTime<Utc>>,
 }
 
 /// User query parameters
@@ -445,7 +503,7 @@ pub struct UserPayload {
     #[schema(value_type = Option<String>)]
     pub group_id: Option<i64>,
     /// User status; for updates only (ignored on create)
-    pub status: Option<i16>,
+    pub status: Option<UserStatus>,
     /// Sex (70=Female, 77=Male, 85=Unknown)
     pub sex: Option<i16>,
     /// Staff type (NULL=not staff, 0=employee, 1=volunteer)
@@ -456,6 +514,8 @@ pub struct UserPayload {
     pub staff_start_date: Option<String>,
     /// Staff end date (YYYY-MM-DD)
     pub staff_end_date: Option<String>,
+    /// Membership / subscription expiry (UTC); borrowing may be denied after this date.
+    pub expiry_at: Option<DateTime<Utc>>,
 }
 
 /// Update own profile request (for authenticated users)

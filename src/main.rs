@@ -140,11 +140,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Connected to database");
 
     // Run migrations
-    // sqlx::migrate!("./migrations")
-    //     .run(&pool)
-    //     .await
-    //     .expect("Failed to run database migrations");
-    // tracing::info!("Database migrations completed");
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run database migrations");
+    
+    tracing::info!("Database migrations completed");
 
     // Load DB settings overrides and build DynamicConfig
     let dynamic_config = {

@@ -71,7 +71,7 @@ pub struct OverdueLoanInfo {
     pub authors: Option<String>,
     pub item_barcode: Option<String>,
     pub loan_date: DateTime<Utc>,
-    pub issue_at: Option<DateTime<Utc>>,
+    pub expiry_at: Option<DateTime<Utc>>,
     pub last_reminder_sent_at: Option<DateTime<Utc>>,
     pub reminder_count: i32,
 }
@@ -123,7 +123,7 @@ impl RemindersService {
                 authors: r.authors,
                 item_barcode: r.item_barcode,
                 loan_date: r.loan_date,
-                issue_at: r.issue_at,
+                expiry_at: r.expiry_at,
                 last_reminder_sent_at: r.last_reminder_sent_at,
                 reminder_count: r.reminder_count,
             })
@@ -194,7 +194,7 @@ impl RemindersService {
                     let authors = l.authors.as_deref().unwrap_or("");
                     let loan_date = l.loan_date.format("%d/%m/%Y").to_string();
                     let due_date = l
-                        .issue_at
+                        .expiry_at
                         .map(|d| d.format("%d/%m/%Y").to_string())
                         .unwrap_or_else(|| "N/A".to_string());
                     format!(
@@ -213,7 +213,7 @@ impl RemindersService {
                     let authors = l.authors.as_deref().unwrap_or("");
                     let loan_date = l.loan_date.format("%d/%m/%Y").to_string();
                     let due_date = l
-                        .issue_at
+                        .expiry_at
                         .map(|d| d.format("%d/%m/%Y").to_string())
                         .unwrap_or_else(|| "N/A".to_string());
                     format!(

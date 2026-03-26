@@ -100,8 +100,8 @@ Special variants for UI confirmation flows:
 - Migrations live in `migrations/` as numbered SQL files (`NNN_description.sql`).
 - Run via SQLx CLI: `sqlx migrate run`.
 - Never modify an existing migration; always add a new numbered file.
-- always update the `scripts/migrate_data.py` script when adding db migration
-- keep the `scripts/init_database.py` up to date
+- always update the `scripts/migrate_data.py` script when changes are made or on  migrations/ changes
+- keep the `scripts/init_database.py` up to date when changes are made or on  migrations/ changes
 ---
 
 ## Configuration

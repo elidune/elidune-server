@@ -19,6 +19,16 @@ use crate::{
 
 use super::{AuthenticatedUser, ClientIp};
 
+
+/// Build the events routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{delete, get, post, put};
+    axum::Router::new()
+        .route("/events", get(list_events).post(create_event))
+        .route("/events/:id", get(get_event).put(update_event).delete(delete_event))
+        .route("/events/:id/send-announcement", post(send_event_announcement))
+}
+
 /// Paginated events response
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -197,11 +207,3 @@ pub async fn send_event_announcement(
     Ok(Json(report))
 }
 
-/// Build the events routes for this domain.
-pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post, put};
-    axum::Router::new()
-        .route("/events", get(list_events).post(create_event))
-        .route("/events/:id", get(get_event).put(update_event).delete(delete_event))
-        .route("/events/:id/send-announcement", post(send_event_announcement))
-}

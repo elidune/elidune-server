@@ -175,7 +175,7 @@ impl Repository {
         use crate::models::user::UserRow;
         let user_row = sqlx::query_as::<_, UserRow>(
             r#"
-            SELECT * FROM users WHERE LOWER(login) = LOWER($1) AND (status IS NULL OR status != 2)
+            SELECT * FROM users WHERE LOWER(login) = LOWER($1) AND (status IS NULL OR status <> 'deleted')
             "#,
         )
         .bind(login)
@@ -191,7 +191,7 @@ impl Repository {
         use crate::models::user::UserRow;
         let user_row = sqlx::query_as::<_, UserRow>(
             r#"
-            SELECT * FROM users WHERE LOWER(email) = LOWER($1) AND (status IS NULL OR status != 2)
+            SELECT * FROM users WHERE LOWER(email) = LOWER($1) AND (status IS NULL OR status <> 'deleted')
             "#,
         )
         .bind(email)
@@ -354,17 +354,18 @@ impl Repository {
 
         // Fetch users (exclude deleted users by default)
         let status_filter = if conditions.is_empty() {
-            "WHERE (u.status IS NULL OR u.status != 2)".to_string()
+            "WHERE (u.status IS NULL OR u.status <> 'deleted')".to_string()
         } else {
-            " AND (u.status IS NULL OR u.status != 2)".to_string()
+            " AND (u.status IS NULL OR u.status <> 'deleted')".to_string()
         };
         
         use crate::models::user::UserShortRow;
         let select_query = format!(
             r#"
             SELECT u.id, u.firstname, u.lastname, u.account_type, u.public_type,
+                   u.status, u.created_at, u.expiry_at,
                    (SELECT COUNT(*) FROM loans l WHERE l.user_id = u.id AND l.returned_at IS NULL) as nb_loans,
-                   (SELECT COUNT(*) FROM loans l WHERE l.user_id = u.id AND l.returned_at IS NULL AND l.issue_at < NOW()) as nb_late_loans
+                   (SELECT COUNT(*) FROM loans l WHERE l.user_id = u.id AND l.returned_at IS NULL AND l.expiry_at < NOW()) as nb_late_loans
             FROM users u
             {}{}
             ORDER BY u.lastname, u.firstname
@@ -406,10 +407,10 @@ impl Repository {
                 birthdate, account_type,
                 fee, public_type, notes, group_id, barcode,
                 sex, staff_type, hours_per_week, staff_start_date, staff_end_date,
-                status, created_at, update_at
+                status, created_at, update_at, expiry_at, must_change_password
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
+                $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
             ) RETURNING id
             "#,
         )
@@ -438,9 +439,11 @@ impl Repository {
         .bind(hours_pw)
         .bind(staff_start_date)
         .bind(staff_end_date)
-        .bind(UserStatus::Active as i16)
+        .bind(UserStatus::Active)
         .bind(now)
         .bind(now)
+        .bind(user.expiry_at)
+        .bind(true)
         .fetch_one(&self.pool)
         .await?;
 
@@ -450,11 +453,10 @@ impl Repository {
     /// Update an existing user
     #[tracing::instrument(skip(self), err)]
     pub async fn users_update(&self, id: i64, user: &UserPayload, password: Option<String>) -> AppResult<User> {
-        let now = Utc::now();
 
-        // Build dynamic update query
-        let mut sets = vec!["update_at = $1".to_string()];
-        let mut param_idx = 2;
+        // Build dynamic update query ($1..$N consecutive; `update_at` uses NOW() in SQL, not a bind)
+        let mut sets = vec![];
+        let mut param_idx = 1;
 
         macro_rules! add_field {
             ($field:expr, $name:expr) => {
@@ -491,17 +493,20 @@ impl Repository {
         add_field!(user.barcode, "barcode");
         add_field!(user.status, "status");
         add_field!(user.sex, "sex");
+        // expiry_at may be NULL for unlimited membership
+        sets.push(format!("expiry_at = ${}", param_idx));
+        param_idx += 1;
         add_field!(user.staff_type, "staff_type");
         add_field!(user.hours_per_week, "hours_per_week");
         add_field!(user.staff_start_date, "staff_start_date");
         add_field!(user.staff_end_date, "staff_end_date");
-
+        
         if password.is_some() {
             sets.push(format!("password = ${}", param_idx));
         }
 
         let query = format!(
-            "UPDATE users SET {} WHERE id = {}",
+            "UPDATE users SET {}, update_at = NOW() WHERE id = {}",
             sets.join(", "),
             id
         );
@@ -513,7 +518,7 @@ impl Repository {
             .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
         let hours_pw = user.hours_per_week.map(|v| v as f32);
 
-        let mut builder = sqlx::query(&query).bind(now);
+        let mut builder = sqlx::query(&query);
 
         macro_rules! bind_field {
             ($field:expr) => {
@@ -548,7 +553,9 @@ impl Repository {
         bind_field!(user.barcode);
         bind_field!(user.status);
         bind_field!(user.sex);
+        builder = builder.bind(user.expiry_at);
         bind_field!(user.staff_type);
+
         if user.hours_per_week.is_some() {
             builder = builder.bind(hours_pw);
         }
@@ -585,9 +592,7 @@ impl Repository {
             }
         }
 
-        // Soft delete: anonymize personal data and set status to deleted
-        let now = Utc::now();
-
+    
         sqlx::query(r#"
             UPDATE users SET 
                 firstname = NULL,
@@ -598,12 +603,11 @@ impl Repository {
                 addr_street = NULL,
                 addr_city = NULL,
                 status = $1,
-                archived_at = $2,
-                update_at = $2
-            WHERE id = $3
+                archived_at = NOW(),
+                update_at = NOW()
+            WHERE id = $2
         "#)
-            .bind(UserStatus::Deleted as i16)
-            .bind(now)
+            .bind(UserStatus::Deleted)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -614,11 +618,9 @@ impl Repository {
     /// Block a user
     #[tracing::instrument(skip(self), err)]
     pub async fn users_block(&self, id: i64) -> AppResult<User> {
-        let now = Utc::now();
 
-        sqlx::query("UPDATE users SET status = $1, update_at = $2 WHERE id = $3")
-            .bind(UserStatus::Blocked as i16)
-            .bind(now)
+        sqlx::query("UPDATE users SET status = $1, update_at = NOW() WHERE id = $2")
+            .bind(UserStatus::Blocked)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -629,11 +631,9 @@ impl Repository {
     /// Unblock a user
     #[tracing::instrument(skip(self), err)]
     pub async fn users_unblock(&self, id: i64) -> AppResult<User> {
-        let now = Utc::now();
 
-        sqlx::query("UPDATE users SET status = $1, update_at = $2 WHERE id = $3")
-            .bind(UserStatus::Active as i16)
-            .bind(now)
+        sqlx::query("UPDATE users SET status = $1, update_at = NOW() WHERE id = $2")
+            .bind(UserStatus::Active)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -644,10 +644,9 @@ impl Repository {
     /// Update user's own profile (firstname, lastname, password)
     #[tracing::instrument(skip(self), err)]
     pub async fn users_update_profile(&self, id: i64, profile: &UpdateProfile, password: Option<String>) -> AppResult<User> {
-        let now = Utc::now();
 
-        let mut sets = vec!["update_at = $1".to_string()];
-        let mut param_idx = 2;
+        let mut sets = vec![];
+        let mut param_idx = 1;
 
         // Helper macro to add fields
         macro_rules! add_field {
@@ -671,19 +670,18 @@ impl Repository {
         add_field!(profile.language, "language");
         
         if password.is_some() {
-            sets.push(format!("password = ${}", param_idx));
-            param_idx += 1;
+            add_field!(password, "password");
             // Changing password clears the forced-change flag
             sets.push(format!("must_change_password = ${}", param_idx));
         }
 
         let query = format!(
-            "UPDATE users SET {} WHERE id = {}",
+            "UPDATE users SET {}, update_at = NOW() WHERE id = {}",
             sets.join(", "),
             id
         );
 
-        let mut builder = sqlx::query(&query).bind(now);
+        let mut builder = sqlx::query(&query);
 
         // Helper macro to bind fields
         macro_rules! bind_field {
@@ -721,11 +719,9 @@ impl Repository {
     /// Update user's account type (admin only)
     #[tracing::instrument(skip(self), err)]
     pub async fn users_update_account_type(&self, id: i64, account_type: &AccountTypeSlug) -> AppResult<User> {
-        let now = Utc::now();
 
-        sqlx::query("UPDATE users SET account_type = $1, update_at = $2 WHERE id = $3")
+        sqlx::query("UPDATE users SET account_type = $1, update_at = NOW() WHERE id = $2")
             .bind(account_type.as_str())
-            .bind(now)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -793,7 +789,7 @@ impl Repository {
                 FROM users
                 WHERE email IS NOT NULL AND email <> ''
                   AND public_type = $1
-                  AND (status IS NULL OR status != 2)
+                  AND (status IS NULL OR status <> 'deleted')
                 "#,
             )
             .bind(pt)
@@ -805,7 +801,7 @@ impl Repository {
                 SELECT id, email, firstname, lastname, language
                 FROM users
                 WHERE email IS NOT NULL AND email <> ''
-                  AND (status IS NULL OR status != 2)
+                  AND (status IS NULL OR status <> 'deleted')
                 "#,
             )
             .fetch_all(&self.pool)

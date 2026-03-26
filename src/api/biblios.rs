@@ -220,7 +220,10 @@ pub async fn create_biblio(
     Query(query): Query<CreateBiblioQuery>,
     Json(biblio): Json<Biblio>,
 ) -> AppResult<(StatusCode, Json<CreateBiblioResponse>)> {
+    println!("claims: {:?}", claims);
+    
     claims.require_write_items()?;
+
     let (biblio, import_report) = state
         .services
         .catalog
@@ -228,7 +231,7 @@ pub async fn create_biblio(
         .await?;
 
     state.services.audit.log(
-        audit::event::ITEM_CREATED,
+        audit::event::BIBLIO_CREATED,
         Some(claims.user_id),
         Some("biblio"),
         biblio.id,
@@ -385,7 +388,7 @@ pub async fn update_biblio(
     let updated = state.services.catalog.update_biblio(id, biblio, query.allow_duplicate_isbn).await?;
 
     state.services.audit.log(
-        audit::event::ITEM_UPDATED,
+        audit::event::BIBLIO_UPDATED,
         Some(claims.user_id),
         Some("biblio"),
         Some(id),
@@ -434,7 +437,7 @@ pub async fn delete_biblio(
         .await?;
 
     state.services.audit.log(
-        audit::event::ITEM_DELETED,
+        audit::event::BIBLIO_DELETED,
         Some(claims.user_id),
         Some("biblio"),
         Some(id),
@@ -507,7 +510,7 @@ pub async fn create_item(
         .await?;
 
     state.services.audit.log(
-        audit::event::SPECIMEN_CREATED,
+        audit::event::ITEM_CREATED,
         Some(claims.user_id),
         Some("item"),
         created.id,
@@ -551,7 +554,7 @@ pub async fn update_item(
         .await?;
 
     state.services.audit.log(
-        audit::event::SPECIMEN_UPDATED,
+        audit::event::ITEM_UPDATED,
         Some(claims.user_id),
         Some("item"),
         item_id,
@@ -594,7 +597,7 @@ pub async fn delete_item(
         .await?;
 
     state.services.audit.log(
-        audit::event::SPECIMEN_DELETED,
+        audit::event::ITEM_DELETED,
         Some(claims.user_id),
         Some("item"),
         Some(item_id),

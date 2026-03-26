@@ -13,7 +13,10 @@ use totp_lite::totp_custom;
 use crate::{
     config::UsersConfig,
     error::{AppError, AppResult},
-    models::user::{AccountTypeSlug, UpdateProfile, User, UserClaims, UserPayload, UserQuery, UserShort, SCOPE_CHANGE_PASSWORD},
+    models::user::{
+        AccountTypeSlug, UpdateProfile, User, UserClaims, UserPayload, UserQuery, UserShort, UserStatus,
+        SCOPE_CHANGE_PASSWORD,
+    },
     repository::Repository,
 };
 
@@ -49,10 +52,10 @@ impl UsersService {
 
         // Check if user is blocked or deleted
         if let Some(status) = user.status {
-            if status == 1 {
+            if status == UserStatus::Blocked {
                 return Err(AppError::Authentication("Account is blocked".to_string()));
             }
-            if status == 2 {
+            if status == UserStatus::Deleted {
                 return Err(AppError::Authentication("Invalid login or password".to_string()));
             }
         }

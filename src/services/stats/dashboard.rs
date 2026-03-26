@@ -12,7 +12,6 @@ use crate::{
     error::AppResult,
     models::biblio::MediaType,
     repository::Repository,
-    services::Services,
 };
 
 /// Filter for GET /stats (optional year, time interval, public_type, media_type).
@@ -159,9 +158,9 @@ impl StatsService {
                 .collect()
         };
 
-        // User stats (exclude deleted users: status != 2)
+        // User stats (exclude deleted accounts)
         let total_users: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM users WHERE (status IS NULL OR status != 2)"
+            "SELECT COUNT(*) FROM users WHERE (status IS NULL OR status <> 'deleted')"
         )
             .fetch_one(pool)
             .await?;
@@ -176,7 +175,7 @@ impl StatsService {
             r#"
             SELECT COALESCE(u.account_type, 'unknown') as label, COUNT(*) as value
             FROM users u
-            WHERE (u.status IS NULL OR u.status != 2)
+            WHERE (u.status IS NULL OR u.status <> 'deleted')
             GROUP BY u.account_type
             ORDER BY value DESC
             "#,
@@ -196,7 +195,7 @@ impl StatsService {
             .await?;
 
         let overdue_loans: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM loans WHERE returned_at IS NULL AND issue_at < NOW()"
+            "SELECT COUNT(*) FROM loans WHERE returned_at IS NULL AND expiry_at < NOW()"
         )
         .fetch_one(pool)
         .await?;
@@ -372,10 +371,10 @@ impl StatsService {
             LEFT JOIN (
                 SELECT user_id, COUNT(*) as overdue_loans
                 FROM loans
-                WHERE returned_at IS NULL AND issue_at < NOW()
+                WHERE returned_at IS NULL AND expiry_at < NOW()
                 GROUP BY user_id
             ) o ON o.user_id = u.id
-            WHERE (u.status IS NULL OR u.status != 2)
+            WHERE (u.status IS NULL OR u.status <> 'deleted')
             ORDER BY {order_by} DESC, u.id ASC
             LIMIT $1
             "#
@@ -658,7 +657,7 @@ impl StatsService {
             r#"
             SELECT COUNT(*)
             FROM users
-            WHERE (status IS NULL OR status != 2)
+            WHERE (status IS NULL OR status <> 'deleted')
             "#,
         )
         .fetch_one(pool)
@@ -670,7 +669,7 @@ impl StatsService {
             SELECT COALESCE(pt.name, 'unknown') as label, COUNT(*) as value
             FROM users u
             LEFT JOIN public_types pt ON u.public_type = pt.id
-            WHERE (u.status IS NULL OR u.status != 2)
+            WHERE (u.status IS NULL OR u.status <> 'deleted')
             GROUP BY pt.name ORDER BY value DESC
             "#,
         )
@@ -686,7 +685,7 @@ impl StatsService {
             SELECT CASE sex WHEN 70 THEN 'female' WHEN 77 THEN 'male' ELSE 'unknown' END as label,
                    COUNT(*) as value
             FROM users
-            WHERE (status IS NULL OR status != 2)
+            WHERE (status IS NULL OR status <> 'deleted')
             GROUP BY sex ORDER BY value DESC
             "#,
         )
@@ -701,7 +700,7 @@ impl StatsService {
             r#"
             SELECT COUNT(*)
             FROM users
-            WHERE (status IS NULL OR status != 2)
+            WHERE (status IS NULL OR status <> 'deleted')
               AND created_at IS NOT NULL
               AND created_at >= $1
               AND created_at <= $2
@@ -718,7 +717,7 @@ impl StatsService {
             SELECT COALESCE(pt.name, 'unknown') as label, COUNT(*) as value
             FROM users u
             LEFT JOIN public_types pt ON u.public_type = pt.id
-            WHERE (u.status IS NULL OR u.status != 2)
+            WHERE (u.status IS NULL OR u.status <> 'deleted')
               AND u.created_at IS NOT NULL AND u.created_at >= $1 AND u.created_at <= $2
             GROUP BY pt.name ORDER BY value DESC
             "#,
@@ -737,7 +736,7 @@ impl StatsService {
             SELECT CASE sex WHEN 70 THEN 'female' WHEN 77 THEN 'male' ELSE 'unknown' END as label,
                    COUNT(*) as value
             FROM users
-            WHERE (status IS NULL OR status != 2)
+            WHERE (status IS NULL OR status <> 'deleted')
               AND created_at IS NOT NULL AND created_at >= $1 AND created_at <= $2
             GROUP BY sex ORDER BY value DESC
             "#,
@@ -755,7 +754,7 @@ impl StatsService {
             r#"
             SELECT COUNT(DISTINCT u.id)
             FROM users u
-            WHERE (u.status IS NULL OR u.status != 2)
+            WHERE (u.status IS NULL OR u.status <> 'deleted')
               AND EXISTS (
                 SELECT 1
                 FROM (
@@ -782,7 +781,7 @@ impl StatsService {
             SELECT COALESCE(pt.name, 'unknown') as label, COUNT(DISTINCT u.id) as value
             FROM users u
             LEFT JOIN public_types pt ON u.public_type = pt.id
-            WHERE (u.status IS NULL OR u.status != 2)
+            WHERE (u.status IS NULL OR u.status <> 'deleted')
               AND EXISTS (
                 SELECT 1
                 FROM (
@@ -809,7 +808,7 @@ impl StatsService {
             SELECT COUNT(*)
             FROM users
             WHERE account_type = 'group'
-              AND (status IS NULL OR status != 2)
+              AND (status IS NULL OR status <> 'deleted')
               AND (created_at IS NULL OR created_at <= $1)
             "#,
         )
@@ -1226,11 +1225,11 @@ impl StatsService {
                     COALESCE(i.audience_type, 'unknown') as public_type,
                     COUNT(*) as loans
                 FROM (
-                    SELECT specimen_id, date FROM loans
+                    SELECT item_id, date FROM loans
                     UNION ALL
-                    SELECT specimen_id, date FROM loans_archives
+                    SELECT item_id, date FROM loans_archives
                 ) all_loans
-                JOIN specimens sp ON all_loans.specimen_id = sp.id
+                JOIN specimens sp ON all_loans.item_id = sp.id
                 JOIN items i ON sp.item_id = i.id
                 WHERE all_loans.date >= $1 AND all_loans.date <= $2
                 GROUP BY sp.source_id, i.media_type, i.audience_type

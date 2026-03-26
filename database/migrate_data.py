@@ -20,7 +20,7 @@ Key transformations:
              public_type int (97/106/117) -> FK to public_types table,
              sex_id -> sex (preserved as SMALLINT)
              removed: subscription_type_id, occupation, profession
-             added: status, language, must_change_password, 2FA fields
+             added: status (VARCHAR camelCase: active/blocked/deleted), language, must_change_password, 2FA fields
     - items -> biblios: complete schema refactor (see migrate_items)
       - identification->isbn, title1->title, author columns -> biblio_authors table,
         serie_id -> biblio_series junction, collection_id -> biblio_collections junction,
@@ -489,7 +489,7 @@ def migrate_users(src, dst, hash_passwords=True):
         issue_dt = ts_to_datetime(issue_date)
         archived_dt = ts_to_datetime(archived_date)
 
-        status = 2 if archived_dt else 0
+        status = "deleted" if archived_dt else "active"
 
         # Map legacy integer public_type to FK id in target
         pt_id = None
@@ -504,7 +504,7 @@ def migrate_users(src, dst, hash_passwords=True):
                 addr_street, addr_zip_code, addr_city, phone,
                 account_type, fee, group_id, barcode, notes,
                 public_type, status, birthdate,
-                created_at, update_at, issue_at, archived_at,
+                created_at, update_at, expiry_at, archived_at,
                 language, sex
             ) VALUES (
                 %s, %s, %s, %s, %s, %s,
@@ -984,7 +984,7 @@ def migrate_loans(src, dst, migrated_specimen_ids=None):
 
         vals[4] = ts_to_datetime(vals[4])   # date -> timestamptz
         vals[5] = ts_to_datetime(vals[5])   # renew_date -> renew_at
-        vals[7] = ts_to_datetime(vals[7])   # issue_date -> issue_at
+        vals[7] = ts_to_datetime(vals[7])   # issue_date -> expiry_at
         vals[9] = ts_to_datetime(vals[9])   # returned_date -> returned_at
 
         if item_id is None:
@@ -1006,7 +1006,7 @@ def migrate_loans(src, dst, migrated_specimen_ids=None):
             dst_cur.execute("""
                 INSERT INTO loans_archives (
                     id, user_id, item_id, date, nb_renews,
-                    issue_at, returned_at, notes,
+                    expiry_at, returned_at, notes,
                     borrower_public_type, addr_city, account_type
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO NOTHING
@@ -1020,7 +1020,7 @@ def migrate_loans(src, dst, migrated_specimen_ids=None):
             dst_cur.execute("""
                 INSERT INTO loans (
                     id, user_id, item_id, date, renew_at,
-                    nb_renews, issue_at, notes, returned_at
+                    nb_renews, expiry_at, notes, returned_at
                 ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO NOTHING
             """, (vals[0], vals[1], item_id, vals[4], vals[5], vals[6], vals[7], vals[8], vals[9]))
@@ -1089,7 +1089,7 @@ def migrate_loans_archives(src, dst, migrated_specimen_ids=None):
 
         dst_cur.execute("""
             INSERT INTO loans_archives (
-                id, item_id, date, nb_renews, issue_at,
+                id, item_id, date, nb_renews, expiry_at,
                 returned_at, notes, borrower_public_type,
                 addr_city, account_type
             ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)

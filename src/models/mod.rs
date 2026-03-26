@@ -14,6 +14,7 @@ pub mod loan;
 pub mod public_type;
 pub mod reservation;
 pub mod schedule;
+pub mod stats_builder;
 pub mod source;
 pub mod task;
 pub mod user;
