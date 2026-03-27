@@ -20,6 +20,26 @@ All keys use **camelCase** (serde).
 
 - **Limits (server validation):** up to 16 outer groups, up to 32 filters per inner group, 128 total filter clauses across `filters` + all groups.
 
+### `unionWith` (multi-root / `UNION ALL`)
+
+- **Type:** `string[]`, default `[]`.
+- **Purpose:** Combine **`entity`** with additional root tables that share the same projected columns. Currently supported: **`loans`** + **`loans_archives`** (exactly both).
+- **SQL:** The root `FROM` becomes a subquery `UNION ALL` with a discriminator column `__union_source` (`loans` | `loans_archives`). Joins are still resolved from the canonical **`entity`** (e.g. `users`, `items`, `items.biblios`).
+- **Field:** `loans.union_source` (computed) maps to the branch label; **only** use when `unionWith` is set, otherwise the request is rejected.
+- **Discovery:** `GET /stats/schema` includes `entities.loans.unionWith: ["loans_archives"]` and root-level `unionWithSemantics`.
+
+Example:
+
+```json
+{
+  "entity": "loans",
+  "unionWith": ["loans_archives"],
+  "joins": ["users"],
+  "aggregations": [{ "fn": "count", "field": "loans.id", "alias": "n" }],
+  "timeBucket": { "field": "loans.date", "granularity": "year", "alias": "y" }
+}
+```
+
 ### Existing: `filters`
 
 Unchanged: flat list of `StatsFilter` (`field`, `op`, `value`), AND’d together.

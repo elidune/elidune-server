@@ -9,6 +9,9 @@ use utoipa::ToSchema;
 #[serde(rename_all = "camelCase")]
 pub struct StatsBuilderBody {
     pub entity: String,
+    /// Stack additional root tables with `UNION ALL` (same projected columns). Supported: `loans` + `loans_archives` (see stats schema discovery).
+    #[serde(default)]
+    pub union_with: Vec<String>,
     #[serde(default)]
     pub joins: Vec<String>,
     #[serde(default)]

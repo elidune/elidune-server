@@ -1,9 +1,87 @@
 //! Whitelist registry for flexible stats queries — only listed tables/columns are reachable.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
+
+use crate::error::AppError;
+use crate::models::stats_builder::StatsBuilderBody;
+
+/// Supported `UNION ALL` roots: active loans + archived loans (same projected columns).
+pub static LOANS_UNION_GROUP: &[&str] = &["loans", "loans_archives"];
+
+/// Validate `entity` + `unionWith` form an allowed multi-root query (currently only the loans group).
+pub fn validate_union_branches(entity: &str, union_with: &[String]) -> Result<(), AppError> {
+    if union_with.is_empty() {
+        return Ok(());
+    }
+    let mut names: Vec<String> = Vec::with_capacity(1 + union_with.len());
+    names.push(entity.to_string());
+    names.extend(union_with.iter().cloned());
+    let set: HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
+    if set.len() != names.len() {
+        return Err(AppError::Validation(
+            "unionWith must not duplicate entity names".into(),
+        ));
+    }
+    let allowed: HashSet<&str> = LOANS_UNION_GROUP.iter().copied().collect();
+    if set != allowed {
+        return Err(AppError::Validation(
+            "unionWith is only supported for combining loans and loans_archives (exactly both)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// True if `field` references `union_source` / `__union_source` (must be used with unionWith).
+pub fn field_references_union_source(field: &str) -> bool {
+    let lower = field.to_ascii_lowercase();
+    lower.contains("union_source") || lower.contains("__union_source")
+}
+
+/// Validates union branch rules and that `union_source` is not used without `unionWith`.
+pub fn validate_union_field_usage(query: &StatsBuilderBody) -> Result<(), AppError> {
+    validate_union_branches(&query.entity, &query.union_with)?;
+    if !query.union_with.is_empty() {
+        return Ok(());
+    }
+    for path in iter_stats_field_paths(query) {
+        if field_references_union_source(&path) {
+            return Err(AppError::Validation(
+                "union_source / __union_source fields require unionWith (e.g. [\"loans_archives\"])"
+                    .into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn iter_stats_field_paths(query: &StatsBuilderBody) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in &query.select {
+        out.push(s.field.clone());
+    }
+    for g in &query.group_by {
+        out.push(g.field.clone());
+    }
+    for f in &query.filters {
+        out.push(f.field.clone());
+    }
+    for g in &query.filter_groups {
+        for f in g {
+            out.push(f.field.clone());
+        }
+    }
+    if let Some(ref tb) = query.time_bucket {
+        out.push(tb.field.clone());
+    }
+    for a in &query.aggregations {
+        out.push(a.field.clone());
+    }
+    out
+}
 
 #[derive(Debug, Clone)]
 pub enum FieldKind {
@@ -95,6 +173,14 @@ pub static SCHEMA: Lazy<HashMap<&'static str, EntityDef>> = Lazy::new(|| {
                 ("expiry_at", f("expiry_at", "timestamptz", "Due date")),
                 ("returned_at", f("returned_at", "timestamptz", "Return date")),
                 ("nb_renews", f("nb_renews", "integer", "Renewals")),
+                (
+                    "union_source",
+                    c(
+                        "{alias}.__union_source",
+                        "text",
+                        "Union branch (loans | loans_archives); only when using unionWith",
+                    ),
+                ),
             ]),
             relations: HashMap::from([
                 ("users", r("users", "user_id", "id", "Borrower")),
@@ -276,12 +362,16 @@ pub static SCHEMA: Lazy<HashMap<&'static str, EntityDef>> = Lazy::new(|| {
             label: "Archived loans",
             fields: HashMap::from([
                 ("id", f("id", "bigint", "Id")),
+                ("user_id", f("user_id", "bigint", "User id")),
+                ("item_id", f("item_id", "bigint", "Item id")),
                 ("date", f("date", "timestamptz", "Date")),
                 ("expiry_at", f("expiry_at", "timestamptz", "Due date")),
                 ("returned_at", f("returned_at", "timestamptz", "Return")),
+                ("nb_renews", f("nb_renews", "integer", "Renewals")),
                 ("addr_city", f("addr_city", "text", "Borrower city")),
             ]),
             relations: HashMap::from([
+                ("users", r("users", "user_id", "id", "Borrower")),
                 ("public_types", r("public_types", "borrower_public_type", "id", "Audience type")),
                 ("items", r("items", "item_id", "id", "Item copy")),
             ]),
@@ -318,14 +408,17 @@ pub fn discovery_json() -> Value {
                 }),
             );
         }
-        entities.insert(
-            (*key).to_string(),
-            json!({
-                "label": def.label,
-                "fields": Value::Object(fields),
-                "relations": Value::Object(relations),
-            }),
-        );
+        let mut entity_obj = serde_json::Map::new();
+        entity_obj.insert("label".to_string(), json!(def.label));
+        entity_obj.insert("fields".to_string(), Value::Object(fields));
+        entity_obj.insert("relations".to_string(), Value::Object(relations));
+        if *key == "loans" {
+            entity_obj.insert(
+                "unionWith".to_string(),
+                json!(["loans_archives"]),
+            );
+        }
+        entities.insert((*key).to_string(), Value::Object(entity_obj));
     }
 
     json!({
@@ -334,5 +427,6 @@ pub fn discovery_json() -> Value {
         "operators": ["eq", "neq", "gt", "gte", "lt", "lte", "in", "notIn", "isNull", "isNotNull"],
         "timeGranularities": ["day", "week", "month", "quarter", "year"],
         "filterGroupsSemantics": "Top-level `filters` are AND'd together. If `filterGroups` is non-empty, the WHERE clause is: (AND of `filters`) AND (OR of each inner group, where each inner group is the AND of its filters). Computed fields cannot be used in `aggregations` or `timeBucket`.",
+        "unionWithSemantics": "When `unionWith` is set on the request body, the root `FROM` is a UNION ALL of the canonical `entity` and listed peers (same columns). Joins are resolved from `entity` only; use paths valid for that entity (e.g. users, items). Field `loans.union_source` refers to the branch label.",
     })
 }

@@ -3,6 +3,8 @@
 use crate::error::AppError;
 use crate::models::stats_builder::StatsBuilderBody;
 
+use super::schema;
+
 const MAX_JOIN_PATHS: usize = 32;
 const MAX_FILTERS: usize = 64;
 const MAX_FILTER_GROUPS: usize = 16;
@@ -12,10 +14,18 @@ const MAX_SELECT: usize = 64;
 const MAX_AGGREGATIONS: usize = 32;
 const MAX_GROUP_BY: usize = 32;
 const MAX_ORDER_BY: usize = 16;
+const MAX_UNION_WITH_PEERS: usize = 4;
 
 pub fn validate(query: &StatsBuilderBody) -> Result<(), AppError> {
     if query.entity.is_empty() {
         return Err(AppError::Validation("entity is required".into()));
+    }
+    schema::validate_union_field_usage(query)?;
+    if query.union_with.len() > MAX_UNION_WITH_PEERS {
+        return Err(AppError::Validation(format!(
+            "Too many unionWith peers (max {})",
+            MAX_UNION_WITH_PEERS
+        )));
     }
     if query.joins.len() > MAX_JOIN_PATHS {
         return Err(AppError::Validation(format!(

@@ -15,6 +15,7 @@ pub struct BuiltQuery {
 }
 
 pub fn build_sql(query: &StatsBuilderBody) -> Result<BuiltQuery, AppError> {
+    super::schema::validate_union_field_usage(query)?;
     let entity = root_entity_def(query)?;
 
     let alias_map = resolve_joins(&query.entity, &query.joins)?;
@@ -92,7 +93,11 @@ pub fn build_sql(query: &StatsBuilderBody) -> Result<BuiltQuery, AppError> {
     }
 
     let select_clause = select_parts.join(", ");
-    let from_clause = format!(r#"{} AS "{}""#, entity.table, query.entity);
+    let from_clause = if query.union_with.is_empty() {
+        format!(r#"{} AS "{}""#, entity.table, query.entity)
+    } else {
+        build_union_from_clause(&query.entity, &query.union_with)?
+    };
     let join_clause = emit_join_sql(&alias_map);
 
     let where_clause = build_where_clause(query, &alias_map, &mut binds, &mut bind_idx)?;
@@ -199,6 +204,29 @@ fn root_entity_def(query: &StatsBuilderBody) -> Result<&'static super::schema::E
     super::schema::SCHEMA
         .get(query.entity.as_str())
         .ok_or_else(|| AppError::BadRequest(format!("Unknown entity: {}", query.entity)))
+}
+
+/// `UNION ALL` of `entity` then each `union_with` peer with aligned columns + `__union_source`.
+fn build_union_from_clause(entity: &str, union_with: &[String]) -> Result<String, AppError> {
+    let mut branches: Vec<String> = Vec::with_capacity(1 + union_with.len());
+    branches.push(entity.to_string());
+    branches.extend(union_with.iter().cloned());
+    let mut parts: Vec<String> = Vec::with_capacity(branches.len());
+    for name in &branches {
+        let def = super::schema::SCHEMA.get(name.as_str()).ok_or_else(|| {
+            AppError::BadRequest(format!("Unknown union branch entity: {}", name))
+        })?;
+        let lit = name.replace('\'', "''");
+        parts.push(format!(
+            r#"SELECT '{}'::text AS __union_source, id, user_id, item_id, date, expiry_at, returned_at, nb_renews FROM {}"#,
+            lit, def.table
+        ));
+    }
+    Ok(format!(
+        r#"({}) AS "{}""#,
+        parts.join(" UNION ALL "),
+        entity
+    ))
 }
 
 fn granularity_to_pg(g: &TimeGranularity) -> &'static str {
@@ -361,5 +389,92 @@ fn build_condition_sql(
             *bind_idx += 1;
             Ok(c)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_sql;
+    use crate::models::stats_builder::{
+        AggregateFunction, SelectField, StatsAggregation, StatsBuilderBody, TimeBucket,
+        TimeGranularity,
+    };
+    use crate::services::stats::validator::validate;
+
+    fn minimal_union_body() -> StatsBuilderBody {
+        StatsBuilderBody {
+            entity: "loans".to_string(),
+            union_with: vec!["loans_archives".to_string()],
+            joins: vec![],
+            select: vec![],
+            filters: vec![],
+            filter_groups: vec![],
+            aggregations: vec![StatsAggregation {
+                function: AggregateFunction::Count,
+                field: "loans.id".to_string(),
+                alias: "n".to_string(),
+            }],
+            group_by: vec![],
+            having: vec![],
+            time_bucket: None,
+            order_by: vec![],
+            limit: None,
+            offset: None,
+        }
+    }
+
+    #[test]
+    fn union_loans_archives_from_clause_contains_union_all() {
+        let q = minimal_union_body();
+        let built = build_sql(&q).expect("build_sql");
+        assert!(
+            built.data_sql.contains("UNION ALL"),
+            "data_sql={}",
+            built.data_sql
+        );
+        assert!(built.data_sql.contains(r#"AS "loans""#));
+        assert!(built.data_sql.contains("loans_archives"));
+        assert!(built.data_sql.contains("__union_source"));
+    }
+
+    #[test]
+    fn union_with_time_bucket_year() {
+        let mut q = minimal_union_body();
+        q.aggregations.clear();
+        q.time_bucket = Some(TimeBucket {
+            field: "loans.date".to_string(),
+            granularity: TimeGranularity::Year,
+            alias: Some("y".to_string()),
+        });
+        let built = build_sql(&q).expect("build_sql");
+        assert!(built.data_sql.contains("DATE_TRUNC"));
+        assert!(built.data_sql.contains("UNION ALL"));
+    }
+
+    #[test]
+    fn union_source_without_union_with_is_rejected() {
+        let q = StatsBuilderBody {
+            entity: "loans".to_string(),
+            union_with: vec![],
+            joins: vec![],
+            select: vec![SelectField {
+                field: "loans.union_source".to_string(),
+                alias: Some("src".to_string()),
+            }],
+            filters: vec![],
+            filter_groups: vec![],
+            aggregations: vec![StatsAggregation {
+                function: AggregateFunction::Count,
+                field: "loans.id".to_string(),
+                alias: "n".to_string(),
+            }],
+            group_by: vec![],
+            having: vec![],
+            time_bucket: None,
+            order_by: vec![],
+            limit: None,
+            offset: None,
+        };
+        assert!(validate(&q).is_err());
     }
 }
