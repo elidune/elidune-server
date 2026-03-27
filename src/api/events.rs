@@ -54,10 +54,8 @@ pub struct EventsListResponse {
 )]
 pub async fn list_events(
     State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
     Query(query): Query<EventQuery>,
 ) -> AppResult<Json<EventsListResponse>> {
-    claims.require_read_settings()?;
     let (events, total) = state.services.events.list(&query).await?;
     Ok(Json(EventsListResponse { events, total }))
 }
@@ -79,10 +77,8 @@ pub async fn list_events(
 )]
 pub async fn get_event(
     State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Event>> {
-    claims.require_read_settings()?;
     let event = state.services.events.get_by_id(id).await?;
     Ok(Json(event))
 }

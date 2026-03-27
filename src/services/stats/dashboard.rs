@@ -682,7 +682,7 @@ impl StatsService {
         // Users by sex
         let users_by_sex: Vec<StatEntry> = sqlx::query(
             r#"
-            SELECT CASE sex WHEN 70 THEN 'female' WHEN 77 THEN 'male' ELSE 'unknown' END as label,
+            SELECT CASE sex WHEN 'f' THEN 'female' WHEN 'm' THEN 'male' ELSE 'unknown' END as label,
                    COUNT(*) as value
             FROM users
             WHERE (status IS NULL OR status <> 'deleted')
@@ -733,7 +733,7 @@ impl StatsService {
         // New users by sex
         let new_users_by_sex: Vec<StatEntry> = sqlx::query(
             r#"
-            SELECT CASE sex WHEN 70 THEN 'female' WHEN 77 THEN 'male' ELSE 'unknown' END as label,
+            SELECT CASE sex WHEN 'f' THEN 'female' WHEN 'm' THEN 'male' ELSE 'unknown' END as label,
                    COUNT(*) as value
             FROM users
             WHERE (status IS NULL OR status <> 'deleted')

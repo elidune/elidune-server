@@ -4,7 +4,7 @@ use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 
 use std::collections::HashSet;
@@ -13,9 +13,12 @@ use totp_lite::totp_custom;
 use crate::{
     config::UsersConfig,
     error::{AppError, AppResult},
-    models::user::{
-        AccountTypeSlug, UpdateProfile, User, UserClaims, UserPayload, UserQuery, UserShort, UserStatus,
-        SCOPE_CHANGE_PASSWORD,
+    models::{
+        user::{
+            AccountTypeSlug, UpdateProfile, User, UserClaims, UserPayload, UserQuery, UserShort,
+            UserStatus, SCOPE_CHANGE_PASSWORD,
+        },
+        Sex,
     },
     repository::Repository,
 };
@@ -339,6 +342,8 @@ impl UsersService {
     /// Create a new user
     #[tracing::instrument(skip(self), err)]
     pub async fn create_user(&self, mut user: UserPayload) -> AppResult<User> {
+        user.validate_required_patron_fields()?;
+
         let login = user
             .login
             .take()
@@ -372,6 +377,8 @@ impl UsersService {
     /// Update an existing user
     #[tracing::instrument(skip(self), err)]
     pub async fn update_user(&self, id: i64, user: UserPayload) -> AppResult<User> {
+        user.validate_required_patron_fields()?;
+
         // Check if user exists
         self.repository.users_get_by_id(id).await?;
 
@@ -538,10 +545,28 @@ impl UsersService {
         let password = Self::generate_random_password(16);
         let hash = self.hash_password(&password)?;
 
-        let payload = crate::models::user::UserPayload {
+        let default_public_type: i64 = sqlx::query_scalar(
+            "SELECT id FROM public_types ORDER BY id LIMIT 1",
+        )
+        .fetch_optional(self.repository.pool())
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal(
+                "No public_type row found; run database initialization/migrations first".into(),
+            )
+        })?;
+
+        let payload = UserPayload {
             login: Some(login.clone()),
-            account_type: Some(crate::models::user::AccountTypeSlug::Admin),
+            account_type: Some(AccountTypeSlug::Admin),
             firstname: Some("Administrator".to_string()),
+            lastname: Some("Admin".to_string()),
+            sex: Some(Sex::M),
+            birthdate: Some(
+                NaiveDate::from_ymd_opt(1970, 1, 1).expect("1970-01-01 is a valid date"),
+            ),
+            public_type: Some(default_public_type),
+            addr_city: Some("System".to_string()),
             ..Default::default()
         };
 

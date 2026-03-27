@@ -16,6 +16,14 @@ use crate::{
 
 use super::{tasks::TaskAcceptedResponse, AdminUser, ClientIp};
 
+// ─── Router ───────────────────────────────────────────────────────────────────
+
+pub fn router() -> axum::Router<AppState> {
+    use axum::routing::post;
+    axum::Router::new().route("/maintenance", post(run_maintenance))
+}
+
+
 // ─── Request / Response types ─────────────────────────────────────────────────
 
 /// Maintenance action identifier.
@@ -36,6 +44,8 @@ pub enum MaintenanceAction {
     CleanupDanglingBiblioSeries,
     /// Remove `biblio_collections` rows that reference a non-existent collection.
     CleanupDanglingBiblioCollections,
+    /// Cleanup users
+    CleanupUsers,
 }
 
 impl MaintenanceAction {
@@ -48,6 +58,7 @@ impl MaintenanceAction {
             Self::MergeDuplicateCollections => "mergeDuplicateCollections",
             Self::CleanupDanglingBiblioSeries => "cleanupDanglingBiblioSeries",
             Self::CleanupDanglingBiblioCollections => "cleanupDanglingBiblioCollections",
+            Self::CleanupUsers => "cleanupUsers",
         }
     }
 }
@@ -205,23 +216,12 @@ async fn dispatch_action(
     match action {
         MaintenanceAction::CleanupSeries => repo.maintenance_cleanup_series().await,
         MaintenanceAction::CleanupCollections => repo.maintenance_cleanup_collections().await,
-        MaintenanceAction::CleanupOrphanAuthors => repo.maintenance_cleanup_orphan_authors().await,
+        MaintenanceAction::CleanupOrphanAuthors => repo.maintenance_cleanup_authors().await,
         MaintenanceAction::MergeDuplicateSeries => repo.maintenance_merge_duplicate_series().await,
-        MaintenanceAction::MergeDuplicateCollections => {
-            repo.maintenance_merge_duplicate_collections().await
-        }
-        MaintenanceAction::CleanupDanglingBiblioSeries => {
-            repo.maintenance_cleanup_dangling_biblio_series().await
-        }
-        MaintenanceAction::CleanupDanglingBiblioCollections => {
-            repo.maintenance_cleanup_dangling_biblio_collections().await
-        }
+        MaintenanceAction::MergeDuplicateCollections => repo.maintenance_merge_duplicate_collections().await,
+        MaintenanceAction::CleanupDanglingBiblioSeries => repo.maintenance_cleanup_dangling_biblio_series().await,
+        MaintenanceAction::CleanupDanglingBiblioCollections => repo.maintenance_cleanup_dangling_biblio_collections().await,
+        MaintenanceAction::CleanupUsers => repo.maintenance_cleanup_users().await,
     }
 }
 
-// ─── Router ───────────────────────────────────────────────────────────────────
-
-pub fn router() -> axum::Router<AppState> {
-    use axum::routing::post;
-    axum::Router::new().route("/maintenance", post(run_maintenance))
-}

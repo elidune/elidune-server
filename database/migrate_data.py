@@ -49,7 +49,7 @@ Requirements:
 import argparse
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import psycopg2
@@ -399,6 +399,40 @@ def migrate_fees(src, dst):
     print(f"  {count} fees migrated")
 
 
+def normalize_birthdate(val):
+    """Map legacy birthdate to datetime.date or None (aligned with migration 009 rules)."""
+    if val is None:
+        return None
+    if isinstance(val, date) and not isinstance(val, datetime):
+        return val
+    if isinstance(val, datetime):
+        return val.date()
+    s = str(val).strip()
+    if not s:
+        return None
+    if len(s) == 10 and s[4] == "-" and s[7] == "-":
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").date()
+        except ValueError:
+            return None
+    if s.isdigit():
+        if len(s) == 8:
+            try:
+                return datetime.strptime(s, "%Y%m%d").date()
+            except ValueError:
+                return None
+        if len(s) == 6:
+            yy = int(s[0:2])
+            mm = int(s[2:4])
+            dd = int(s[4:6])
+            year = 2000 + yy if yy <= 30 else 1900 + yy
+            try:
+                return date(year, mm, dd)
+            except ValueError:
+                return None
+    return None
+
+
 def migrate_users(src, dst, hash_passwords=True):
     """Migrate users with password hashing and schema transformations.
 
@@ -409,7 +443,7 @@ def migrate_users(src, dst, hash_passwords=True):
         subscription_type_id (dropped), fee_id -> fee (slug),
         last_payement_date (dropped), group_id, barcode, notes,
         occupation (dropped), crea_date/modif_date/issue_date (int) -> timestamptz,
-        profession (dropped), birthdate, archived_date (int) -> timestamptz,
+        profession (dropped), birthdate -> DATE (normalized), archived_date (int) -> timestamptz,
         public_type (int 97/106/117) -> FK to public_types
 
     Target adds: status, language, 2FA fields (defaults), must_change_password
@@ -491,6 +525,8 @@ def migrate_users(src, dst, hash_passwords=True):
 
         status = "deleted" if archived_dt else "active"
 
+        birthdate_db = normalize_birthdate(birthdate)
+
         # Map legacy integer public_type to FK id in target
         pt_id = None
         if public_type_raw is not None:
@@ -522,7 +558,7 @@ def migrate_users(src, dst, hash_passwords=True):
             uid, login, password, firstname, lastname, email,
             addr_street, addr_zip_code, addr_city, phone,
             account_type, fee, group_id, barcode, notes,
-            pt_id, status, birthdate,
+            pt_id, status, birthdate_db,
             crea_dt, modif_dt, issue_dt, archived_dt,
             sex_id_raw,
         ))

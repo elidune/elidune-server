@@ -142,42 +142,72 @@ impl From<Genre> for i16 {
 }
 
 // ---------------------------------------------------------------------------
-// Sex
+// Sex (stored as 'm' / 'f' / NULL in PostgreSQL)
 // ---------------------------------------------------------------------------
 
-/// Sex / gender codes
+/// Biological / legal sex for patron records (API: `"m"` | `"f"`; omit or null = unknown).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[repr(i16)]
+#[serde(rename_all = "lowercase")]
 pub enum Sex {
-    Female = 70,
-    Male = 77,
-    Unknown = 85,
+    M,
+    F,
 }
 
-impl From<i16> for Sex {
-    fn from(v: i16) -> Self {
-        match v {
-            70 => Sex::Female,
-            77 => Sex::Male,
-            _ => Sex::Unknown,
+impl Sex {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Sex::M => "m",
+            Sex::F => "f",
         }
-    }
-}
-
-impl From<Sex> for i16 {
-    fn from(s: Sex) -> Self {
-        s as i16
     }
 }
 
 impl std::fmt::Display for Sex {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
-            Sex::Male => "Male",
-            Sex::Female => "Female",
-            Sex::Unknown => "Unknown",
-        };
-        write!(f, "{}", label)
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for Sex {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "m" | "male" => Ok(Sex::M),
+            "f" | "female" => Ok(Sex::F),
+            _ => Err(format!("Invalid sex: {}", s)),
+        }
+    }
+}
+
+impl sqlx::Type<sqlx::Postgres> for Sex {
+    fn type_info() -> sqlx::postgres::PgTypeInfo {
+        <String as sqlx::Type<sqlx::Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        <String as sqlx::Type<sqlx::Postgres>>::compatible(ty)
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Postgres> for Sex {
+    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        let s: String = sqlx::Decode::<sqlx::Postgres>::decode(value)?;
+        let t = s.trim();
+        match t {
+            "m" | "M" => Ok(Sex::M),
+            "f" | "F" => Ok(Sex::F),
+            _ => Err(format!("Invalid sex value in database: {:?}", s).into()),
+        }
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Postgres> for Sex {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> sqlx::encode::IsNull {
+        <&str as sqlx::Encode<sqlx::Postgres>>::encode(self.as_str(), buf)
     }
 }
 

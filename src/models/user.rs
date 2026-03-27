@@ -1,6 +1,6 @@
 //! User model and related types
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use sqlx::{Decode, Encode, FromRow, Postgres, Type};
@@ -8,7 +8,7 @@ use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
 use crate::error::AppError;
-use super::Language;
+use super::{Language, Sex};
 
 /// User rights levels (matching original C implementation)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,7 +271,7 @@ pub struct UserRow {
     addr_zip_code: Option<i32>,
     addr_city: Option<String>,
     phone: Option<String>,
-    birthdate: Option<String>,
+    birthdate: Option<NaiveDate>,
     created_at: Option<DateTime<Utc>>,
     update_at: Option<DateTime<Utc>>,
     expiry_at: Option<DateTime<Utc>>,
@@ -282,7 +282,7 @@ pub struct UserRow {
     status: Option<UserStatus>,
     archived_at: Option<DateTime<Utc>>,
     language: Option<Language>,
-    sex: Option<i16>,
+    sex: Option<Sex>,
     staff_type: Option<i16>,
     hours_per_week: Option<f32>,
     staff_start_date: Option<chrono::NaiveDate>,
@@ -361,7 +361,8 @@ pub struct User {
     pub addr_zip_code: Option<i32>,
     pub addr_city: Option<String>,
     pub phone: Option<String>,
-    pub birthdate: Option<String>,
+    /// ISO calendar date (`YYYY-MM-DD` in JSON).
+    pub birthdate: Option<NaiveDate>,
     pub created_at: Option<DateTime<Utc>>,
     pub update_at: Option<DateTime<Utc>>,
     /// Membership / subscription expiry (UTC); borrowing may be denied after this date.
@@ -376,8 +377,8 @@ pub struct User {
     pub archived_at: Option<DateTime<Utc>>,
     /// User preferred language
     pub language: Option<Language>,
-    /// Sex (70=Female, 77=Male, 85=Unknown)
-    pub sex: Option<i16>,
+    /// Sex: `"m"` or `"f"` in JSON; null = unknown / not set.
+    pub sex: Option<Sex>,
     /// Staff type (NULL=not staff, 0=employee, 1=volunteer)
     pub staff_type: Option<i16>,
     /// Contractual hours per week (for ETPT calculation)
@@ -474,13 +475,14 @@ pub struct UserQuery {
     pub per_page: Option<i64>,
 }
 
-/// User create/update body. `login` is required when creating; omit fields for partial update.
+/// User create/update body. On create and on admin update (`PUT /users/:id`), the following
+/// fields are required: `login`, `firstname`, `lastname`, `sex`, `birthdate`, `publicType`, `addrCity`.
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UserPayload {
     pub barcode: Option<String>,
-    /// Login (username); required on create, optional on update
+    /// Login (username); required on create and on admin update
     pub login: Option<String>,
     #[validate(length(min = 4, message = "Password must be at least 4 characters"))]
     pub password: Option<String>,
@@ -492,7 +494,8 @@ pub struct UserPayload {
     pub addr_zip_code: Option<i32>,
     pub addr_city: Option<String>,
     pub phone: Option<String>,
-    pub birthdate: Option<String>,
+    /// ISO calendar date (`YYYY-MM-DD` in JSON).
+    pub birthdate: Option<NaiveDate>,
     pub account_type: Option<AccountTypeSlug>,
     pub fee: Option<FeeSlug>,
     #[serde_as(as = "Option<DisplayFromStr>")]
@@ -504,8 +507,8 @@ pub struct UserPayload {
     pub group_id: Option<i64>,
     /// User status; for updates only (ignored on create)
     pub status: Option<UserStatus>,
-    /// Sex (70=Female, 77=Male, 85=Unknown)
-    pub sex: Option<i16>,
+    /// Sex: `"m"` or `"f"`; omit for no change on update.
+    pub sex: Option<Sex>,
     /// Staff type (NULL=not staff, 0=employee, 1=volunteer)
     pub staff_type: Option<i16>,
     /// Contractual hours per week
@@ -516,6 +519,61 @@ pub struct UserPayload {
     pub staff_end_date: Option<String>,
     /// Membership / subscription expiry (UTC); borrowing may be denied after this date.
     pub expiry_at: Option<DateTime<Utc>>,
+}
+
+impl UserPayload {
+    /// Validates required patron identity fields for admin create and full user update.
+    pub fn validate_required_patron_fields(&self) -> Result<(), AppError> {
+        let login = self
+            .login
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if login.is_none() {
+            return Err(AppError::Validation("login is required".into()));
+        }
+
+        let firstname = self
+            .firstname
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if firstname.is_none() {
+            return Err(AppError::Validation("firstname is required".into()));
+        }
+
+        let lastname = self
+            .lastname
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if lastname.is_none() {
+            return Err(AppError::Validation("lastname is required".into()));
+        }
+
+        if self.sex.is_none() {
+            return Err(AppError::Validation("sex is required".into()));
+        }
+
+        if self.birthdate.is_none() {
+            return Err(AppError::Validation("birthdate is required".into()));
+        }
+
+        if self.public_type.is_none() {
+            return Err(AppError::Validation("publicType is required".into()));
+        }
+
+        let city = self
+            .addr_city
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        if city.is_none() {
+            return Err(AppError::Validation("addrCity is required".into()));
+        }
+
+        Ok(())
+    }
 }
 
 /// Update own profile request (for authenticated users)
@@ -540,8 +598,8 @@ pub struct UpdateProfile {
     pub addr_city: Option<String>,
     /// Phone number
     pub phone: Option<String>,
-    /// Birth date
-    pub birthdate: Option<String>,
+    /// Birth date (ISO `YYYY-MM-DD`)
+    pub birthdate: Option<NaiveDate>,
     /// Current password (required to change password)
     pub current_password: Option<String>,
     /// New password

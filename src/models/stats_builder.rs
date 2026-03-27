@@ -15,6 +15,10 @@ pub struct StatsBuilderBody {
     pub select: Vec<SelectField>,
     #[serde(default)]
     pub filters: Vec<StatsFilter>,
+    /// OR of AND-groups: each inner vector is filters combined with AND; outer vector is OR.
+    /// Combined with top-level `filters` as: `(AND filters) AND (OR of inner groups)`.
+    #[serde(default)]
+    pub filter_groups: Vec<Vec<StatsFilter>>,
     #[serde(default)]
     pub aggregations: Vec<StatsAggregation>,
     #[serde(default)]

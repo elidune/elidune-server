@@ -1,6 +1,7 @@
 //! Authentication endpoints
 
 use axum::{extract::State, Json};
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use utoipa::ToSchema;
@@ -112,8 +113,8 @@ pub struct UserInfo {
     pub addr_city: Option<String>,
     /// Phone number
     pub phone: Option<String>,
-    /// Birth date
-    pub birthdate: Option<String>,
+    /// Birth date (ISO `YYYY-MM-DD`)
+    pub birthdate: Option<NaiveDate>,
     /// Account type name
     pub account_type: String,
     /// Preferred language

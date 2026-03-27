@@ -5,7 +5,7 @@ use crate::models::stats_builder::{
     AggregateFunction, FilterOperator, SortDirection, StatsBuilderBody, StatsFilter, TimeGranularity,
 };
 
-use super::join_graph::{emit_join_sql, resolve_field, resolve_joins, AliasMap};
+use super::join_graph::{emit_join_sql, resolve_field, resolve_joins, AliasMap, ResolvedField};
 
 /// Built SQL with bind values in order ($1, $2, …).
 pub struct BuiltQuery {
@@ -25,26 +25,64 @@ pub fn build_sql(query: &StatsBuilderBody) -> Result<BuiltQuery, AppError> {
     let mut select_parts: Vec<String> = Vec::new();
 
     for sf in &query.select {
-        let (tbl_alias, col) = resolve_field(&sf.field, &query.entity, &alias_map)?;
+        let resolved = resolve_field(&sf.field, &query.entity, &alias_map)?;
         let alias = sf.alias.as_deref().unwrap_or(&sf.field);
-        select_parts.push(format!(r#""{}"."{}" AS "{}""#, tbl_alias, col, alias));
+        match resolved {
+            ResolvedField::Physical {
+                ref table_alias,
+                ref column,
+            } => {
+                select_parts.push(format!(
+                    r#""{}"."{}" AS "{}""#,
+                    table_alias, column, alias
+                ));
+            }
+            ResolvedField::Computed { ref expression } => {
+                select_parts.push(format!(r#"({}) AS "{}""#, expression, alias));
+            }
+        }
     }
 
     if let Some(ref tb) = query.time_bucket {
-        let (tbl_alias, col) = resolve_field(&tb.field, &query.entity, &alias_map)?;
-        let trunc = granularity_to_pg(&tb.granularity);
-        let default_alias = format!("{}_{}", tb.field.replace('.', "_"), trunc);
-        let alias = tb.alias.as_deref().unwrap_or(&default_alias);
-        select_parts.push(format!(
-            r#"DATE_TRUNC('{}', "{}"."{}") AS "{}""#,
-            trunc, tbl_alias, col, alias
-        ));
+        let resolved = resolve_field(&tb.field, &query.entity, &alias_map)?;
+        match resolved {
+            ResolvedField::Physical {
+                table_alias,
+                column,
+            } => {
+                let trunc = granularity_to_pg(&tb.granularity);
+                let default_alias = format!("{}_{}", tb.field.replace('.', "_"), trunc);
+                let alias = tb.alias.as_deref().unwrap_or(&default_alias);
+                select_parts.push(format!(
+                    r#"DATE_TRUNC('{}', "{}"."{}") AS "{}""#,
+                    trunc, table_alias, column, alias
+                ));
+            }
+            ResolvedField::Computed { .. } => {
+                return Err(AppError::Validation(
+                    "timeBucket cannot use a computed field; use a physical date/timestamptz column"
+                        .into(),
+                ));
+            }
+        }
     }
 
     for agg in &query.aggregations {
-        let (tbl_alias, col) = resolve_field(&agg.field, &query.entity, &alias_map)?;
-        let expr = build_agg_expr(&agg.function, &tbl_alias, &col);
-        select_parts.push(format!(r#"{} AS "{}""#, expr, agg.alias));
+        let resolved = resolve_field(&agg.field, &query.entity, &alias_map)?;
+        match resolved {
+            ResolvedField::Physical {
+                table_alias,
+                column,
+            } => {
+                let expr = build_agg_expr(&agg.function, &table_alias, &column);
+                select_parts.push(format!(r#"{} AS "{}""#, expr, agg.alias));
+            }
+            ResolvedField::Computed { .. } => {
+                return Err(AppError::Validation(
+                    "aggregations cannot use computed fields; use a physical column".into(),
+                ));
+            }
+        }
     }
 
     if select_parts.is_empty() {
@@ -57,18 +95,7 @@ pub fn build_sql(query: &StatsBuilderBody) -> Result<BuiltQuery, AppError> {
     let from_clause = format!(r#"{} AS "{}""#, entity.table, query.entity);
     let join_clause = emit_join_sql(&alias_map);
 
-    let where_clause = if !query.filters.is_empty() {
-        let conditions = build_filter_conditions(
-            &query.filters,
-            &query.entity,
-            &alias_map,
-            &mut binds,
-            &mut bind_idx,
-        )?;
-        format!(" WHERE {}", conditions.join(" AND "))
-    } else {
-        String::new()
-    };
+    let where_clause = build_where_clause(query, &alias_map, &mut binds, &mut bind_idx)?;
 
     let group_by_clause = build_group_by_clause(query, &alias_map)?;
 
@@ -131,6 +158,43 @@ pub fn build_sql(query: &StatsBuilderBody) -> Result<BuiltQuery, AppError> {
     })
 }
 
+fn build_where_clause(
+    query: &StatsBuilderBody,
+    alias_map: &AliasMap,
+    binds: &mut Vec<serde_json::Value>,
+    bind_idx: &mut usize,
+) -> Result<String, AppError> {
+    let mut parts: Vec<String> = Vec::new();
+    if !query.filters.is_empty() {
+        let conditions = build_filter_conditions(
+            &query.filters,
+            &query.entity,
+            alias_map,
+            binds,
+            bind_idx,
+        )?;
+        parts.push(format!("({})", conditions.join(" AND ")));
+    }
+    if !query.filter_groups.is_empty() {
+        let mut or_groups: Vec<String> = Vec::new();
+        for group in &query.filter_groups {
+            if group.is_empty() {
+                return Err(AppError::Validation(
+                    "filterGroups must not contain empty groups".into(),
+                ));
+            }
+            let inner = build_filter_conditions(group, &query.entity, alias_map, binds, bind_idx)?;
+            or_groups.push(format!("({})", inner.join(" AND ")));
+        }
+        parts.push(format!("({})", or_groups.join(" OR ")));
+    }
+    if parts.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(format!(" WHERE {}", parts.join(" AND ")))
+    }
+}
+
 fn root_entity_def(query: &StatsBuilderBody) -> Result<&'static super::schema::EntityDef, AppError> {
     super::schema::SCHEMA
         .get(query.entity.as_str())
@@ -162,16 +226,28 @@ fn build_group_by_clause(query: &StatsBuilderBody, alias_map: &AliasMap) -> Resu
     let mut gb_parts: Vec<String> = Vec::new();
 
     for gbf in &query.group_by {
-        let (tbl_alias, col) = resolve_field(&gbf.field, &query.entity, alias_map)?;
-        gb_parts.push(format!(r#""{}"."{}""#, tbl_alias, col));
+        let resolved = resolve_field(&gbf.field, &query.entity, alias_map)?;
+        gb_parts.push(resolved.sql_expr());
     }
 
     if let Some(ref tb) = query.time_bucket {
-        let (tbl_alias, col) = resolve_field(&tb.field, &query.entity, alias_map)?;
-        let trunc = granularity_to_pg(&tb.granularity);
-        let expr = format!(r#"DATE_TRUNC('{}', "{}"."{}")"#, trunc, tbl_alias, col);
-        if !gb_parts.contains(&expr) {
-            gb_parts.push(expr);
+        let resolved = resolve_field(&tb.field, &query.entity, alias_map)?;
+        match resolved {
+            ResolvedField::Physical {
+                table_alias,
+                column,
+            } => {
+                let trunc = granularity_to_pg(&tb.granularity);
+                let expr = format!(r#"DATE_TRUNC('{}', "{}"."{}")"#, trunc, table_alias, column);
+                if !gb_parts.contains(&expr) {
+                    gb_parts.push(expr);
+                }
+            }
+            ResolvedField::Computed { .. } => {
+                return Err(AppError::Internal(
+                    "timeBucket computed field should have been rejected earlier".into(),
+                ));
+            }
         }
     }
 
@@ -192,8 +268,8 @@ fn build_filter_conditions(
     filters
         .iter()
         .map(|f| {
-            let (tbl_alias, col) = resolve_field(&f.field, root_entity, alias_map)?;
-            let qualified = format!(r#""{}"."{}""#, tbl_alias, col);
+            let resolved = resolve_field(&f.field, root_entity, alias_map)?;
+            let qualified = resolved.sql_expr();
             build_condition_sql(&qualified, &f.op, &f.value, binds, bind_idx)
         })
         .collect()
@@ -219,8 +295,18 @@ fn build_having_conditions(
                         h.field
                     ))
                 })?;
-            let (tbl_alias, col) = resolve_field(&agg.field, root_entity, alias_map)?;
-            let agg_expr = build_agg_expr(&agg.function, &tbl_alias, &col);
+            let resolved = resolve_field(&agg.field, root_entity, alias_map)?;
+            let agg_expr = match resolved {
+                ResolvedField::Physical {
+                    table_alias,
+                    column,
+                } => build_agg_expr(&agg.function, &table_alias, &column),
+                ResolvedField::Computed { .. } => {
+                    return Err(AppError::Validation(
+                        "HAVING aggregation must reference a physical column".into(),
+                    ));
+                }
+            };
             build_condition_sql(&agg_expr, &h.op, &h.value, binds, bind_idx)
         })
         .collect()

@@ -5,6 +5,9 @@ use crate::models::stats_builder::StatsBuilderBody;
 
 const MAX_JOIN_PATHS: usize = 32;
 const MAX_FILTERS: usize = 64;
+const MAX_FILTER_GROUPS: usize = 16;
+const MAX_FILTERS_PER_OR_GROUP: usize = 32;
+const MAX_TOTAL_FILTER_CLAUSES: usize = 128;
 const MAX_SELECT: usize = 64;
 const MAX_AGGREGATIONS: usize = 32;
 const MAX_GROUP_BY: usize = 32;
@@ -24,6 +27,28 @@ pub fn validate(query: &StatsBuilderBody) -> Result<(), AppError> {
         return Err(AppError::Validation(format!(
             "Too many filters (max {})",
             MAX_FILTERS
+        )));
+    }
+    if query.filter_groups.len() > MAX_FILTER_GROUPS {
+        return Err(AppError::Validation(format!(
+            "Too many filterGroups (max {})",
+            MAX_FILTER_GROUPS
+        )));
+    }
+    let mut total_clauses = query.filters.len();
+    for group in &query.filter_groups {
+        if group.len() > MAX_FILTERS_PER_OR_GROUP {
+            return Err(AppError::Validation(format!(
+                "Too many filters in a filter group (max {})",
+                MAX_FILTERS_PER_OR_GROUP
+            )));
+        }
+        total_clauses = total_clauses.saturating_add(group.len());
+    }
+    if total_clauses > MAX_TOTAL_FILTER_CLAUSES {
+        return Err(AppError::Validation(format!(
+            "Too many filter clauses (filters + filterGroups total max {})",
+            MAX_TOTAL_FILTER_CLAUSES
         )));
     }
     if query.select.len() > MAX_SELECT {

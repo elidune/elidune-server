@@ -6,18 +6,30 @@ use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone)]
+pub enum FieldKind {
+    /// A real column on the entity table (`"{alias}"."column"` in SQL).
+    Physical {
+        column: &'static str,
+    },
+    /// Server-defined SQL; `{alias}` is replaced with the quoted table alias (e.g. `"users"`).
+    Computed {
+        sql_template: &'static str,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldDef {
+    pub kind: FieldKind,
+    pub data_type: &'static str,
+    pub label: &'static str,
+}
+
+#[derive(Debug, Clone)]
 pub struct EntityDef {
     pub table: &'static str,
     pub label: &'static str,
     pub fields: HashMap<&'static str, FieldDef>,
     pub relations: HashMap<&'static str, RelationDef>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FieldDef {
-    pub column: &'static str,
-    pub data_type: &'static str,
-    pub label: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +46,19 @@ fn f(
     label: &'static str,
 ) -> FieldDef {
     FieldDef {
-        column,
+        kind: FieldKind::Physical { column },
+        data_type,
+        label,
+    }
+}
+
+fn c(
+    sql_template: &'static str,
+    data_type: &'static str,
+    label: &'static str,
+) -> FieldDef {
+    FieldDef {
+        kind: FieldKind::Computed { sql_template },
         data_type,
         label,
     }
@@ -89,12 +113,43 @@ pub static SCHEMA: Lazy<HashMap<&'static str, EntityDef>> = Lazy::new(|| {
                 ("firstname", f("firstname", "text", "First name")),
                 ("lastname", f("lastname", "text", "Last name")),
                 ("addr_city", f("addr_city", "text", "City")),
-                ("sex", f("sex", "integer", "Sex")),
-                ("birthdate", f("birthdate", "text", "Birth date")),
+                ("sex", f("sex", "text", "Sex (m/f)")),
+                (
+                    "age_band",
+                    c(
+                        "CASE WHEN {alias}.birthdate IS NULL THEN NULL WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, {alias}.birthdate)) < 18 THEN '0-17' WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, {alias}.birthdate)) < 30 THEN '18-29' WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, {alias}.birthdate)) < 50 THEN '30-49' WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, {alias}.birthdate)) < 65 THEN '50-64' ELSE '65+' END",
+                        "text",
+                        "Age band (from birthdate)",
+                    ),
+                ),
+                (
+                    "sex_label",
+                    c(
+                        "CASE {alias}.sex WHEN 'm' THEN 'male' WHEN 'f' THEN 'female' ELSE 'unknown' END",
+                        "text",
+                        "Sex label",
+                    ),
+                ),
+                (
+                    "age_band_3",
+                    c(
+                        "CASE WHEN {alias}.birthdate IS NULL THEN NULL WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, {alias}.birthdate)) <= 14 THEN '0-14' WHEN EXTRACT(YEAR FROM AGE(CURRENT_DATE, {alias}.birthdate)) <= 64 THEN '15-64' ELSE '65+' END",
+                        "text",
+                        "Age band: 0–14, 15–64, 65+",
+                    ),
+                ),
+                (
+                    "active_membership_calendar_year",
+                    c(
+                        "CASE WHEN {alias}.expiry_at IS NULL OR {alias}.expiry_at >= date_trunc('year', CURRENT_TIMESTAMP) THEN 'yes' ELSE 'no' END",
+                        "text",
+                        "Membership active for current calendar year (no expiry or expiry on/after Jan 1)",
+                    ),
+                ),
+                ("birthdate", f("birthdate", "date", "Birth date")),
                 ("created_at", f("created_at", "timestamptz", "Registration")),
                 ("expiry_at", f("expiry_at", "timestamptz", "Membership expiry")),
                 ("status", f("status", "text", "Status")),
-                
             ]),
             relations: HashMap::from([
                 ("public_types", r("public_types", "public_type", "id", "Audience type")),
@@ -110,11 +165,29 @@ pub static SCHEMA: Lazy<HashMap<&'static str, EntityDef>> = Lazy::new(|| {
             label: "Item copies",
             fields: HashMap::from([
                 ("id", f("id", "bigint", "Item id")),
+                ("biblio_id", f("biblio_id", "bigint", "Biblio id")),
+                ("source_id", f("source_id", "bigint", "Catalog source id")),
                 ("barcode", f("barcode", "text", "Barcode")),
                 ("call_number", f("call_number", "text", "Call number")),
                 ("created_at", f("created_at", "timestamptz", "Created at")),
             ]),
-            relations: HashMap::from([("biblios", r("biblios", "biblio_id", "id", "Biblio"))]),
+            relations: HashMap::from([
+                ("biblios", r("biblios", "biblio_id", "id", "Biblio")),
+                ("sources", r("sources", "source_id", "id", "Catalog source")),
+            ]),
+        },
+    );
+
+    m.insert(
+        "sources",
+        EntityDef {
+            table: "sources",
+            label: "Catalog sources",
+            fields: HashMap::from([
+                ("id", f("id", "bigint", "Source id")),
+                ("name", f("name", "text", "Source name")),
+            ]),
+            relations: HashMap::new(),
         },
     );
 
@@ -224,13 +297,13 @@ pub fn discovery_json() -> Value {
     for (key, def) in SCHEMA.iter() {
         let mut fields = serde_json::Map::new();
         for (fname, fd) in &def.fields {
-            fields.insert(
-                (*fname).to_string(),
-                json!({
-                    "type": fd.data_type,
-                    "label": fd.label,
-                }),
-            );
+            let mut obj = serde_json::Map::new();
+            obj.insert("type".to_string(), json!(fd.data_type));
+            obj.insert("label".to_string(), json!(fd.label));
+            if matches!(fd.kind, FieldKind::Computed { .. }) {
+                obj.insert("computed".to_string(), json!(true));
+            }
+            fields.insert((*fname).to_string(), Value::Object(obj));
         }
         let mut relations = serde_json::Map::new();
         for (rname, rd) in &def.relations {
@@ -260,5 +333,6 @@ pub fn discovery_json() -> Value {
         "aggregationFunctions": ["count", "countDistinct", "sum", "avg", "min", "max"],
         "operators": ["eq", "neq", "gt", "gte", "lt", "lte", "in", "notIn", "isNull", "isNotNull"],
         "timeGranularities": ["day", "week", "month", "quarter", "year"],
+        "filterGroupsSemantics": "Top-level `filters` are AND'd together. If `filterGroups` is non-empty, the WHERE clause is: (AND of `filters`) AND (OR of each inner group, where each inner group is the AND of its filters). Computed fields cannot be used in `aggregations` or `timeBucket`.",
     })
 }

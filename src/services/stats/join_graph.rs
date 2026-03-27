@@ -4,7 +4,32 @@ use indexmap::IndexMap;
 
 use crate::error::AppError;
 
-use super::schema::SCHEMA;
+use super::schema::{FieldKind, FieldDef, SCHEMA};
+
+/// Resolved field: physical column or a computed expression (server whitelist template + `{alias}`).
+#[derive(Debug, Clone)]
+pub enum ResolvedField {
+    Physical {
+        table_alias: String,
+        column: String,
+    },
+    Computed {
+        expression: String,
+    },
+}
+
+impl ResolvedField {
+    /// SQL fragment for filters, GROUP BY, and HAVING (aggregate expressions use physical only).
+    pub fn sql_expr(&self) -> String {
+        match self {
+            ResolvedField::Physical {
+                table_alias,
+                column,
+            } => format!(r#""{}"."{}""#, table_alias, column),
+            ResolvedField::Computed { expression } => expression.clone(),
+        }
+    }
+}
 
 /// Resolved join node with optional ON clause (root has no ON).
 #[derive(Debug, Clone)]
@@ -117,12 +142,17 @@ pub fn emit_join_sql(alias_map: &AliasMap) -> String {
     sql
 }
 
-/// Resolve `entity.field` or `field` (implicit root) to (alias, physical column).
+fn substitute_alias(template: &str, table_alias: &str) -> String {
+    let quoted = format!(r#""{}""#, table_alias);
+    template.replace("{alias}", &quoted)
+}
+
+/// Resolve `entity.field` or `field` (implicit root) to a physical or computed SQL expression.
 pub fn resolve_field(
     field_path: &str,
     root_entity: &str,
     alias_map: &AliasMap,
-) -> Result<(String, String), AppError> {
+) -> Result<ResolvedField, AppError> {
     let parts: Vec<&str> = field_path.splitn(2, '.').collect();
     let (entity_name, field_name) = if parts.len() == 2 {
         (parts[0], parts[1])
@@ -134,31 +164,45 @@ pub fn resolve_field(
         AppError::BadRequest(format!("Unknown entity in field: {}", entity_name))
     })?;
 
-    let field_def = entity_def.fields.get(field_name).ok_or_else(|| {
+    let field_def: &FieldDef = entity_def.fields.get(field_name).ok_or_else(|| {
         AppError::BadRequest(format!(
             "Field not allowed: {}.{}",
             entity_name, field_name
         ))
     })?;
 
-    if let Some(node) = alias_map.get(entity_name) {
-        return Ok((node.alias.clone(), field_def.column.to_string()));
-    }
+    let table_alias = if let Some(node) = alias_map.get(entity_name) {
+        node.alias.clone()
+    } else {
+        let candidates: Vec<&JoinNode> = alias_map
+            .values()
+            .filter(|n| n.entity_name == entity_name)
+            .collect();
 
-    let candidates: Vec<&JoinNode> = alias_map
-        .values()
-        .filter(|n| n.entity_name == entity_name)
-        .collect();
+        match candidates.len() {
+            0 => {
+                return Err(AppError::BadRequest(format!(
+                    "Entity '{}' is not joined; add it to joins",
+                    entity_name
+                )));
+            }
+            1 => candidates[0].alias.clone(),
+            _ => {
+                return Err(AppError::BadRequest(format!(
+                    "Ambiguous entity '{}'; qualify joins so only one path exists",
+                    entity_name
+                )));
+            }
+        }
+    };
 
-    match candidates.len() {
-        0 => Err(AppError::BadRequest(format!(
-            "Entity '{}' is not joined; add it to joins",
-            entity_name
-        ))),
-        1 => Ok((candidates[0].alias.clone(), field_def.column.to_string())),
-        _ => Err(AppError::BadRequest(format!(
-            "Ambiguous entity '{}'; qualify joins so only one path exists",
-            entity_name
-        ))),
+    match &field_def.kind {
+        FieldKind::Physical { column } => Ok(ResolvedField::Physical {
+            table_alias,
+            column: (*column).to_string(),
+        }),
+        FieldKind::Computed { sql_template } => Ok(ResolvedField::Computed {
+            expression: substitute_alias(sql_template, &table_alias),
+        }),
     }
 }

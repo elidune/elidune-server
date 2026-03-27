@@ -69,6 +69,7 @@ Special variants for UI confirmation flows:
 
 - All code and comments in **English**.
 - keep the code as maintanable as possible by human
+- factorize as much as possible
 - `serde(rename_all = "camelCase")` on all public-facing structs/enums.
 - Enums that map to DB strings implement `sqlx::Type`, `sqlx::Encode`, `sqlx::Decode` manually (see `Language` in `src/models/mod.rs` as the canonical example).
 - IDs are `i64` (Snowflake-generated via `snowflaked` crate). Primary/foreign keys are `BIGINT` in the DB.
