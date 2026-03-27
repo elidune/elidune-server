@@ -1,6 +1,6 @@
 [package]
 name = "elidune-server"
-version = "0.0.14"
+version = "0.0.15"
 edition = "2021"
 authors = ["Jean Collonville <jcollonville@b-612.fr>"]
 description = "Elidune - Library Management System Server"
