@@ -151,11 +151,8 @@ async fn main() -> anyhow::Result<()> {
     let dynamic_config = {
         let mut merged = config.clone();
 
-        let db_overrides: Vec<(String, serde_json::Value)> =
-            sqlx::query_as::<_, (String, serde_json::Value)>(
-                "SELECT key, value FROM settings",
-            )
-            .fetch_all(&pool)
+        let db_overrides: Vec<(String, serde_json::Value)> = Repository::new(pool.clone(), None, None)
+            .settings_load_overrides()
             .await
             .unwrap_or_default();
 
@@ -443,7 +440,6 @@ fn create_router(state: AppState) -> Router {
         .merge(api::z3950::router())
         .merge(api::stats::router())
         .merge(api::library_info::router_staff())
-        .merge(api::settings::router())
         .merge(api::admin_config::router())
         .merge(api::audit::router())
         .merge(api::public_types::router())

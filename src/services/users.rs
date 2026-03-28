@@ -545,16 +545,15 @@ impl UsersService {
         let password = Self::generate_random_password(16);
         let hash = self.hash_password(&password)?;
 
-        let default_public_type: i64 = sqlx::query_scalar(
-            "SELECT id FROM public_types ORDER BY id LIMIT 1",
-        )
-        .fetch_optional(self.repository.pool())
-        .await?
-        .ok_or_else(|| {
-            AppError::Internal(
-                "No public_type row found; run database initialization/migrations first".into(),
-            )
-        })?;
+        let default_public_type: i64 = self
+            .repository
+            .public_types_first_id()
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(
+                    "No public_type row found; run database initialization/migrations first".into(),
+                )
+            })?;
 
         let payload = UserPayload {
             login: Some(login.clone()),
@@ -600,24 +599,15 @@ impl UsersService {
     /// Get a user's GDPR history preference
     #[tracing::instrument(skip(self), err)]
     pub async fn get_history_preference(&self, user_id: i64) -> AppResult<bool> {
-        let enabled: Option<bool> = sqlx::query_scalar(
-            "SELECT history_enabled FROM users WHERE id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(self.repository.pool())
-        .await?;
-        Ok(enabled.unwrap_or(true))
+        self.repository.users_get_history_enabled(user_id).await
     }
 
     /// Update a user's GDPR history preference
     #[tracing::instrument(skip(self), err)]
     pub async fn set_history_preference(&self, user_id: i64, enabled: bool) -> AppResult<()> {
-        sqlx::query("UPDATE users SET history_enabled = $1 WHERE id = $2")
-            .bind(enabled)
-            .bind(user_id)
-            .execute(self.repository.pool())
-            .await?;
-        Ok(())
+        self.repository
+            .users_set_history_enabled(user_id, enabled)
+            .await
     }
 }
 

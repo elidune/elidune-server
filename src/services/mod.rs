@@ -16,7 +16,6 @@ pub mod holds;
 pub mod schedules;
 pub mod scheduler;
 pub mod search;
-pub mod settings;
 pub mod sources;
 pub mod stats;
 pub mod task_manager;
@@ -63,7 +62,6 @@ pub struct Services {
     pub holds: holds::HoldsService,
     pub schedules: schedules::SchedulesService,
     pub search: Option<Arc<search::MeilisearchService>>,
-    pub settings: settings::SettingsService,
     pub sources: sources::SourcesService,
     pub stats: stats::StatsService,
     /// Background task registry (MARC imports, maintenance, …).
@@ -78,6 +76,12 @@ pub struct Services {
 impl Services {
     pub fn repository_pool(&self) -> &Pool<Postgres> {
         &self.pool
+    }
+
+    /// [`Repository`] with only the DB pool (no dynamic config / email hooks).
+    /// Use for the `settings` table and other calls that do not need hold-email or dynamic state.
+    pub fn minimal_repository(&self) -> Repository {
+        Repository::new(self.pool.clone(), None, None)
     }
 
     /// Create all services with the given repository and dynamic config
@@ -114,7 +118,7 @@ impl Services {
         };
 
         let marc_service = marc::MarcService::new(catalog.clone(), redis_service.clone());
-        let audit_service = audit::AuditService::new(pool.clone());
+        let audit_service = audit::AuditService::new(repository.clone());
 
         let loans_repo: Arc<dyn LoansServiceRepository> = repo.clone();
         let loans_repo_only: Arc<dyn LoansRepository> = repo.clone();
@@ -149,7 +153,6 @@ impl Services {
             holds: holds::HoldsService::new(repo.clone() as Arc<dyn HoldsRepository>),
             schedules: schedules::SchedulesService::new(repo.clone() as Arc<dyn SchedulesRepository>),
             search: search_service,
-            settings: settings::SettingsService::new(repository.clone()),
             sources: sources::SourcesService::new(repo.clone() as Arc<dyn SourcesRepository>),
             stats: stats::StatsService::new(repository.clone()),
             tasks: task_manager::TaskManager::new(redis_service.clone()),

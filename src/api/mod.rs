@@ -22,7 +22,6 @@ pub mod public_types;
 pub mod holds;
 pub mod schedules;
 pub mod series;
-pub mod settings;
 pub mod sources;
 pub mod sse;
 pub mod stats;

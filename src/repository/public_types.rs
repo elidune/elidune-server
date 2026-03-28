@@ -248,5 +248,13 @@ impl Repository {
 
         Ok(())
     }
+
+    /// Smallest `public_types.id` (seed default for first admin).
+    pub async fn public_types_first_id(&self) -> AppResult<Option<i64>> {
+        sqlx::query_scalar::<_, i64>("SELECT id FROM public_types ORDER BY id LIMIT 1")
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(Into::into)
+    }
 }
 

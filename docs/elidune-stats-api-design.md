@@ -1018,7 +1018,7 @@ fn build_condition_sql(
 
 ---
 
-### Exécution dynamique (services/stats/executor.rs)
+### Exécution dynamique (repository/stats/executor.rs)
 
 Mapping PostgreSQL → JSON robuste via `PgTypeInfo`, avec timeout `tokio::time::timeout`.
 

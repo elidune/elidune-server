@@ -16,9 +16,42 @@ use crate::{
         import_report::ImportReport,
         item::Item,
     },
+    services::audit,
 };
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
+
+fn default_z3950_encoding() -> String {
+    "utf-8".to_string()
+}
+
+/// Z39.50 server configuration (staff-editable).
+#[serde_as]
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Z3950ServerConfig {
+    /// Server ID (`0` to create a new server)
+    #[serde_as(as = "DisplayFromStr")]
+    #[schema(value_type = String)]
+    pub id: i64,
+    pub name: String,
+    pub address: String,
+    pub port: i32,
+    pub database: Option<String>,
+    pub format: Option<String>,
+    pub login: Option<String>,
+    pub password: Option<String>,
+    #[serde(default = "default_z3950_encoding")]
+    pub encoding: String,
+    pub is_active: bool,
+}
+
+/// Partial update of Z39.50 server list.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateZ3950ServersRequest {
+    pub z3950_servers: Option<Vec<Z3950ServerConfig>>,
+}
 
 /// Z39.50 search query parameters
 #[serde_as]
@@ -189,10 +222,75 @@ pub async fn import_record(
     Ok((StatusCode::CREATED, Json(Z3950ImportResponse { biblio, import_report })))
 }
 
+/// List Z39.50 server definitions (staff).
+#[utoipa::path(
+    get,
+    path = "/z3950/servers",
+    tag = "z3950",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Z39.50 servers", body = Vec<Z3950ServerConfig>),
+        (status = 403, description = "Insufficient permissions")
+    )
+)]
+pub async fn get_z3950_servers(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+) -> AppResult<Json<Vec<Z3950ServerConfig>>> {
+    claims.require_read_settings()?;
+    let rows = state.services.z3950.get_servers_for_settings().await?;
+    Ok(Json(rows))
+}
+
+/// Update Z39.50 server definitions (staff).
+#[utoipa::path(
+    put,
+    path = "/z3950/servers",
+    tag = "z3950",
+    security(("bearer_auth" = [])),
+    request_body = UpdateZ3950ServersRequest,
+    responses(
+        (status = 200, description = "Updated servers", body = Vec<Z3950ServerConfig>),
+        (status = 403, description = "Insufficient permissions")
+    )
+)]
+pub async fn update_z3950_servers(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Json(body): Json<UpdateZ3950ServersRequest>,
+) -> AppResult<Json<Vec<Z3950ServerConfig>>> {
+    claims.require_write_settings()?;
+    let Some(servers) = body.z3950_servers else {
+        let rows = state.services.z3950.get_servers_for_settings().await?;
+        return Ok(Json(rows));
+    };
+    let rows = state
+        .services
+        .z3950
+        .update_servers_for_settings(servers)
+        .await?;
+
+    state.services.audit.log(
+        audit::event::SETTINGS_UPDATED,
+        Some(claims.user_id),
+        None,
+        None,
+        ip,
+        Some(serde_json::json!({ "scope": "z3950", "z3950Servers": rows })),
+    );
+
+    Ok(Json(rows))
+}
+
 /// Build the Z39.50 routes for this domain.
 pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{get, post};
+    use axum::routing::{get, post, put};
     axum::Router::new()
         .route("/z3950/search", get(search))
         .route("/z3950/import", post(import_record))
+        .route(
+            "/z3950/servers",
+            get(get_z3950_servers).put(update_z3950_servers),
+        )
 }

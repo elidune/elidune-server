@@ -256,6 +256,7 @@ pub static SCHEMA: Lazy<HashMap<&'static str, EntityDef>> = Lazy::new(|| {
                 ("barcode", f("barcode", "text", "Barcode")),
                 ("call_number", f("call_number", "text", "Call number")),
                 ("created_at", f("created_at", "timestamptz", "Created at")),
+                ("archived_at", f("archived_at", "timestamptz", "Archived at")),
             ]),
             relations: HashMap::from([
                 ("biblios", r("biblios", "biblio_id", "id", "Biblio")),

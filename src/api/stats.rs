@@ -13,7 +13,7 @@ use crate::{
     models::biblio::MediaType,
     models::stats_builder::{SavedStatsQuery, SavedStatsQueryWrite, StatsBuilderBody, StatsTableResponse},
     services::stats::{discovery_json, run_stats_query},
-    services::stats::saved_queries,
+    repository::stats::saved_queries,
 };
 
 use super::{AuthenticatedUser, StaffUser};

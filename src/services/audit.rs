@@ -9,10 +9,10 @@ use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{Pool, Postgres, Row};
+use sqlx::Row;
 use utoipa::ToSchema;
 
-use crate::error::AppResult;
+use crate::{error::AppResult, repository::Repository};
 
 /// Known audit event type constants (use these instead of raw strings)
 pub mod event {
@@ -132,52 +132,16 @@ pub mod event {
     pub const SYSTEM_AUDIT_CLEANUP: &str = "system.audit_cleanup";
 }
 
-/// A single audit log entry returned from queries
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AuditLogEntry {
-    pub id: i64,
-    pub event_type: String,
-    pub user_id: Option<i64>,
-    pub entity_type: Option<String>,
-    pub entity_id: Option<i64>,
-    pub ip_address: Option<String>,
-    pub payload: Option<Value>,
-    pub created_at: DateTime<Utc>,
-}
-
-/// Query parameters for audit log pagination and filtering
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AuditQueryParams {
-    pub event_type: Option<String>,
-    pub entity_type: Option<String>,
-    pub entity_id: Option<i64>,
-    pub user_id: Option<i64>,
-    pub from_date: Option<DateTime<Utc>>,
-    pub to_date: Option<DateTime<Utc>>,
-    pub page: Option<i64>,
-    pub per_page: Option<i64>,
-}
-
-/// Paginated audit log response
-#[derive(Debug, Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AuditLogPage {
-    pub entries: Vec<AuditLogEntry>,
-    pub total: i64,
-    pub page: i64,
-    pub per_page: i64,
-}
+pub use crate::models::audit::{AuditLogEntry, AuditLogPage, AuditQueryParams};
 
 #[derive(Clone)]
 pub struct AuditService {
-    pool: Pool<Postgres>,
+    repository: Repository,
 }
 
 impl AuditService {
-    pub fn new(pool: Pool<Postgres>) -> Self {
-        Self { pool }
+    pub fn new(repository: Repository) -> Self {
+        Self { repository }
     }
 
     /// Fire-and-forget audit log insertion. Never blocks the caller.
@@ -191,7 +155,7 @@ impl AuditService {
         ip_address: Option<String>,
         payload: Option<P>,
     ) {
-        let pool = self.pool.clone();
+        let repository = self.repository.clone();
         let event_type = event_type.to_string();
         let entity_type: Option<String> = entity_type.map(|s| s.to_string());
         let payload: Option<Value> = payload.and_then(|p| match serde_json::to_value(p) {
@@ -207,20 +171,16 @@ impl AuditService {
         });
 
         tokio::spawn(async move {
-            let result = sqlx::query(
-                r#"
-                INSERT INTO audit_log (event_type, user_id, entity_type, entity_id, ip_address, payload)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                "#,
-            )
-            .bind(&event_type)
-            .bind(user_id)
-            .bind(entity_type.as_deref())
-            .bind(entity_id)
-            .bind(ip_address.as_deref())
-            .bind(payload)
-            .execute(&pool)
-            .await;
+            let result = repository
+                .audit_insert(
+                    &event_type,
+                    user_id,
+                    entity_type.as_deref(),
+                    entity_id,
+                    ip_address.as_deref(),
+                    payload,
+                )
+                .await;
 
             if let Err(e) = result {
                 tracing::warn!("Failed to write audit log entry '{}': {}", event_type, e);
@@ -231,94 +191,7 @@ impl AuditService {
     /// Query audit log entries with filters and pagination.
     #[tracing::instrument(skip(self), err)]
     pub async fn query(&self, params: AuditQueryParams) -> AppResult<AuditLogPage> {
-        let page = params.page.unwrap_or(1).max(1);
-        let per_page = params.per_page.unwrap_or(50).clamp(1, 500);
-        let offset = (page - 1) * per_page;
-
-        let mut conditions: Vec<String> = Vec::new();
-        let mut bind_idx = 1usize;
-
-        if params.event_type.is_some() {
-            conditions.push(format!("event_type = ${}", bind_idx));
-            bind_idx += 1;
-        }
-        if params.entity_type.is_some() {
-            conditions.push(format!("entity_type = ${}", bind_idx));
-            bind_idx += 1;
-        }
-        if params.entity_id.is_some() {
-            conditions.push(format!("entity_id = ${}", bind_idx));
-            bind_idx += 1;
-        }
-        if params.user_id.is_some() {
-            conditions.push(format!("user_id = ${}", bind_idx));
-            bind_idx += 1;
-        }
-        if params.from_date.is_some() {
-            conditions.push(format!("created_at >= ${}", bind_idx));
-            bind_idx += 1;
-        }
-        if params.to_date.is_some() {
-            conditions.push(format!("created_at <= ${}", bind_idx));
-            bind_idx += 1;
-        }
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-
-        let count_sql = format!("SELECT COUNT(*) FROM audit_log {}", where_clause);
-        let data_sql = format!(
-            "SELECT id, event_type, user_id, entity_type, entity_id, ip_address, payload, created_at \
-             FROM audit_log {} ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
-            where_clause, bind_idx, bind_idx + 1,
-        );
-
-        // Bind count query
-        let mut cq = sqlx::query_scalar::<sqlx::Postgres, i64>(&count_sql);
-        if let Some(ref v) = params.event_type { cq = cq.bind(v.clone()); }
-        if let Some(ref v) = params.entity_type { cq = cq.bind(v.clone()); }
-        if let Some(v) = params.entity_id { cq = cq.bind(v); }
-        if let Some(v) = params.user_id { cq = cq.bind(v); }
-        if let Some(v) = params.from_date { cq = cq.bind(v); }
-        if let Some(v) = params.to_date { cq = cq.bind(v); }
-
-        let total: i64 = cq.fetch_one(&self.pool).await?;
-
-        // Bind data query
-        let mut dq = sqlx::query(&data_sql);
-        if let Some(ref v) = params.event_type { dq = dq.bind(v.clone()); }
-        if let Some(ref v) = params.entity_type { dq = dq.bind(v.clone()); }
-        if let Some(v) = params.entity_id { dq = dq.bind(v); }
-        if let Some(v) = params.user_id { dq = dq.bind(v); }
-        if let Some(v) = params.from_date { dq = dq.bind(v); }
-        if let Some(v) = params.to_date { dq = dq.bind(v); }
-        dq = dq.bind(per_page).bind(offset);
-
-        let rows = dq.fetch_all(&self.pool).await?;
-
-        let entries = rows
-            .into_iter()
-            .map(|row| AuditLogEntry {
-                id: row.get("id"),
-                event_type: row.get("event_type"),
-                user_id: row.get("user_id"),
-                entity_type: row.get("entity_type"),
-                entity_id: row.get("entity_id"),
-                ip_address: row.get("ip_address"),
-                payload: row.get("payload"),
-                created_at: row.get("created_at"),
-            })
-            .collect();
-
-        Ok(AuditLogPage {
-            entries,
-            total,
-            page,
-            per_page,
-        })
+        self.repository.audit_query_page(params).await
     }
 
     /// Export audit log entries for a date range (unbounded, for CSV/JSON export).
@@ -329,62 +202,16 @@ impl AuditService {
         to_date: Option<DateTime<Utc>>,
         event_type: Option<&str>,
     ) -> AppResult<Vec<AuditLogEntry>> {
-        let mut conditions = Vec::new();
-        if from_date.is_some() { conditions.push("created_at >= $1"); }
-        if to_date.is_some() {
-            conditions.push(if from_date.is_some() { "created_at <= $2" } else { "created_at <= $1" });
-        }
-        if event_type.is_some() {
-            let idx = from_date.is_some() as usize + to_date.is_some() as usize + 1;
-            conditions.push(Box::leak(format!("event_type = ${}", idx).into_boxed_str()));
-        }
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", conditions.join(" AND "))
-        };
-
-        let sql = format!(
-            "SELECT id, event_type, user_id, entity_type, entity_id, ip_address, payload, created_at \
-             FROM audit_log {} ORDER BY created_at DESC LIMIT 50000",
-            where_clause
-        );
-
-        let mut q = sqlx::query(&sql);
-        if let Some(v) = from_date { q = q.bind(v); }
-        if let Some(v) = to_date { q = q.bind(v); }
-        if let Some(v) = event_type { q = q.bind(v); }
-
-        let rows = q.fetch_all(&self.pool).await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|row| AuditLogEntry {
-                id: row.get("id"),
-                event_type: row.get("event_type"),
-                user_id: row.get("user_id"),
-                entity_type: row.get("entity_type"),
-                entity_id: row.get("entity_id"),
-                ip_address: row.get("ip_address"),
-                payload: row.get("payload"),
-                created_at: row.get("created_at"),
-            })
-            .collect())
+        self.repository
+            .audit_export(from_date, to_date, event_type)
+            .await
     }
 
     /// Delete audit log entries older than `retention_days` days.
     /// Returns the number of deleted rows.
     #[tracing::instrument(skip(self), err)]
     pub async fn cleanup(&self, retention_days: u32) -> AppResult<u64> {
-        let deleted = sqlx::query_scalar::<_, i64>(
-            "WITH deleted AS (DELETE FROM audit_log WHERE created_at < NOW() - ($1 || ' days')::INTERVAL RETURNING id) SELECT COUNT(*) FROM deleted"
-        )
-        .bind(retention_days as i64)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(deleted as u64)
+        self.repository.audit_cleanup(retention_days).await
     }
 }
 

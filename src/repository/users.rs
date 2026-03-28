@@ -21,6 +21,15 @@ pub struct UserEmailTarget {
     pub language: Option<String>,
 }
 
+/// Patron fields for hold-ready notification email.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct HoldReadyUserContact {
+    pub email: Option<String>,
+    pub firstname: Option<String>,
+    pub lastname: Option<String>,
+    pub language: Option<String>,
+}
+
 // Note: not `mockall::automock` — several methods use `Option<&str>` which mockall cannot derive for.
 #[async_trait]
 pub trait UsersRepository: Send + Sync {
@@ -816,5 +825,37 @@ impl Repository {
             .await?
         };
         Ok(rows)
+    }
+
+    pub async fn users_hold_ready_contact(
+        &self,
+        user_id: i64,
+    ) -> AppResult<Option<HoldReadyUserContact>> {
+        sqlx::query_as::<_, HoldReadyUserContact>(
+            r#"SELECT email, firstname, lastname, language FROM users WHERE id = $1"#,
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
+    pub async fn users_get_history_enabled(&self, user_id: i64) -> AppResult<bool> {
+        let enabled: Option<bool> = sqlx::query_scalar(
+            "SELECT history_enabled FROM users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(enabled.unwrap_or(true))
+    }
+
+    pub async fn users_set_history_enabled(&self, user_id: i64, enabled: bool) -> AppResult<()> {
+        sqlx::query("UPDATE users SET history_enabled = $1 WHERE id = $2")
+            .bind(enabled)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }

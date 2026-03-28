@@ -2,36 +2,28 @@
 
 use std::path::Path;
 
-use sqlx::{PgPool, Row};
-
 use crate::{
     email::EmailService,
     email_templates,
     error::AppResult,
     models::{hold::Hold, loan::LoanDetails, Language},
+    repository::users::HoldReadyUserContact,
 };
 
 /// Send "hold ready" email to the patron. No-op if user has no email.
 #[tracing::instrument(skip_all, fields(hold_id = hold.id, user_id = hold.user_id))]
 pub async fn send_hold_ready(
     email_svc: &EmailService,
-    pool: &PgPool,
+    contact: Option<HoldReadyUserContact>,
     hold: &Hold,
     loan_details: &LoanDetails,
 ) -> AppResult<()> {
-    let row = sqlx::query(
-        r#"SELECT email, firstname, lastname, language FROM users WHERE id = $1"#,
-    )
-    .bind(hold.user_id)
-    .fetch_optional(pool)
-    .await?;
-
-    let Some(row) = row else {
+    let Some(row) = contact else {
         tracing::warn!(user_id = hold.user_id, "User not found for hold ready email");
         return Ok(());
     };
 
-    let addr: Option<String> = row.try_get("email").ok();
+    let addr: Option<String> = row.email.clone();
     let to = match addr.as_deref().map(str::trim) {
         Some(e) if !e.is_empty() => e,
         _ => {
@@ -40,19 +32,9 @@ pub async fn send_hold_ready(
         }
     };
 
-    let firstname: String = row
-        .try_get::<Option<String>, _>("firstname")
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let lastname: String = row
-        .try_get::<Option<String>, _>("lastname")
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let lang_str: Option<String> = row.try_get("language").ok();
-
-    let lang = lang_str.as_deref().map(Language::from);
+    let firstname: String = row.firstname.clone().unwrap_or_default();
+    let lastname: String = row.lastname.clone().unwrap_or_default();
+    let lang = row.language.as_deref().map(Language::from);
 
     let title = loan_details
         .biblio

@@ -11,7 +11,8 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     error::AppResult,
-    services::audit::{AuditLogPage, AuditQueryParams},
+    models::audit::{AuditLogPage, AuditQueryParams},
+    services::audit,
     AppState,
 };
 

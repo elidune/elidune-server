@@ -5,8 +5,10 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 
 use crate::{
+    api::loans::{LoanSettings as LoanSettingsApi, UpdateLoanSettingsRequest},
     error::{AppError, AppResult},
     models::{
+        biblio::MediaType,
         loan::{CreateLoan, LoanDetails},
         user::UserStatus,
     },
@@ -134,6 +136,40 @@ impl LoansService {
     pub async fn count_active_for_biblio(&self, biblio_id: i64) -> AppResult<i64> {
         self.repository.loans_count_active_for_biblio(biblio_id).await
     }
+
+    /// Global loan rules per media type (`loans_settings` table).
+    pub async fn get_global_loan_settings(&self) -> AppResult<Vec<LoanSettingsApi>> {
+        let rows = self.repository.loans_get_settings().await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| LoanSettingsApi {
+                media_type: row.media_type.unwrap_or(MediaType::PrintedText),
+                max_loans: row.nb_max.unwrap_or(5),
+                max_renewals: row.nb_renews.unwrap_or(2),
+                duration_days: row.duration.unwrap_or(21),
+            })
+            .collect())
+    }
+
+    /// Update global loan rules per media type.
+    pub async fn update_global_loan_settings(
+        &self,
+        request: UpdateLoanSettingsRequest,
+    ) -> AppResult<Vec<LoanSettingsApi>> {
+        if let Some(loan_settings) = request.loan_settings {
+            for setting in loan_settings {
+                self.repository
+                    .loans_settings_upsert_row(
+                        setting.media_type.as_db_str(),
+                        setting.max_loans,
+                        setting.max_renewals,
+                        setting.duration_days,
+                    )
+                    .await?;
+            }
+        }
+        self.get_global_loan_settings().await
+    }
 }
 
 // =============================================================================
@@ -240,6 +276,15 @@ mod tests {
         async fn loans_get_overdue_for_reminders(&self, _: u32) -> AppResult<Vec<crate::repository::loans::OverdueLoanRow>> { Ok(vec![]) }
         async fn loans_get_overdue(&self, _: i64, _: i64) -> AppResult<(Vec<crate::repository::loans::OverdueLoanRow>, i64)> { Ok((vec![], 0)) }
         async fn loans_update_reminder_sent(&self, _: &[i64]) -> AppResult<()> { Ok(()) }
+        async fn loans_settings_upsert_row(
+            &self,
+            _: &str,
+            _: i16,
+            _: i16,
+            _: i16,
+        ) -> AppResult<()> {
+            Ok(())
+        }
     }
 
     #[async_trait::async_trait]

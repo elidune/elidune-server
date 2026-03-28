@@ -5,7 +5,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, holds, library_info, loans, maintenance, opac, public_types, schedules, series, settings, sources, stats, tasks, users, visitor_counts, z3950};
+use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, holds, library_info, loans, maintenance, opac, public_types, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -64,6 +64,8 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         loans::renew_loan_by_item,
         loans::get_overdue_loans,
         loans::send_overdue_reminders,
+        loans::get_loan_settings,
+        loans::update_loan_settings,
         // Holds
         holds::list_holds,
         holds::create_hold,
@@ -73,6 +75,8 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         // Z39.50
         z3950::search,
         z3950::import_record,
+        z3950::get_z3950_servers,
+        z3950::update_z3950_servers,
         // Stats
         stats::get_stats,
         stats::get_loan_stats,
@@ -88,9 +92,6 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         // Library info
         library_info::get_library_info,
         library_info::update_library_info,
-        // Settings
-        settings::get_settings,
-        settings::update_settings,
         // Visitor counts
         visitor_counts::list_visitor_counts,
         visitor_counts::create_visitor_count,
@@ -274,11 +275,10 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
             // Library info
             library_info::LibraryInfo,
             library_info::UpdateLibraryInfoRequest,
-            // Settings
-            settings::SettingsResponse,
-            settings::LoanSettings,
-            settings::Z3950ServerConfig,
-            settings::UpdateSettingsRequest,
+            loans::LoanSettings,
+            loans::UpdateLoanSettingsRequest,
+            z3950::Z3950ServerConfig,
+            z3950::UpdateZ3950ServersRequest,
             // Visitor counts
             crate::models::visitor_count::VisitorCount,
             crate::models::visitor_count::CreateVisitorCount,
@@ -330,8 +330,8 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
             // Audit
             audit::AuditQueryRequest,
             audit::AuditExportRequest,
-            crate::services::audit::AuditLogPage,
-            crate::services::audit::AuditLogEntry,
+            crate::models::audit::AuditLogPage,
+            crate::models::audit::AuditLogEntry,
             // Public types
             crate::models::public_type::PublicType,
             crate::models::public_type::PublicTypeLoanSettings,
@@ -357,7 +357,6 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         (name = "holds", description = "Physical item hold queue"),
         (name = "z3950", description = "Z39.50 catalog search"),
         (name = "stats", description = "Statistics"),
-        (name = "settings", description = "System settings"),
         (name = "visitor_counts", description = "Visitor counting"),
         (name = "schedules", description = "Library schedules (hours, closures)"),
         (name = "sources", description = "Acquisition source management"),

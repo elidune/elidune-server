@@ -54,6 +54,14 @@ pub trait LoansRepository: Send + Sync {
         per_page: i64,
     ) -> AppResult<(Vec<OverdueLoanRow>, i64)>;
     async fn loans_update_reminder_sent(&self, loan_ids: &[i64]) -> AppResult<()>;
+    /// Upsert global loan rules for one media type (`loans_settings` table).
+    async fn loans_settings_upsert_row(
+        &self,
+        media_type: &str,
+        nb_max: i16,
+        nb_renews: i16,
+        duration: i16,
+    ) -> AppResult<()>;
 }
 
 
@@ -137,6 +145,15 @@ impl LoansRepository for Repository {
     }
     async fn loans_update_reminder_sent(&self, loan_ids: &[i64]) -> crate::error::AppResult<()> {
         Repository::loans_update_reminder_sent(self, loan_ids).await
+    }
+    async fn loans_settings_upsert_row(
+        &self,
+        media_type: &str,
+        nb_max: i16,
+        nb_renews: i16,
+        duration: i16,
+    ) -> crate::error::AppResult<()> {
+        Repository::loans_settings_upsert_row(self, media_type, nb_max, nb_renews, duration).await
     }
 }
 
@@ -682,7 +699,13 @@ impl Repository {
         };
 
         if let (Some(ref h), Some(ref email_svc)) = (&readied_hold, &self.email_service) {
-            if let Err(e) = crate::hold_email::send_hold_ready(email_svc, &self.pool, h, &details).await
+            let contact = self
+                .users_hold_ready_contact(h.user_id)
+                .await
+                .ok()
+                .flatten();
+            if let Err(e) =
+                crate::hold_email::send_hold_ready(email_svc, contact, h, &details).await
             {
                 tracing::warn!(
                     target: "loans",
@@ -761,6 +784,46 @@ impl Repository {
             .fetch_all(&self.pool)
             .await
             .map_err(Into::into)
+    }
+
+    /// Upsert one row in `loans_settings` for a media type (global defaults).
+    pub async fn loans_settings_upsert_row(
+        &self,
+        media_type: &str,
+        nb_max: i16,
+        nb_renews: i16,
+        duration: i16,
+    ) -> AppResult<()> {
+        let rows_affected = sqlx::query(
+            r#"
+            UPDATE loans_settings
+            SET nb_max = $2, nb_renews = $3, duration = $4
+            WHERE media_type = $1
+            "#,
+        )
+        .bind(media_type)
+        .bind(nb_max)
+        .bind(nb_renews)
+        .bind(duration)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        if rows_affected == 0 {
+            sqlx::query(
+                r#"
+                INSERT INTO loans_settings (media_type, nb_max, nb_renews, duration)
+                VALUES ($1, $2, $3, $4)
+                "#,
+            )
+            .bind(media_type)
+            .bind(nb_max)
+            .bind(nb_renews)
+            .bind(duration)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
     }
 
     /// Count active loans

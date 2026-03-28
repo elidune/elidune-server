@@ -10,11 +10,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::Row;
 use utoipa::ToSchema;
 
 use crate::{
-    error::AppResult,
+    error::{AppError, AppResult},
     services::audit,
     AppState,
 };
@@ -72,13 +71,11 @@ pub async fn get_config(
 ) -> AppResult<Json<ConfigResponse>> {
     claims.require_admin()?;
 
-    let pool = state.services.repository_pool();
-
-    // Get which sections are currently overridden in DB
-    let overridden_keys: Vec<String> = sqlx::query_scalar("SELECT key FROM settings")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+    let overridden_keys: Vec<String> = state
+        .services
+        .minimal_repository()
+        .settings_list_keys()
+        .await?;
 
     let dynamic = &state.dynamic_config;
     let mut sections = Vec::new();
@@ -135,19 +132,12 @@ pub async fn update_config_section(
     // Validate and apply in memory
     dynamic.update_section(&section, body.value.clone())?;
 
-    // Persist to DB
-    let pool = state.services.repository_pool();
-    sqlx::query(
-        r#"
-        INSERT INTO settings (key, value, updated_at)
-        VALUES ($1, $2, NOW())
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-        "#,
-    )
-    .bind(&section)
-    .bind(&body.value)
-    .execute(pool)
-    .await?;
+    state
+        .services
+        .minimal_repository()
+        .settings_upsert_section(&section, &body.value)
+        .await
+        .map_err(|e| AppError::Internal(format!("persist config section: {e}")))?;
 
     // Audit
     let new_value_masked = dynamic
@@ -210,12 +200,12 @@ pub async fn reset_config_section(
     let dynamic = &state.dynamic_config;
     dynamic.reset_section(&section)?;
 
-    // Remove from DB
-    let pool = state.services.repository_pool();
-    sqlx::query("DELETE FROM settings WHERE key = $1")
-        .bind(&section)
-        .execute(pool)
-        .await?;
+    state
+        .services
+        .minimal_repository()
+        .settings_delete_key(&section)
+        .await
+        .map_err(|e| AppError::Internal(format!("delete config override: {e}")))?;
 
     state.services.audit.log(
         audit::event::CONFIG_SECTION_RESET,

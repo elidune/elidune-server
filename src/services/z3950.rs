@@ -2,14 +2,13 @@
 //!
 //! Uses the z3950-rs crate for Z39.50 protocol communication.
 
-use sqlx::Row;
 use serde_json;
 use redis::AsyncCommands;
 
 use z3950_rs::marc_rs::{ MarcFormat, Record as MarcRecord};
 use z3950_rs::{Client, QueryLanguage};
 use crate::{
-    api::z3950::{ImportItem, Z3950SearchQuery},
+    api::z3950::{ImportItem, Z3950SearchQuery, Z3950ServerConfig},
     error::{AppError, AppResult},
     models::{
         biblio::Biblio,
@@ -59,23 +58,10 @@ impl Z3950Service {
         tracing::info!("Z39.50 search started");
         tracing::debug!("Search params - query: {}", query.query);
 
-        let pool = &self.repository.pool;
-
-        // Get active Z39.50 servers
-        let server_query = if let Some(server_id) = query.server_id {
-            tracing::debug!("Searching specific server ID: {}", server_id);
-            sqlx::query(
-                "SELECT id, name, address, port, database, format, login, password, encoding FROM z3950servers WHERE id = $1 AND activated = TRUE"
-            )
-            .bind(server_id)
-        } else {
-            tracing::debug!("Searching all active servers");
-            sqlx::query(
-                "SELECT id, name, address, port, database, format, login, password, encoding FROM z3950servers WHERE activated = TRUE"
-            )
-        };
-
-        let server_rows = server_query.fetch_all(pool).await?;
+        let server_rows = self
+            .repository
+            .z3950_servers_list_active_for_search(query.server_id)
+            .await?;
 
         if server_rows.is_empty() {
             tracing::warn!("No active Z39.50 servers found in database");
@@ -83,16 +69,16 @@ impl Z3950Service {
         }
 
         let servers: Vec<Z3950Server> = server_rows
-            .iter()
+            .into_iter()
             .map(|row| Z3950Server {
-                id: row.get("id"),
-                name: row.get("name"),
-                address: row.get("address"),
-                port: row.get("port"),
-                database: row.get("database"),
+                id: row.id,
+                name: row.name.unwrap_or_default(),
+                address: row.address.unwrap_or_default(),
+                port: row.port.unwrap_or(2200),
+                database: row.database.unwrap_or_default(),
                 format: None,
-                login: row.get("login"),
-                password: row.get("password"),
+                login: row.login,
+                password: row.password,
             })
             .collect();
 
@@ -326,6 +312,66 @@ impl Z3950Service {
         }
 
         Ok((biblio, report))
+    }
+
+    /// Staff UI: all Z39.50 server rows.
+    pub async fn get_servers_for_settings(&self) -> AppResult<Vec<Z3950ServerConfig>> {
+        let rows = self.repository.z3950_servers_list_all().await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| Z3950ServerConfig {
+                id: r.id,
+                name: r.name.unwrap_or_default(),
+                address: r.address.unwrap_or_default(),
+                port: r.port.unwrap_or(2200),
+                database: r.database,
+                format: r.format,
+                login: r.login,
+                password: r.password,
+                encoding: r.encoding.unwrap_or_else(|| "utf-8".to_string()),
+                is_active: r.activated.unwrap_or(false),
+            })
+            .collect())
+    }
+
+    /// Staff UI: upsert Z39.50 servers (id &gt; 0 update, id == 0 insert).
+    pub async fn update_servers_for_settings(
+        &self,
+        servers: Vec<Z3950ServerConfig>,
+    ) -> AppResult<Vec<Z3950ServerConfig>> {
+        for server in servers {
+            if server.id > 0 {
+                self.repository
+                    .z3950_server_update(
+                        server.id,
+                        &server.name,
+                        &server.address,
+                        server.port,
+                        &server.database,
+                        &server.format,
+                        &server.login,
+                        &server.password,
+                        &server.encoding,
+                        server.is_active,
+                    )
+                    .await?;
+            } else {
+                self.repository
+                    .z3950_server_insert(
+                        &server.name,
+                        &server.address,
+                        server.port,
+                        &server.database,
+                        &server.format,
+                        &server.login,
+                        &server.password,
+                        &server.encoding,
+                        server.is_active,
+                    )
+                    .await?;
+            }
+        }
+        self.get_servers_for_settings().await
     }
 }
 

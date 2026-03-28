@@ -1,37 +1,49 @@
 //! Repository layer for database operations.
 //!
 //! Each domain module defines its own `*Repository` trait next to the [`Repository`] inherent
-//! methods and the forwarding `impl *Repository for Repository` (see module docs in each file).
+//! methods (SQL) and a forwarding `impl *Repository for Repository`. The same pattern applies to
+//! `settings` ([`RuntimeSettingsRepository`]), `z3950` ([`Z3950Repository`]), `library_info`
+//! ([`LibraryInfoRepository`]), and `audit_log` ([`AuditLogRepository`]), not only older domains
+//! like loans or biblios.
 
+pub mod audit_log;
 pub mod biblios;
 pub mod catalog_entities;
 pub mod equipment;
 pub mod events;
 pub mod fines;
 pub mod inventory;
+pub mod library_info;
 pub mod loans;
 pub mod maintenance;
 pub mod public_types;
 pub mod holds;
 pub mod schedules;
+pub mod stats;
+pub mod settings;
 pub mod sources;
+pub mod z3950;
 pub mod users;
 pub mod visitor_counts;
 
+pub use audit_log::AuditLogRepository;
 pub use biblios::BibliosRepository;
 pub use catalog_entities::CatalogEntitiesRepository;
 pub use equipment::EquipmentRepository;
 pub use events::{EventsRepository, EventsServiceRepository};
 pub use fines::FinesRepository;
 pub use inventory::InventoryRepository;
+pub use library_info::{LibraryInfoRepository, LibraryInfoSnapshot};
 pub use loans::{LoansRepository, LoansServiceRepository};
 pub use maintenance::MaintenanceRepository;
 pub use public_types::PublicTypesRepository;
 pub use holds::HoldsRepository;
 pub use schedules::SchedulesRepository;
+pub use settings::RuntimeSettingsRepository;
 pub use sources::SourcesRepository;
 pub use users::UsersRepository;
 pub use visitor_counts::VisitorCountsRepository;
+pub use z3950::{Z3950Repository, Z3950ServerRecord};
 
 use std::sync::Arc;
 

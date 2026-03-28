@@ -12,7 +12,7 @@ use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     error::AppResult,
-    models::loan::{CreateLoan, LoanDetails},
+    models::{biblio::MediaType, loan::{CreateLoan, LoanDetails}},
     services::{
         audit::{self},
         reminders::{OverdueLoansPage, ReminderReport},
@@ -21,12 +21,30 @@ use crate::{
 
 use super::{biblios::PaginatedResponse, AuthenticatedUser, ClientIp};
 
+/// Loan rules per media type (global defaults, `loans_settings` table).
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LoanSettings {
+    pub media_type: MediaType,
+    pub max_loans: i16,
+    pub max_renewals: i16,
+    pub duration_days: i16,
+}
+
+/// Partial update of global loan rules.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLoanSettingsRequest {
+    pub loan_settings: Option<Vec<LoanSettings>>,
+}
+
 
 /// Build the loans routes for this domain.
 pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{get, post};
+    use axum::routing::{get, post, put};
     axum::Router::new()
         .route("/loans", post(create_loan))
+        .route("/loans/settings", get(get_loan_settings).put(update_loan_settings))
         .route("/loans/overdue", get(get_overdue_loans))
         .route("/loans/send-overdue-reminders", post(send_overdue_reminders))
         .route("/loans/:id/return", post(return_loan))
@@ -116,6 +134,59 @@ pub struct OverdueLoansQuery {
 pub struct SendRemindersQuery {
     /// If true, no emails are sent; only shows what would be sent
     pub dry_run: Option<bool>,
+}
+
+/// Get global loan rules per media type (`loans_settings`).
+#[utoipa::path(
+    get,
+    path = "/loans/settings",
+    tag = "loans",
+    security(("bearer_auth" = [])),
+    responses(
+        (status = 200, description = "Global loan rules per media type", body = Vec<LoanSettings>),
+        (status = 403, description = "Insufficient permissions")
+    )
+)]
+pub async fn get_loan_settings(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+) -> AppResult<Json<Vec<LoanSettings>>> {
+    claims.require_read_settings()?;
+    let rows = state.services.loans.get_global_loan_settings().await?;
+    Ok(Json(rows))
+}
+
+/// Update global loan rules per media type.
+#[utoipa::path(
+    put,
+    path = "/loans/settings",
+    tag = "loans",
+    security(("bearer_auth" = [])),
+    request_body = UpdateLoanSettingsRequest,
+    responses(
+        (status = 200, description = "Updated global loan rules", body = Vec<LoanSettings>),
+        (status = 403, description = "Insufficient permissions")
+    )
+)]
+pub async fn update_loan_settings(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
+    Json(body): Json<UpdateLoanSettingsRequest>,
+) -> AppResult<Json<Vec<LoanSettings>>> {
+    claims.require_write_settings()?;
+    let rows = state.services.loans.update_global_loan_settings(body).await?;
+
+    state.services.audit.log(
+        audit::event::SETTINGS_UPDATED,
+        Some(claims.user_id),
+        None,
+        None,
+        ip,
+        Some(serde_json::json!({ "scope": "loans", "loanSettings": rows })),
+    );
+
+    Ok(Json(rows))
 }
 
 /// Get loans for a specific user (paginated).

@@ -6,7 +6,9 @@ use crate::error::AppResult;
 use crate::models::stats_builder::{StatsBuilderBody, StatsTableResponse};
 use crate::services::redis::RedisService;
 
-use super::{cache, executor, query_builder, validator};
+use crate::repository::stats::executor;
+
+use super::{cache, query_builder, validator};
 
 /// Execute a flexible stats query with optional Redis caching.
 pub async fn run_stats_query(
