@@ -524,7 +524,7 @@ def migrate_users(src, dst, hash_passwords=True):
         archived_dt = ts_to_datetime(archived_date)
 
         status = "deleted" if archived_dt else "active"
-
+        sex = "m" if sex_id_raw == 77 else "f" if sex_id_raw == 70 else None
         birthdate_db = normalize_birthdate(birthdate)
 
         # Map legacy integer public_type to FK id in target
@@ -533,6 +533,9 @@ def migrate_users(src, dst, hash_passwords=True):
             pt_name = PUBLIC_TYPE_INT_TO_NAME.get(int(public_type_raw))
             if pt_name:
                 pt_id = pt_name_to_id.get(pt_name)
+
+            # print request
+          
 
         dst_cur.execute("""
             INSERT INTO users (
@@ -560,7 +563,7 @@ def migrate_users(src, dst, hash_passwords=True):
             account_type, fee, group_id, barcode, notes,
             pt_id, status, birthdate_db,
             crea_dt, modif_dt, issue_dt, archived_dt,
-            sex_id_raw,
+            sex,
         ))
         migrated += 1
 
