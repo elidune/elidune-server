@@ -1,9 +1,7 @@
 
 
 use z3950_rs::marc_rs::record::{
-    Agent, BibliographicLevel, Description, Indexing, LinkType, Local, Note, NoteType,
-    Publication, Record as MarcRecord, RecordStatus, RecordType,
-    Item as MarcItem, Subject, SubjectType, Title,
+    Agent, Barcode, BibliographicLevel, Description, Indexing, Item as MarcItem, LinkType, Local, Note, NoteType, Publication, Record as MarcRecord, RecordStatus, RecordType, Subject, SubjectType, Title
 };
 
 use crate::models::{
@@ -12,6 +10,8 @@ use crate::models::{
     biblio::{AudienceType, Collection, Edition, Isbn, Biblio, Serie},
     item::Item,
 };
+
+use std::str::FromStr;
 
 impl From<z3950_rs::marc_rs::record::Relator> for Function {
     fn from(r: z3950_rs::marc_rs::record::Relator) -> Self {
@@ -383,7 +383,7 @@ impl From<&MarcItem> for Item {
             id: None,
             biblio_id: None,
             source_id: None,
-            barcode: s.barcode.clone(),
+            barcode: s.barcode.clone().map(|b| b.to_string()),
             call_number: s.call_number.clone(),
             volume_designation: None,
             place: None,
@@ -521,7 +521,7 @@ impl From<&Biblio> for MarcRecord {
                         section: None,
                         section_code: None,
                         level_code: None,
-                        barcode: s.barcode.clone(),
+                        barcode: s.barcode.as_deref().map(|b| Barcode::from_str(b).unwrap_or_default()),
                         call_number: s.call_number.clone(),
                         inventory_number: None,
                         creation_date: None,

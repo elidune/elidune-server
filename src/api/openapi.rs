@@ -5,7 +5,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, holds, library_info, loans, maintenance, opac, public_types, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
+use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, holds, inventory, library_info, loans, maintenance, opac, public_types, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -72,6 +72,16 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         holds::list_holds_for_item,
         holds::list_holds_for_user,
         holds::cancel_hold,
+        // Inventory (stocktaking)
+        inventory::list_sessions,
+        inventory::create_session,
+        inventory::get_session,
+        inventory::close_session,
+        inventory::scan_barcode,
+        inventory::batch_scan,
+        inventory::list_scans,
+        inventory::list_missing,
+        inventory::get_report,
         // Z39.50
         z3950::search,
         z3950::import_record,
@@ -220,6 +230,20 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
             holds::CreateHoldRequest,
             holds::ListHoldsQuery,
             biblios::PaginatedResponse<crate::models::hold::HoldDetails>,
+            biblios::PaginatedResponse<crate::models::inventory::InventorySession>,
+            biblios::PaginatedResponse<crate::models::inventory::InventoryScan>,
+            biblios::PaginatedResponse<crate::models::inventory::InventoryMissingRow>,
+            crate::models::inventory::InventorySession,
+            crate::models::inventory::InventoryScan,
+            crate::models::inventory::InventoryScanResult,
+            crate::models::inventory::InventoryStatus,
+            crate::models::inventory::InventoryReport,
+            crate::models::inventory::InventoryMissingRow,
+            crate::models::inventory::CreateInventorySession,
+            crate::models::inventory::ScanBarcode,
+            crate::models::inventory::BatchScanBarcodes,
+            inventory::ListInventorySessionsQuery,
+            inventory::ListInventoryPageQuery,
             loans::GetUserLoansQuery,
             loans::SendRemindersQuery,
             crate::models::loan::LoanDetails,
@@ -355,6 +379,7 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         (name = "users", description = "User management"),
         (name = "loans", description = "Loan management"),
         (name = "holds", description = "Physical item hold queue"),
+        (name = "inventory", description = "Stocktaking (inventory) sessions and barcode scans"),
         (name = "z3950", description = "Z39.50 catalog search"),
         (name = "stats", description = "Statistics"),
         (name = "visitor_counts", description = "Visitor counting"),

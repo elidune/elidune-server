@@ -325,6 +325,41 @@ CREATE INDEX IF NOT EXISTS idx_items_biblio  ON items(biblio_id);
 CREATE INDEX IF NOT EXISTS idx_items_active  ON items(archived_at) WHERE archived_at IS NULL;
 
 -- =============================================================================
+-- INVENTORY (stocktaking sessions and barcode scans)
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS inventory_sessions (
+    id                BIGINT       PRIMARY KEY,
+    name              TEXT         NOT NULL,
+    started_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    closed_at         TIMESTAMPTZ,
+    status            VARCHAR(16)  NOT NULL DEFAULT 'open',
+    location_filter   TEXT,
+    notes             TEXT,
+    scope_place       SMALLINT,
+    created_by        BIGINT       REFERENCES users(id) ON DELETE SET NULL,
+    CONSTRAINT inventory_sessions_status_chk CHECK (status IN ('open', 'closed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_sessions_started_at ON inventory_sessions (started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inventory_sessions_status ON inventory_sessions (status);
+
+CREATE TABLE IF NOT EXISTS inventory_scans (
+    id          BIGSERIAL    PRIMARY KEY,
+    session_id  BIGINT       NOT NULL REFERENCES inventory_sessions(id) ON DELETE CASCADE,
+    item_id     BIGINT       REFERENCES items(id) ON DELETE SET NULL,
+    barcode     VARCHAR(100) NOT NULL,
+    scanned_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    result      VARCHAR(32)  NOT NULL,
+    scanned_by  BIGINT       REFERENCES users(id) ON DELETE SET NULL,
+    CONSTRAINT inventory_scans_result_chk CHECK (result IN ('found', 'unknown_barcode', 'found_archived'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_scans_session ON inventory_scans (session_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_scans_session_item ON inventory_scans (session_id, item_id);
+CREATE INDEX IF NOT EXISTS idx_inventory_scans_scanned_by ON inventory_scans (scanned_by);
+
+-- =============================================================================
 -- LOANS
 -- =============================================================================
 

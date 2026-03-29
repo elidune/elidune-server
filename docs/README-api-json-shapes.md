@@ -625,6 +625,20 @@ List endpoints (`GET /holds`, `GET /items/:id/holds`, `GET /users/:id/holds`) re
 
 ## Inventory (`/api/v1/inventory`)
 
+See **[Inventory API — frontend guide](inventory-api-frontend.md)** for semantics, query params, and error codes.
+
+| Method | Path | Response |
+|--------|------|----------|
+| `GET` | `/inventory/sessions` | `PaginatedResponse<InventorySession>` (`page`, `perPage`, …) |
+| `POST` | `/inventory/sessions` | `InventorySession` (**201**) |
+| `GET` | `/inventory/sessions/:id` | `InventorySession` |
+| `POST` | `/inventory/sessions/:id/close` | `InventorySession` |
+| `POST` | `/inventory/sessions/:id/scan` | `InventoryScan` (**201**) |
+| `POST` | `/inventory/sessions/:id/scans/batch` | `InventoryScan[]` (**201**), max **500** barcodes |
+| `GET` | `/inventory/sessions/:id/scans` | `PaginatedResponse<InventoryScan>` |
+| `GET` | `/inventory/sessions/:id/missing` | `PaginatedResponse<InventoryMissingRow>` |
+| `GET` | `/inventory/sessions/:id/report` | `InventoryReport` |
+
 ### `InventorySession`
 ```json
 {
@@ -635,26 +649,74 @@ List endpoints (`GET /holds`, `GET /items/:id/holds`, `GET /users/:id/holds`) re
   "status": "open",
   "locationFilter": "Salle A",
   "notes": null,
+  "scopePlace": 3,
   "createdBy": "927364819265437697"
 }
 ```
 
-`status` values: `open` | `closed`
+`status` values: `open` | `closed`. `scopePlace` is **`null`** when the session covers all active items.
 
-### `CreateInventorySession`
+### `CreateInventorySession` (`POST /inventory/sessions`)
 ```json
-{ "name": "Inventaire printemps 2026", "locationFilter": "Salle A", "notes": null }
+{ "name": "Inventaire printemps 2026", "locationFilter": "Salle A", "notes": null, "scopePlace": 3 }
+```
+
+### `ScanBarcode` (`POST /inventory/sessions/:id/scan`)
+```json
+{ "barcode": "978-2-07-040850-4" }
+```
+
+### `BatchScanBarcodes` (`POST /inventory/sessions/:id/scans/batch`)
+```json
+{ "barcodes": ["978-2-07-040850-4", "9782123456789"] }
 ```
 
 ### `InventoryScan`
 ```json
-{ "id": 1, "sessionId": "927364819265437703", "itemId": "818273645564928001", "barcode": "978-2-07-040850-4", "scannedAt": "2026-03-24T09:00:00Z", "result": "found" }
+{
+  "id": 42,
+  "sessionId": "927364819265437703",
+  "itemId": "818273645564928001",
+  "barcode": "978-2-07-040850-4",
+  "scannedAt": "2026-03-24T09:00:00Z",
+  "result": "found",
+  "scannedBy": "927364819265437697"
+}
+```
+
+`id` is a JSON **number**. `itemId` is **null** only for `unknown_barcode`.
+
+`result` values: `found` | `found_archived` | `unknown_barcode`
+
+### `InventoryMissingRow`
+```json
+{
+  "itemId": "818273645564928002",
+  "barcode": "9782123456789",
+  "callNumber": "PQ 1234",
+  "place": 3,
+  "biblioTitle": "Example title"
+}
 ```
 
 ### `InventoryReport`
 ```json
-{ "sessionId": "927364819265437703", "totalScanned": 320, "totalFound": 310, "totalUnknown": 5, "missingCount": 10 }
+{
+  "sessionId": "927364819265437703",
+  "expectedInScope": 1200,
+  "totalScanned": 320,
+  "totalFound": 300,
+  "totalFoundArchived": 5,
+  "totalUnknown": 15,
+  "distinctItemsScanned": 290,
+  "duplicateScanCount": 15,
+  "missingCount": 880,
+  "missingScannable": 870,
+  "missingWithoutBarcode": 10
+}
 ```
+
+`sessionId` is a JSON **string** (Snowflake), consistent with other inventory ids.
 
 ---
 
