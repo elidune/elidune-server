@@ -1,8 +1,13 @@
 //! Loan management endpoints
 
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{
+        header::{CONTENT_DISPOSITION, CONTENT_TYPE},
+        StatusCode,
+    },
+    response::Response,
     Json,
 };
 use chrono::{DateTime, Utc};
@@ -11,8 +16,13 @@ use serde_with::{serde_as, DisplayFromStr};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
-    error::AppResult,
-    models::{biblio::MediaType, loan::{CreateLoan, LoanDetails}},
+    error::{AppError, AppResult},
+    models::{
+        biblio::MediaType,
+        loan::{
+            CreateLoan, LoanDetails, LoanMarcExportEncoding, LoanMarcExportFormat,
+        },
+    },
     services::{
         audit::{self},
         reminders::{OverdueLoansPage, ReminderReport},
@@ -226,6 +236,59 @@ pub async fn get_user_loans(
     };
 
     Ok(Json(PaginatedResponse::new(items, total, page, per_page)))
+}
+
+/// Query for MARC export download (no pagination; full list in one file).
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportUserLoansMarcQuery {
+    /// If true, export archived (returned) loans instead of active loans.
+    pub archived: Option<bool>,
+    /// Output serialization: `json`, `marc21`, `unimarc`, `marcxml` (default: `json`).
+    #[serde(default)]
+    pub format: LoanMarcExportFormat,
+    /// Character encoding for ISO2709 binary (`marc21`, `unimarc`). Ignored for `json` and `marcxml` (UTF-8). Default: `utf8`.
+    #[serde(default)]
+    pub encoding: LoanMarcExportEncoding,
+}
+
+/// Download all loans for a user as one MARC file (`Content-Disposition: attachment`).
+#[utoipa::path(
+    get,
+    path = "/users/{id}/loans/export",
+    tag = "loans",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i64, Path, description = "User ID"),
+        ExportUserLoansMarcQuery
+    ),
+    responses(
+        (status = 200, description = "File attachment (JSON array of marc-rs records, or ISO2709, or MARC-XML collection)"),
+        (status = 400, description = "Too many loans to export"),
+        (status = 403, description = "Access denied"),
+        (status = 404, description = "User not found")
+    )
+)]
+pub async fn export_user_loans_marc(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    Path(user_id): Path<i64>,
+    Query(query): Query<ExportUserLoansMarcQuery>,
+) -> AppResult<Response> {
+    claims.require_self_or_staff(user_id)?;
+    let archived = query.archived.unwrap_or(false);
+    let (bytes, content_type, filename) = state
+        .services
+        .loans
+        .export_user_loans_marc_file(user_id, archived, query.format, query.encoding)
+        .await?;
+    let disposition = format!(r#"attachment; filename="{}""#, filename);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, content_type)
+        .header(CONTENT_DISPOSITION, disposition)
+        .body(Body::from(bytes))
+        .map_err(|e| AppError::Internal(format!("export response: {}", e)))
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema, IntoParams)]

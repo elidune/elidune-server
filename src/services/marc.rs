@@ -8,14 +8,13 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use utoipa::ToSchema;
-use z3950_rs::marc_rs::{Encoding, MarcFormat, parse_records};
+use z3950_rs::marc_rs::{Encoding, MarcFormat, parse_records, RecordValidationIssue};
 
 use crate::{
     error::{AppError, AppResult},
-    marc::MarcRecord,
+    marc::{MarcImportPreview, MarcRecord},
     models::{
-        biblio::{Biblio, BiblioShort},
-        item::Item,
+        MediaType, biblio::{Biblio, BiblioShort}, item::Item
     },
 };
 
@@ -81,6 +80,9 @@ pub struct MarcService {
     redis: RedisService,
 }
 
+
+
+
 #[serde_as]
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -88,7 +90,7 @@ pub struct EnqueueResult {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub batch_id: i64,
-    pub biblios: Vec<BiblioShort>,
+    pub previews: Vec<MarcImportPreview>,
 }
 
 impl MarcService {
@@ -125,7 +127,7 @@ impl MarcService {
 
         let mut conn = self.redis.get_connection().await?;
 
-        let mut biblios_short = Vec::with_capacity(records.len());
+        let mut previews = Vec::with_capacity(records.len());
         let mut index = 0;
 
         for record in records.into_iter() {
@@ -150,12 +152,9 @@ impl MarcService {
                 .await
                 .map_err(|e| AppError::Internal(format!("Failed to store MARC record in Redis: {}", e)))?;
 
-                // Build preview biblio from MARC record.
-                let mut biblio: Biblio = record.into();
-                biblio.id.replace(index as i64);
-
-                let short = BiblioShort::from(biblio);
-                biblios_short.push(short);
+                let mut preview = MarcImportPreview::from(record);
+                preview.biblio.id = index as i64;
+                previews.push(preview);
 
                 index += 1;
             }
@@ -164,7 +163,7 @@ impl MarcService {
           
         }
 
-        Ok(EnqueueResult { batch_id, biblios: biblios_short })
+        Ok(EnqueueResult { batch_id, previews: previews })
     }
 
     /// List all MARC batches currently cached in Redis.
@@ -236,7 +235,7 @@ impl MarcService {
             k.rsplit(':').next().and_then(|s| s.parse::<usize>().ok()).unwrap_or(0)
         });
 
-        let mut biblios_short = Vec::with_capacity(keys.len());
+        let mut previews = Vec::with_capacity(keys.len());
 
         for key in &keys {
             let record_idx: usize = key
@@ -257,13 +256,12 @@ impl MarcService {
             let record: MarcRecord = serde_json::from_str(&json_str)
                 .map_err(|e| AppError::Internal(format!("Failed to deserialize MARC record: {}", e)))?;
 
-            let mut biblio: Biblio = record.into();
-            biblio.id.replace(record_idx as i64);
-
-            biblios_short.push(BiblioShort::from(biblio));
+            let mut preview = MarcImportPreview::from(record);
+            preview.biblio.id = record_idx as i64;
+            previews.push(preview);
         }
 
-        Ok(EnqueueResult { batch_id, biblios: biblios_short })
+        Ok(EnqueueResult { batch_id, previews: previews })
     }
 
     /// Import MARC records from a cached batch into the catalog.

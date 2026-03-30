@@ -6,7 +6,7 @@ use serde_with::{serde_as, DisplayFromStr};
 use sqlx::FromRow;
 use utoipa::ToSchema;
 
-use super::biblio::{BiblioShort, MediaType};
+use super::biblio::{Biblio, BiblioShort, MediaType};
 use super::user::UserShort;
 
 /// Loan model from database
@@ -38,6 +38,10 @@ pub struct LoanDetails {
     #[serde_as(as = "DisplayFromStr")]
     #[schema(value_type = String)]
     pub id: i64,
+    /// Borrowed specimen (`items.id`).
+    #[serde_as(as = "DisplayFromStr")]
+    #[schema(value_type = String)]
+    pub item_id: i64,
     pub start_date: DateTime<Utc>,
     pub expiry_at: DateTime<Utc>,
     pub renewal_date: Option<DateTime<Utc>>,
@@ -82,6 +86,38 @@ pub struct LoanSettings {
     pub duration: Option<i16>,
     pub notes: Option<String>,
     pub account_type: Option<String>,
+}
+
+/// One loan row for MARC export (full list, no pagination).
+#[derive(Debug, Clone)]
+pub struct LoanMarcExportRow {
+    pub biblio: Biblio,
+    pub start_date: DateTime<Utc>,
+    pub expiry_at: DateTime<Utc>,
+    pub returned_at: Option<DateTime<Utc>>,
+}
+
+/// Maximum loans included in a single MARC export response (safety cap).
+pub const LOANS_MARC_EXPORT_MAX: usize = 2000;
+
+/// File format for [`crate::services::loans::LoansService::export_user_loans_marc_file`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LoanMarcExportFormat {
+    #[default]
+    Json,
+    Marc21,
+    Unimarc,
+    Marcxml,
+}
+
+/// Binary MARC encoding for ISO2709 export (query param `encoding`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LoanMarcExportEncoding {
+    #[default]
+    Utf8,
+    Marc8,
 }
 
 /// Archived loan for statistics

@@ -28,14 +28,13 @@ use crate::{
 use super::{tasks::TaskAcceptedResponse, AuthenticatedUser, ClientIp, ValidatedJson};
 
 
-/// Build the biblios and items routes for this domain.
+/// Build biblio routes (list/create items under a biblio live here; update/delete copy via [`crate::api::items`]).
 pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post};
+    use axum::routing::{get, post};
     axum::Router::new()
         .route("/biblios", get(list_biblios).post(create_biblio))
         .route("/biblios/:id", get(get_biblio).put(update_biblio).delete(delete_biblio))
-        .route("/biblios/:id/items", get(list_items).post(create_item).put(update_item))
-        .route("/biblios/:biblio_id/items/:item_id", delete(delete_item))
+        .route("/biblios/:id/items", get(list_items).post(create_item))
         .route("/biblios/export.csv", get(export_biblios_csv))
         .route("/biblios/load-marc", post(load_marc))
         .route("/biblios/import-marc-batch", post(import_marc_batch))
@@ -252,7 +251,7 @@ pub async fn create_biblio(
         ("source_id" = i64, Query, description = "Source ID associated to this MARC batch")
     ),
     responses(
-        (status = 200, description = "Parsed biblios with physical items", body = EnqueueResult),
+        (status = 200, description = "Batch id and per-record previews (BiblioShort + validationIssues from marc-rs)", body = EnqueueResult),
         (status = 400, description = "Missing file or invalid UNIMARC"),
         (status = 401, description = "Not authenticated")
     )
@@ -521,103 +520,6 @@ pub async fn create_item(
     Ok((StatusCode::CREATED, Json(created)))
 }
 
-/// Update a physical item
-#[utoipa::path(
-    put,
-    path = "/biblios/{biblio_id}/items/{item_id}",
-    tag = "biblios",
-    security(("bearer_auth" = [])),
-    params(
-        ("biblio_id" = i64, Path, description = "Biblio ID"),
-        ("item_id" = i64, Path, description = "Physical item ID")
-    ),
-    request_body = Item,
-    responses(
-        (status = 200, description = "Physical item updated", body = Item),
-        (status = 404, description = "Biblio or item not found"),
-        (status = 409, description = "An item with this barcode already exists")
-    )
-)]
-pub async fn update_item(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    ClientIp(ip): ClientIp,
-    Path(biblio_id): Path<i64>,
-    ValidatedJson(mut item): ValidatedJson<Item>,
-) -> AppResult<Json<Item>> {
-    claims.require_write_items()?;
-    let item_id = item.id;
-    state
-        .services
-        .catalog
-        .update_item(biblio_id, &mut item)
-        .await?;
-
-    state.services.audit.log(
-        audit::event::ITEM_UPDATED,
-        Some(claims.user_id),
-        Some("item"),
-        item_id,
-        ip,
-        Some((biblio_id, &item)),
-    );
-
-    Ok(Json(item))
-}
-
-/// Delete a physical item
-#[utoipa::path(
-    delete,
-    path = "/biblios/{biblio_id}/items/{item_id}",
-    tag = "biblios",
-    security(("bearer_auth" = [])),
-    params(
-        ("biblio_id" = i64, Path, description = "Biblio ID"),
-        ("item_id" = i64, Path, description = "Physical item ID"),
-        ("force" = Option<bool>, Query, description = "Force delete even if borrowed")
-    ),
-    responses(
-        (status = 204, description = "Physical item deleted"),
-        (status = 404, description = "Item not found"),
-        (status = 409, description = "Item is borrowed")
-    )
-)]
-pub async fn delete_item(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    ClientIp(ip): ClientIp,
-    Path((biblio_id, item_id)): Path<(i64, i64)>,
-    Query(params): Query<DeleteItemParams>,
-) -> AppResult<StatusCode> {
-    claims.require_write_items()?;
-    state
-        .services
-        .catalog
-        .delete_item(biblio_id, item_id, params.force.unwrap_or(false))
-        .await?;
-
-    state.services.audit.log(
-        audit::event::ITEM_DELETED,
-        Some(claims.user_id),
-        Some("item"),
-        Some(item_id),
-        ip,
-        Some(serde_json::json!({
-            "biblio_id": biblio_id,
-            "item_id": item_id,
-            "force": params.force.unwrap_or(false),
-        })),
-    );
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeleteItemParams {
-    pub force: Option<bool>,
-}
-
 /// List all MARC batches currently cached in Redis.
 #[utoipa::path(
     get,
@@ -648,7 +550,7 @@ pub async fn list_marc_batches(
         ("batch_id" = String, Path, description = "MARC batch identifier (Snowflake ID as string)")
     ),
     responses(
-        (status = 200, description = "Cached MARC batch contents", body = EnqueueResult),
+        (status = 200, description = "Same shape as load-marc: batchId + previews (BiblioShort + validationIssues)", body = EnqueueResult),
         (status = 404, description = "Batch not found or expired"),
         (status = 401, description = "Not authenticated")
     )

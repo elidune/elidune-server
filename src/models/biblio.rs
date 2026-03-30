@@ -433,7 +433,7 @@ pub struct Biblio {
     pub abstract_: Option<String>,
     pub notes: Option<String>,
     pub keywords: Option<Vec<String>>,
-    pub is_valid: Option<i16>,
+    pub is_valid: Option<bool>,
     /// Resolved series IDs (same order as `series_volume_numbers` and `series`).
     #[serde_as(as = "Vec<DisplayFromStr>")]
     #[schema(value_type = Vec<String>)]
@@ -496,7 +496,7 @@ pub struct BiblioShort {
     pub title: Option<String>,
     pub date: Option<String>,
     pub status: i16,
-    pub is_valid: Option<i16>,
+    pub is_valid: Option<bool>,
     pub archived_at: Option<DateTime<Utc>>,
     pub author: Option<Author>,
     pub items: Vec<ItemShort>,

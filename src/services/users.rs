@@ -596,18 +596,6 @@ impl UsersService {
             .collect()
     }
 
-    /// Get a user's GDPR history preference
-    #[tracing::instrument(skip(self), err)]
-    pub async fn get_history_preference(&self, user_id: i64) -> AppResult<bool> {
-        self.repository.users_get_history_enabled(user_id).await
-    }
 
-    /// Update a user's GDPR history preference
-    #[tracing::instrument(skip(self), err)]
-    pub async fn set_history_preference(&self, user_id: i64, enabled: bool) -> AppResult<()> {
-        self.repository
-            .users_set_history_enabled(user_id, enabled)
-            .await
-    }
 }
 

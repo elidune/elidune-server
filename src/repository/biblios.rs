@@ -45,6 +45,8 @@ pub trait BibliosRepository: Send + Sync {
     async fn biblios_update<'a>(&self, id: i64, biblio: &'a mut Biblio) -> AppResult<&'a mut Biblio>;
     async fn biblios_delete(&self, id: i64, force: bool) -> AppResult<()>;
     async fn biblios_get_items(&self, biblio_id: i64) -> AppResult<Vec<Item>>;
+    /// Active (non-archived) item by primary key.
+    async fn items_get_active_by_id(&self, item_id: i64) -> AppResult<Item>;
     async fn biblios_get_items_short_by_biblio_ids(
         &self,
         biblio_ids: &[i64],
@@ -89,6 +91,16 @@ pub trait BibliosRepository: Send + Sync {
         old_source_ids: &[i64],
         new_source_id: i64,
     ) -> AppResult<i64>;
+    /// Stored MARC JSON from `biblios.marc_record`, if non-null (notice without local items for export).
+    async fn biblios_get_marc_record_optional(&self, biblio_id: i64) -> AppResult<Option<crate::marc::MarcRecord>>;
+    /// Active biblios with a non-empty ISBN, optionally restricted to `marc_record IS NULL` when `force_rebuild` is false.
+    async fn biblios_list_ids_for_z3950_refresh(&self, force_rebuild: bool) -> AppResult<Vec<i64>>;
+    /// Replace bibliographic columns and `marc_record` (items are taken from `biblio.items` — caller must set copies to keep).
+    async fn biblios_full_bibliographic_replace<'a>(
+        &self,
+        id: i64,
+        biblio: &'a mut crate::models::biblio::Biblio,
+    ) -> AppResult<&'a mut crate::models::biblio::Biblio>;
 }
 
 #[async_trait::async_trait]
@@ -128,6 +140,9 @@ impl BibliosRepository for Repository {
     }
     async fn biblios_get_items(&self, biblio_id: i64) -> crate::error::AppResult<Vec<crate::models::item::Item>> {
         Repository::biblios_get_items(self, biblio_id).await
+    }
+    async fn items_get_active_by_id(&self, item_id: i64) -> crate::error::AppResult<crate::models::item::Item> {
+        Repository::items_get_active_by_id(self, item_id).await
     }
     async fn biblios_get_items_short_by_biblio_ids(&self, biblio_ids: &[i64]) -> crate::error::AppResult<std::collections::HashMap<i64, Vec<crate::models::item::ItemShort>>> {
         Repository::biblios_get_items_short_by_biblio_ids(self, biblio_ids).await
@@ -177,6 +192,19 @@ impl BibliosRepository for Repository {
     async fn biblios_reassign_biblios_source(&self, old_source_ids: &[i64], new_source_id: i64) -> crate::error::AppResult<i64> {
         Repository::biblios_reassign_biblios_source(self, old_source_ids, new_source_id).await
     }
+    async fn biblios_get_marc_record_optional(&self, biblio_id: i64) -> crate::error::AppResult<Option<crate::marc::MarcRecord>> {
+        Repository::biblios_get_marc_record_optional(self, biblio_id).await
+    }
+    async fn biblios_list_ids_for_z3950_refresh(&self, force_rebuild: bool) -> crate::error::AppResult<Vec<i64>> {
+        Repository::biblios_list_ids_for_z3950_refresh(self, force_rebuild).await
+    }
+    async fn biblios_full_bibliographic_replace<'a>(
+        &self,
+        id: i64,
+        biblio: &'a mut crate::models::biblio::Biblio,
+    ) -> crate::error::AppResult<&'a mut crate::models::biblio::Biblio> {
+        Repository::biblios_full_bibliographic_replace(self, id, biblio).await
+    }
 }
 
 
@@ -191,7 +219,7 @@ struct BiblioShortRow {
     status: i16,
     #[allow(dead_code)]
     is_local: i16,
-    is_valid: Option<i16>,
+    is_valid: Option<bool>,
     archived_at: Option<chrono::DateTime<Utc>>,
     author: Option<Json<Author>>,
 }
@@ -806,7 +834,7 @@ impl Repository {
             status: i16,
             #[allow(dead_code)]
             is_local: i16,
-            is_valid: Option<i16>,
+            is_valid: Option<bool>,
             archived_at: Option<chrono::DateTime<Utc>>,
             author: Option<sqlx::types::Json<Author>>,
             total_count: i64,
@@ -1216,7 +1244,7 @@ impl Repository {
         .bind(&biblio.abstract_)
         .bind(&biblio.notes)
         .bind(&biblio.keywords)
-        .bind(&biblio.is_valid)
+        .bind(biblio.is_valid.unwrap_or(true))
         .bind(&biblio.edition_id)
         .bind(&biblio.created_at)
         .bind(&biblio.updated_at)
@@ -1244,6 +1272,35 @@ impl Repository {
         self.load_biblio_collections(id, biblio).await?;
 
         Ok(biblio)
+    }
+
+    /// Active biblios with a non-empty ISBN. When `force_rebuild` is false, only rows with `marc_record IS NULL`.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn biblios_list_ids_for_z3950_refresh(&self, rebuild_all: bool) -> AppResult<Vec<i64>> {
+        let rows: Vec<(i64,)> = if rebuild_all {
+            sqlx::query_as(
+                r#"
+                SELECT id FROM biblios
+                WHERE archived_at IS NULL
+                  AND isbn IS NOT NULL AND TRIM(isbn) <> ''
+                ORDER BY id
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                r#"
+                SELECT id FROM biblios
+                WHERE isbn IS NOT NULL AND TRIM(isbn) <> ''
+                  AND marc_record IS NULL
+                ORDER BY id
+                "#,
+            )
+            .fetch_all(&self.pool)
+            .await?
+        };
+        Ok(rows.into_iter().map(|r| r.0).collect())
     }
 
     // =========================================================================
@@ -1297,6 +1354,94 @@ impl Repository {
             .bind(id)
             .execute(&mut *tx)
             .await?;
+
+        tx.commit().await?;
+
+        self.load_biblio_series(id, biblio).await?;
+        self.load_biblio_collections(id, biblio).await?;
+
+        Ok(biblio)
+    }
+
+    /// Full bibliographic replace (same column set as [`Self::biblios_create`]), preserving the biblio primary key.
+    /// Physical items are **not** modified here — pass the desired `items` slice (typically existing copies) on `biblio`.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn biblios_full_bibliographic_replace<'a>(
+        &self,
+        id: i64,
+        biblio: &'a mut Biblio,
+    ) -> AppResult<&'a mut Biblio> {
+        let now = Utc::now();
+        biblio.updated_at = Some(now);
+        biblio.id = Some(id);
+
+        self.resolve_series_ids_from_biblio(biblio).await?;
+        self.resolve_collection_ids_from_biblio(biblio).await?;
+        biblio.edition_id = self.process_edition(&biblio.edition).await?;
+
+        let marc_json = serde_json::to_value(&biblio.marc_record).unwrap_or(serde_json::Value::Null);
+
+        let mut tx = self.pool.begin().await?;
+
+        let n = sqlx::query(
+            r#"
+            UPDATE biblios SET
+                media_type = $1,
+                isbn = $2,
+                publication_date = $3,
+                lang = $4,
+                lang_orig = $5,
+                title = $6,
+                subject = $7,
+                audience_type = $8,
+                page_extent = $9,
+                format = $10,
+                table_of_contents = $11,
+                accompanying_material = $12,
+                abstract = $13,
+                notes = $14,
+                keywords = $15,
+                is_valid = $16,
+                edition_id = $17,
+                updated_at = $18,
+                marc_record = $19
+            WHERE id = $20 AND archived_at IS NULL
+            "#,
+        )
+        .bind(&biblio.media_type)
+        .bind(&biblio.isbn.as_ref().map(|i| i.to_string()))
+        .bind(&biblio.publication_date)
+        .bind(&biblio.lang)
+        .bind(&biblio.lang_orig)
+        .bind(&biblio.title)
+        .bind(&biblio.subject)
+        .bind(&biblio.audience_type)
+        .bind(&biblio.page_extent)
+        .bind(&biblio.format)
+        .bind(&biblio.table_of_contents)
+        .bind(&biblio.accompanying_material)
+        .bind(&biblio.abstract_)
+        .bind(&biblio.notes)
+        .bind(&biblio.keywords)
+        .bind(biblio.is_valid.unwrap_or(true))
+        .bind(&biblio.edition_id)
+        .bind(&biblio.updated_at)
+        .bind(&marc_json)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+        if n == 0 {
+            tx.rollback().await?;
+            return Err(AppError::NotFound(format!("biblio {} not found or archived", id)));
+        }
+
+        self.sync_biblio_series_tx(&mut tx, id, &biblio.series_ids, &biblio.series_volume_numbers)
+            .await?;
+        self.sync_biblio_collections_tx(&mut tx, id, &biblio.collection_ids, &biblio.collection_volume_numbers)
+            .await?;
+        self.sync_biblio_authors_tx(&mut tx, id, &biblio.authors).await?;
 
         tx.commit().await?;
 
@@ -1597,6 +1742,27 @@ impl Repository {
         Ok(items)
     }
 
+    /// Get one active item by id (same row shape as [`biblios_get_items`]).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn items_get_active_by_id(&self, item_id: i64) -> AppResult<Item> {
+        sqlx::query_as::<_, Item>(
+            r#"
+            SELECT i.id, i.biblio_id, i.source_id, i.barcode, i.call_number, i.volume_designation,
+                   i.place, i.borrowable, i.circulation_status, i.notes, i.price,
+                   i.created_at, i.updated_at, i.archived_at,
+                   so.name as source_name,
+                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed
+            FROM items i
+            LEFT JOIN sources so ON i.source_id = so.id
+            WHERE i.id = $1 AND i.archived_at IS NULL
+            "#,
+        )
+        .bind(item_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Item {item_id} not found")))
+    }
+
     /// Get ItemShort for many biblios (excludes archived). Used to attach items to BiblioShort lists.
     #[tracing::instrument(skip(self), err)]
     pub async fn biblios_get_items_short_by_biblio_ids(
@@ -1822,8 +1988,8 @@ impl Repository {
 
         if borrowed > 0 {
             if !force {
-                return Err(AppError::BusinessRule(
-                    "Item is currently borrowed. Use force=true to delete anyway.".to_string()
+                return Err(AppError::Conflict(
+                    "Item is currently borrowed. Use force=true to delete anyway.".to_string(),
                 ));
             }
             let loan_ids = self.loans_get_active_ids_for_item(id).await?;
@@ -2091,6 +2257,27 @@ impl Repository {
         _new_source_id: i64,
     ) -> AppResult<i64> {
         Ok(0)
+    }
+
+    /// Load optional `marc_record` JSONB (bibliographic notice; local items filled at export time).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn biblios_get_marc_record_optional(&self, biblio_id: i64) -> AppResult<Option<crate::marc::MarcRecord>> {
+        let json_opt: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT marc_record FROM biblios WHERE id = $1",
+        )
+        .bind(biblio_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let Some(json) = json_opt else {
+            return Ok(None);
+        };
+        if json.is_null() {
+            return Ok(None);
+        }
+        serde_json::from_value(json).map_err(|e| {
+            AppError::Internal(format!("Invalid marc_record JSON for biblio {}: {}", biblio_id, e))
+        })
+        .map(Some)
     }
 }
 

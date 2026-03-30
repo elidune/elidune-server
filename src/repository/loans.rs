@@ -7,10 +7,14 @@ use sqlx::Row;
 use super::Repository;
 use crate::{
     error::{AppError, AppResult},
+    marc::MarcRecord,
     models::{
-        biblio::{BiblioShort, Isbn, MediaType},
-        item::ItemShort,
-        loan::{CreateLoan, Loan, LoanDetails, LoanReturnOutcome, LoanSettings},
+        author::Author,
+        biblio::{Biblio, BiblioShort, Collection, Edition, Isbn, MediaType, Serie},
+        item::{Item, ItemShort},
+        loan::{
+            CreateLoan, Loan, LoanDetails, LoanMarcExportRow, LoanReturnOutcome, LoanSettings,
+        },
         user::{UserShort, UserShortRow},
     },
 };
@@ -32,6 +36,12 @@ pub trait LoansRepository: Send + Sync {
         page: i64,
         per_page: i64,
     ) -> AppResult<(Vec<LoanDetails>, i64)>;
+    /// All loans for MARC export (no pagination). Active or archived only.
+    async fn loans_get_for_marc_export(
+        &self,
+        user_id: i64,
+        archived: bool,
+    ) -> AppResult<Vec<LoanMarcExportRow>>;
     async fn loans_create(&self, loan: &CreateLoan) -> AppResult<(i64, DateTime<Utc>)>;
     async fn loans_return(&self, loan_id: i64) -> AppResult<LoanReturnOutcome>;
     async fn loans_renew(&self, loan_id: i64) -> AppResult<(DateTime<Utc>, i16)>;
@@ -100,6 +110,13 @@ impl LoansRepository for Repository {
         per_page: i64,
     ) -> crate::error::AppResult<(Vec<LoanDetails>, i64)> {
         Repository::loans_archives_get_for_user(self, user_id, page, per_page).await
+    }
+    async fn loans_get_for_marc_export(
+        &self,
+        user_id: i64,
+        archived: bool,
+    ) -> crate::error::AppResult<Vec<LoanMarcExportRow>> {
+        Repository::loans_get_for_marc_export(self, user_id, archived).await
     }
     async fn loans_create(&self, loan: &CreateLoan) -> crate::error::AppResult<(i64, chrono::DateTime<chrono::Utc>)> {
         Repository::loans_create(self, loan).await
@@ -359,6 +376,300 @@ impl Repository {
         Ok((Self::map_loan_rows(rows), total))
     }
 
+    /// All loans for one user for MARC file export (no pagination): one round-trip with full [`Biblio`] per row.
+    pub async fn loans_get_for_marc_export(
+        &self,
+        user_id: i64,
+        archived: bool,
+    ) -> AppResult<Vec<LoanMarcExportRow>> {
+        const BIBLIO_MARC_EXPORT_SELECT: &str = r#"
+            b.id AS biblio_id,
+            b.media_type,
+            b.isbn,
+            b.publication_date,
+            b.lang,
+            b.lang_orig,
+            b.title,
+            b.subject,
+            b.audience_type,
+            b.page_extent,
+            b.format,
+            b.table_of_contents,
+            b.accompanying_material,
+            b.abstract AS "abstract_",
+            b.notes,
+            b.keywords,
+            b.edition_id,
+            b.is_valid,
+            b.created_at AS biblio_created_at,
+            b.updated_at AS biblio_updated_at,
+            b.archived_at AS biblio_archived_at,
+            b.marc_record,
+            (SELECT COALESCE(
+                jsonb_agg(
+                    jsonb_build_object(
+                        'id', a.id::text,
+                        'key', a.key,
+                        'lastname', a.lastname,
+                        'firstname', a.firstname,
+                        'bio', a.bio,
+                        'notes', a.notes,
+                        'function', ba.function
+                    ) ORDER BY ba.position
+                ),
+                '[]'::jsonb
+            )
+            FROM biblio_authors ba
+            JOIN authors a ON a.id = ba.author_id
+            WHERE ba.biblio_id = b.id) AS authors_json,
+            (SELECT COALESCE(
+                jsonb_agg(
+                    jsonb_build_object(
+                        'id', s.id::text,
+                        'key', s.key,
+                        'name', s.name,
+                        'issn', s.issn,
+                        'createdAt', to_jsonb(s.created_at),
+                        'updatedAt', to_jsonb(s.updated_at),
+                        'volumeNumber', to_jsonb(bsx.volume_number)
+                    ) ORDER BY bsx.position
+                ),
+                '[]'::jsonb
+            )
+            FROM biblio_series bsx
+            INNER JOIN series s ON s.id = bsx.series_id
+            WHERE bsx.biblio_id = b.id) AS series_json,
+            (SELECT COALESCE(
+                jsonb_agg(
+                    jsonb_build_object(
+                        'id', c.id::text,
+                        'key', c.key,
+                        'name', c.name,
+                        'secondaryTitle', c.secondary_title,
+                        'tertiaryTitle', c.tertiary_title,
+                        'issn', c.issn,
+                        'createdAt', to_jsonb(c.created_at),
+                        'updatedAt', to_jsonb(c.updated_at),
+                        'volumeNumber', to_jsonb(bcx.volume_number)
+                    ) ORDER BY bcx.position
+                ),
+                '[]'::jsonb
+            )
+            FROM biblio_collections bcx
+            INNER JOIN collections c ON c.id = bcx.collection_id
+            WHERE bcx.biblio_id = b.id) AS collections_json,
+            (SELECT jsonb_build_object(
+                'id', e.id::text,
+                'publisherName', e.publisher_name,
+                'placeOfPublication', e.place_of_publication,
+                'date', e.date,
+                'createdAt', to_jsonb(e.created_at),
+                'updatedAt', to_jsonb(e.updated_at)
+            )
+            FROM editions e WHERE e.id = b.edition_id) AS edition_json,
+            it.id AS item_id,
+            it.biblio_id AS item_biblio_id,
+            it.source_id AS item_source_id,
+            it.barcode AS item_barcode,
+            it.call_number AS item_call_number,
+            it.volume_designation AS item_volume_designation,
+            it.place AS item_place,
+            it.borrowable AS item_borrowable,
+            it.circulation_status AS item_circulation_status,
+            it.notes AS item_notes,
+            it.price AS item_price,
+            it.created_at AS item_created_at,
+            it.updated_at AS item_updated_at,
+            it.archived_at AS item_archived_at,
+            so.name AS item_source_name,
+            EXISTS(
+                SELECT 1 FROM loans ln WHERE ln.item_id = it.id AND ln.returned_at IS NULL
+            ) AS item_borrowed
+        "#;
+
+        let sql = if archived {
+            format!(
+                r#"
+                SELECT
+                    la.date AS start_date,
+                    la.expiry_at,
+                    la.returned_at,
+                    {BIBLIO_MARC_EXPORT_SELECT}
+                FROM loans_archives la
+                JOIN items it ON la.item_id = it.id
+                LEFT JOIN sources so ON it.source_id = so.id
+                JOIN biblios b ON it.biblio_id = b.id
+                WHERE la.user_id = $1
+                ORDER BY la.returned_at DESC NULLS LAST
+                "#
+            )
+        } else {
+            format!(
+                r#"
+                SELECT
+                    l.date AS start_date,
+                    l.expiry_at,
+                    l.returned_at,
+                    {BIBLIO_MARC_EXPORT_SELECT}
+                FROM loans l
+                JOIN items it ON l.item_id = it.id
+                LEFT JOIN sources so ON it.source_id = so.id
+                JOIN biblios b ON it.biblio_id = b.id
+                WHERE l.user_id = $1
+                  AND l.returned_at IS NULL
+                  AND b.archived_at IS NULL
+                  AND it.archived_at IS NULL
+                ORDER BY l.expiry_at ASC NULLS LAST
+                "#
+            )
+        };
+
+        let rows = sqlx::query(&sql).bind(user_id).fetch_all(&self.pool).await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(Self::loan_marc_export_row_from_pg(row)?);
+        }
+        Ok(out)
+    }
+
+    fn loan_marc_export_row_from_pg(row: sqlx::postgres::PgRow) -> AppResult<LoanMarcExportRow> {
+        let start_date: DateTime<Utc> = row.try_get("start_date").map_err(|e| {
+            AppError::Internal(format!("marc export row start_date: {}", e))
+        })?;
+        let expiry_at: Option<DateTime<Utc>> = row.try_get("expiry_at").map_err(|e| {
+            AppError::Internal(format!("marc export row expiry_at: {}", e))
+        })?;
+        let returned_at: Option<DateTime<Utc>> = row.try_get("returned_at").map_err(|e| {
+            AppError::Internal(format!("marc export row returned_at: {}", e))
+        })?;
+
+        let authors: Vec<Author> = {
+            let v: serde_json::Value = row
+                .try_get("authors_json")
+                .unwrap_or_else(|_| serde_json::json!([]));
+            serde_json::from_value(v).map_err(|e| {
+                AppError::Internal(format!("marc export authors_json: {}", e))
+            })?
+        };
+        let series: Vec<Serie> = {
+            let v: serde_json::Value = row
+                .try_get("series_json")
+                .unwrap_or_else(|_| serde_json::json!([]));
+            serde_json::from_value(v).map_err(|e| {
+                AppError::Internal(format!("marc export series_json: {}", e))
+            })?
+        };
+        let collections: Vec<Collection> = {
+            let v: serde_json::Value = row
+                .try_get("collections_json")
+                .unwrap_or_else(|_| serde_json::json!([]));
+            serde_json::from_value(v).map_err(|e| {
+                AppError::Internal(format!("marc export collections_json: {}", e))
+            })?
+        };
+
+        let edition: Option<Edition> = {
+            let v: Option<serde_json::Value> = row.try_get("edition_json").ok().flatten();
+            match v {
+                None => None,
+                Some(ref x) if x.is_null() => None,
+                Some(v) => Some(serde_json::from_value(v).map_err(|e| {
+                    AppError::Internal(format!("marc export edition_json: {}", e))
+                })?),
+            }
+        };
+
+        let isbn_raw: Option<String> = row.try_get("isbn").ok().flatten();
+        let isbn = isbn_raw.and_then(|s| {
+            let i = Isbn::new(s);
+            if i.is_empty() {
+                None
+            } else {
+                Some(i)
+            }
+        });
+
+        let marc_record: Option<MarcRecord> = {
+            let v: Option<serde_json::Value> = row.try_get("marc_record").ok().flatten();
+            match v {
+                None => None,
+                Some(ref x) if x.is_null() => None,
+                Some(v) => Some(serde_json::from_value(v).map_err(|e| {
+                    AppError::Internal(format!("marc export marc_record: {}", e))
+                })?),
+            }
+        };
+
+        let item = Item {
+            id: row.try_get("item_id").ok(),
+            biblio_id: row.try_get("item_biblio_id").ok(),
+            source_id: row.try_get("item_source_id").ok(),
+            barcode: row.try_get("item_barcode").ok().flatten(),
+            call_number: row.try_get("item_call_number").ok().flatten(),
+            volume_designation: row.try_get("item_volume_designation").ok().flatten(),
+            place: row.try_get("item_place").ok().flatten(),
+            borrowable: row.try_get("item_borrowable").unwrap_or(true),
+            circulation_status: row.try_get("item_circulation_status").ok().flatten(),
+            notes: row.try_get("item_notes").ok().flatten(),
+            price: row.try_get("item_price").ok().flatten(),
+            created_at: row.try_get("item_created_at").ok().flatten(),
+            updated_at: row.try_get("item_updated_at").ok().flatten(),
+            archived_at: row.try_get("item_archived_at").ok().flatten(),
+            source_name: row.try_get("item_source_name").ok().flatten(),
+            borrowed: row.try_get("item_borrowed").unwrap_or(false),
+        };
+
+        let series_ids: Vec<i64> = series.iter().filter_map(|s| s.id).collect();
+        let series_volume_numbers: Vec<Option<i16>> =
+            series.iter().map(|s| s.volume_number).collect();
+        let collection_ids: Vec<i64> = collections.iter().filter_map(|c| c.id).collect();
+        let collection_volume_numbers: Vec<Option<i16>> =
+            collections.iter().map(|c| c.volume_number).collect();
+
+        let biblio = Biblio {
+            id: row.try_get("biblio_id").ok(),
+            media_type: row.try_get("media_type").map_err(|e| {
+                AppError::Internal(format!("marc export media_type: {}", e))
+            })?,
+            isbn,
+            title: row.try_get("title").ok().flatten(),
+            subject: row.try_get("subject").ok().flatten(),
+            audience_type: row.try_get("audience_type").ok().flatten(),
+            lang: row.try_get("lang").ok().flatten(),
+            lang_orig: row.try_get("lang_orig").ok().flatten(),
+            publication_date: row.try_get("publication_date").ok().flatten(),
+            page_extent: row.try_get("page_extent").ok().flatten(),
+            format: row.try_get("format").ok().flatten(),
+            table_of_contents: row.try_get("table_of_contents").ok().flatten(),
+            accompanying_material: row.try_get("accompanying_material").ok().flatten(),
+            abstract_: row.try_get("abstract_").ok().flatten(),
+            notes: row.try_get("notes").ok().flatten(),
+            keywords: row.try_get("keywords").ok().flatten(),
+            is_valid: row.try_get("is_valid").ok().flatten(),
+            series_ids,
+            series_volume_numbers,
+            edition_id: row.try_get("edition_id").ok().flatten(),
+            collection_ids,
+            collection_volume_numbers,
+            created_at: row.try_get("biblio_created_at").ok().flatten(),
+            updated_at: row.try_get("biblio_updated_at").ok().flatten(),
+            archived_at: row.try_get("biblio_archived_at").ok().flatten(),
+            authors,
+            series,
+            collections,
+            edition,
+            items: vec![item],
+            marc_record,
+        };
+
+        Ok(LoanMarcExportRow {
+            start_date,
+            expiry_at: expiry_at.unwrap_or(start_date),
+            returned_at,
+            biblio,
+        })
+    }
+
     fn map_loan_rows(rows: Vec<sqlx::postgres::PgRow>) -> Vec<LoanDetails> {
         let now = Utc::now();
         rows.into_iter().map(|row| {
@@ -378,6 +689,7 @@ impl Repository {
 
             LoanDetails {
                 id: row.get("id"),
+                item_id: row.get("item_copy_id"),
                 start_date,
                 expiry_at: expiry_at.unwrap_or(now),
                 renewal_date: renew_at,
@@ -393,7 +705,7 @@ impl Repository {
                     title: row.get("title"),
                     date: row.get("publication_date"),
                     status: 0,
-                    is_valid: Some(1),
+                    is_valid: Some(true),
                     archived_at: None,
                     author: row.get::<Option<serde_json::Value>, _>("author")
                         .and_then(|v| serde_json::from_value(v).ok()),
@@ -676,6 +988,7 @@ impl Repository {
 
         let details = LoanDetails {
             id: loan.id,
+            item_id: loan.item_id,
             start_date: loan.date,
             expiry_at: loan.expiry_at.unwrap_or(now),
             renewal_date: loan.renew_at,
@@ -688,7 +1001,7 @@ impl Repository {
                 title: biblio_row.get("title"),
                 date: biblio_row.get("publication_date"),
                 status: 0,
-                is_valid: Some(1),
+                is_valid: Some(true),
                 archived_at: None,
                 author: None,
                 items: vec![item_short],

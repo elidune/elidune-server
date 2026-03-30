@@ -840,22 +840,4 @@ impl Repository {
         .map_err(Into::into)
     }
 
-    pub async fn users_get_history_enabled(&self, user_id: i64) -> AppResult<bool> {
-        let enabled: Option<bool> = sqlx::query_scalar(
-            "SELECT history_enabled FROM users WHERE id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(enabled.unwrap_or(true))
-    }
-
-    pub async fn users_set_history_enabled(&self, user_id: i64, enabled: bool) -> AppResult<()> {
-        sqlx::query("UPDATE users SET history_enabled = $1 WHERE id = $2")
-            .bind(enabled)
-            .bind(user_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
 }

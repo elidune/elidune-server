@@ -11,7 +11,7 @@ use crate::{
     api::z3950::{ImportItem, Z3950SearchQuery, Z3950ServerConfig},
     error::{AppError, AppResult},
     models::{
-        biblio::Biblio,
+        biblio::{Biblio, Isbn},
         import_report::{ImportAction, ImportReport},
         item::Item,
     },
@@ -20,18 +20,18 @@ use crate::{
     services::redis::RedisService,
 };
 
-/// Z39.50 server configuration
+/// Z39.50 server configuration (from `z3950servers` row) for connect / query.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct Z3950Server {
-    id: i64,
-    name: String,
-    address: String,
-    port: i32,
-    database: String,
-    login: Option<String>,
-    password: Option<String>,
-    format: Option<MarcFormat>,
+pub struct Z3950Server {
+    pub id: i64,
+    pub name: String,
+    pub address: String,
+    pub port: i32,
+    pub database: String,
+    pub login: Option<String>,
+    pub password: Option<String>,
+    #[allow(dead_code)]
+    pub format: Option<MarcFormat>,
 }
 
 #[derive(Clone)]
@@ -149,79 +149,117 @@ impl Z3950Service {
         Ok((all_biblios, total, source))
     }
 
-  
+    /// Load one **active** Z39.50 server by id (same filter as search).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn load_active_server(&self, server_id: i64) -> AppResult<Z3950Server> {
+        let rows = self
+            .repository
+            .z3950_servers_list_active_for_search(Some(server_id))
+            .await?;
+        let row = rows.into_iter().next().ok_or_else(|| {
+            AppError::NotFound("Z39.50 server not found or not active".to_string())
+        })?;
+        Ok(Z3950Server {
+            id: row.id,
+            name: row.name.unwrap_or_default(),
+            address: row.address.unwrap_or_default(),
+            port: row.port.unwrap_or(2200),
+            database: row.database.unwrap_or_default(),
+            format: None,
+            login: row.login,
+            password: row.password,
+        })
+    }
 
-    /// Query a single Z39.50 server using z3950-rs
-    async fn query_server(
-        &self,
-        server: &Z3950Server,
-        query: &Z3950SearchQuery,
-    ) -> AppResult<Vec<MarcRecord>> {
-        // Build connection address: host:port
+    /// Open a TCP/Z39.50 session to the given server. Caller must [`Client::close`] when finished.
+    #[tracing::instrument(skip(server), fields(server = %server.name))]
+    pub async fn connect_server(server: &Z3950Server) -> AppResult<Client> {
         let addr = format!("{}:{}", server.address, server.port);
-        
-        tracing::info!("Z39.50 search starting on server: {}", server.name);
-        tracing::debug!("Z39.50 connection: {} (database: {})", addr, server.database);
-        tracing::debug!("Z39.50 query: {:?}", query);
+        tracing::debug!("Z39.50 connect: {} (database: {})", addr, server.database);
 
-        // Connect to server
         let credentials = if let (Some(ref login), Some(ref password)) = (&server.login, &server.password) {
             Some((login.as_str(), password.as_str()))
         } else {
             None
         };
 
-        let mut client = if let Some((login, password)) = credentials {
-            Client::connect_with_credentials(&addr, Some((login, password))).await
+        let client = if let Some((login, password)) = credentials {
+            Client::connect_with_credentials(&addr, Some((login, password)))
+                .await
                 .map_err(|e| {
                     tracing::warn!("Failed to connect to Z39.50 server {}: {}", server.name, e);
                     AppError::Z3950(format!("Failed to connect to Z39.50 server: {}", e))
                 })?
         } else {
-            Client::connect(&addr).await
-                .map_err(|e| {
-                    tracing::warn!("Failed to connect to Z39.50 server {}: {}", server.name, e);
-                    AppError::Z3950(format!("Failed to connect to Z39.50 server: {}", e))
-                })?
+            Client::connect(&addr).await.map_err(|e| {
+                tracing::warn!("Failed to connect to Z39.50 server {}: {}", server.name, e);
+                AppError::Z3950(format!("Failed to connect to Z39.50 server: {}", e))
+            })?
         };
 
-        // Search
+        Ok(client)
+    }
+
+    /// CQL search + MARC present on an **existing** connection. Does **not** close the client.
+    #[tracing::instrument(skip(client, query), fields(server = %server.name))]
+    pub async fn query(
+        client: &mut Client,
+        server: &Z3950Server,
+        query: &Z3950SearchQuery,
+    ) -> AppResult<Vec<MarcRecord>> {
+        tracing::debug!("Z39.50 query: {:?}", query);
+
         let databases = if server.database.is_empty() {
             &["default" as &str]
         } else {
             &[server.database.as_str()]
         };
 
-        let search_response = client.search(databases, QueryLanguage::CQL(query.query.clone())).await
+        let search_response = client
+            .search(databases, QueryLanguage::CQL(query.query.clone()))
+            .await
             .map_err(|e| {
                 tracing::warn!("Z39.50 search failed on {}: {}", server.name, e);
                 AppError::Z3950(format!("Z39.50 search failed: {}", e))
             })?;
 
-        // Convert Integer to usize
-        let hits = usize::try_from(&search_response.result_count)
-            .unwrap_or_else(|_| search_response.result_count.to_string().parse::<usize>().unwrap_or(0));
+        let hits = usize::try_from(&search_response.result_count).unwrap_or_else(|_| {
+            search_response
+                .result_count
+                .to_string()
+                .parse::<usize>()
+                .unwrap_or(0)
+        });
         tracing::debug!("Z39.50 search returned {} hits on {}", hits, server.name);
 
         if hits == 0 {
-            let _ = client.close().await;
             return Ok(Vec::new());
         }
 
-        // Present records
         let count = std::cmp::min(hits, query.max_results.unwrap_or(50) as usize);
-        let records = client.present_marc(1, count as i64).await
+        let records = client
+            .present_marc(1, count as i64)
+            .await
             .map_err(|e| {
                 tracing::warn!("Z39.50 present failed on {}: {}", server.name, e);
                 AppError::Z3950(format!("Z39.50 present failed: {}", e))
             })?;
 
-        // Close connection
-        let _ = client.close().await;
-
-        // z3950_rs::MarcRecord is already a marc_rs::Record
         tracing::info!("z3950-rs returned {} MARC records from {}", records.len(), server.name);
         Ok(records)
+    }
+
+    /// Connect, search, present, then close — convenience for one-shot calls.
+    pub(crate) async fn query_server(
+        &self,
+        server: &Z3950Server,
+        query: &Z3950SearchQuery,
+    ) -> AppResult<Vec<MarcRecord>> {
+        tracing::info!("Z39.50 search starting on server: {}", server.name);
+        let mut client = Self::connect_server(server).await?;
+        let out = Self::query(&mut client, server, query).await;
+        let _ = client.close().await;
+        out
     }
 
 
@@ -313,6 +351,8 @@ impl Z3950Service {
 
         Ok((biblio, report))
     }
+
+    
 
     /// Staff UI: all Z39.50 server rows.
     pub async fn get_servers_for_settings(&self) -> AppResult<Vec<Z3950ServerConfig>> {

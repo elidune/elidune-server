@@ -105,10 +105,6 @@ pub mod event {
     pub const IMPORT_MARC_BATCH: &str = "import.marc_batch";
     pub const IMPORT_Z3950_RECORD: &str = "import.z3950_record";
 
-    // History / GDPR
-    pub const HISTORY_OPT_IN: &str = "history.opt_in";
-    pub const HISTORY_OPT_OUT: &str = "history.opt_out";
-
     // Holds
     pub const HOLD_CREATED: &str = "hold.created";
     pub const HOLD_CANCELLED: &str = "hold.cancelled";

@@ -256,14 +256,35 @@ Request — `ChangePasswordRequest`:
 ### `CreateBiblioQuery` / `CreateItemQuery` (query params)
 `?allowDuplicateIsbn=false&confirmReplaceExistingId=123`
 
-### `GetItemQuery` (query params for `GET /items/:id`)
-`?fullRecord=false`
-
-### `UpdateItemQuery` (query params for `PUT /items/:id`)
-`?allowDuplicateIsbn=false`
-
-### `ImportMarcBatchQuery` (query params for `POST /items/import-marc-batch`)
+### `ImportMarcBatchQuery` (query params for `POST /biblios/import-marc-batch`)
 `?sourceId=100000000000000001&batchId=927364819265437696&recordId=1`
+
+### MARC preview — `EnqueueResult` (`POST /biblios/load-marc`, `GET /biblios/marc-batch/:batchId`)
+
+Réponse commune après upload UNIMARC ou rechargement d’un lot en cache. Voir **[MARC import preview — guide GUI](marc-import-preview-api-gui.md)** (migration `biblios` → `previews`, champ `validationIssues`).
+
+```json
+{
+  "batchId": "927364819265437703",
+  "previews": [
+    {
+      "id": "0",
+      "mediaType": "b",
+      "isbn": "978-2-07-040850-4",
+      "title": "…",
+      "date": "1995",
+      "status": 0,
+      "isValid": true,
+      "archivedAt": null,
+      "author": null,
+      "items": [],
+      "validationIssues": []
+    }
+  ]
+}
+```
+
+Each preview item is a **`BiblioShort`-shaped object** (flattened) plus **`validationIssues`** (array from marc-rs `Record::validation_issues`).
 
 ### `CreateBiblioResponse` / `CreateItemResponse`
 ```json
@@ -321,7 +342,7 @@ Request — `ChangePasswordRequest`:
   "abstract": null,
   "notes": null,
   "keywords": ["detective", "mystery"],
-  "isValid": 1,
+  "isValid": true,
   "seriesIds": [],
   "seriesVolumeNumbers": [],
   "editionId": null,
@@ -349,7 +370,7 @@ Request — `ChangePasswordRequest`:
   "title": "Sherlock Holmes",
   "date": "1995",
   "status": 0,
-  "isValid": 1,
+  "isValid": true,
   "archivedAt": null,
   "author": { ...Author... },
   "items": [{ ...ItemShort... }]
@@ -1253,7 +1274,7 @@ interface ItemShort {
 }
 interface BiblioShort {
   id: ID; mediaType: string; isbn: string | null; title: string | null;
-  date: string | null; status: number; isValid: number | null;
+  date: string | null; status: number; isValid: boolean | null;
   archivedAt: string | null; author: Author | null; items: ItemShort[];
 }
 interface Biblio {
@@ -1263,7 +1284,7 @@ interface Biblio {
   publicationDate: string | null; pageExtent: string | null;
   format: string | null; tableOfContents: string | null;
   accompanyingMaterial: string | null; abstract: string | null;
-  notes: string | null; keywords: string[] | null; isValid: number | null;
+  notes: string | null; keywords: string[] | null; isValid: boolean | null;
   seriesIds: ID[]; seriesVolumeNumbers: (number | null)[];
   editionId: ID | null;
   collectionIds: ID[]; collectionVolumeNumbers: (number | null)[];

@@ -1,559 +1,137 @@
-//! Item (catalog) endpoints
+//! Physical item (copy) endpoints
 
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
-    response::IntoResponse,
     Json,
 };
-use axum_extra::extract::Multipart;
-use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
-use utoipa::ToSchema;
+use serde::Deserialize;
 
 use crate::{
-    error::{AppError, AppResult},
-    models::{
-        import_report::ImportReport,
-        item::{Item, ItemQuery, ItemShort},
-        specimen::Specimen,
-    },
-    services::{
-        audit::{self},
-        marc::{EnqueueResult, MarcBatchImportReport},
-    },
+    error::AppResult,
+    models::biblio::Biblio,
+    models::item::Item,
+    services::audit::{self},
 };
 
 use super::{AuthenticatedUser, ClientIp, ValidatedJson};
 
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct GetItemQuery {
-    /// If true, include the full MARC record (marc_record JSONB) in the response
-    #[serde(default)]
-    pub full_record: bool,
-}
-
-/// Generic paginated response wrapper returned by list endpoints.
-///
-/// All list endpoints return this envelope so clients have a consistent way
-/// to read pagination metadata without inspecting headers.
-#[derive(Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct PaginatedResponse<T>
-where
-    T: for<'a> ToSchema<'a>,
-{
-    /// Page contents
-    pub items: Vec<T>,
-    /// Total number of matching records across all pages
-    pub total: i64,
-    /// Current 1-based page number
-    pub page: i64,
-    /// Maximum records per page
-    pub per_page: i64,
-    /// Total number of pages (`ceil(total / per_page)`)
-    pub page_count: i64,
-}
-
-impl<T: for<'a> ToSchema<'a>> PaginatedResponse<T> {
-    /// Construct a paginated response, calculating `page_count` automatically.
-    pub fn new(items: Vec<T>, total: i64, page: i64, per_page: i64) -> Self {
-        let page_count = if per_page > 0 {
-            (total + per_page - 1) / per_page
-        } else {
-            0
-        };
-        Self { items, total, page, per_page, page_count }
-    }
-}
-
-/// List items with search and pagination
-#[utoipa::path(
-    get,
-    path = "/items",
-    tag = "items",
-    security(("bearer_auth" = [])),
-    params(
-        ("media_type" = Option<String>, Query, description = "Filter by media type"),
-        ("title" = Option<String>, Query, description = "Search in title"),
-        ("author" = Option<String>, Query, description = "Search by author"),
-        ("isbn" = Option<String>, Query, description = "Search by ISBN/ISSN"),
-        ("freesearch" = Option<String>, Query, description = "Full-text search"),
-        ("page" = Option<i64>, Query, description = "Page number (default: 1)"),
-        ("per_page" = Option<i64>, Query, description = "Items per page (default: 20)")
-    ),
-    responses(
-        (status = 200, description = "List of items", body = PaginatedResponse<ItemShort>),
-        (status = 401, description = "Not authenticated")
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::get;
+    axum::Router::new().route(
+        "/items/:id",
+        get(get_biblio_by_item).put(update_item).delete(delete_item),
     )
-)]
-pub async fn list_items(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    Query(query): Query<ItemQuery>,
-) -> AppResult<Json<PaginatedResponse<ItemShort>>> {
-    claims.require_read_items()?;
-
-    let (items, total) = state.services.catalog.search_items(&query).await?;
-    let page = query.page.unwrap_or(1);
-    let per_page = query.per_page.unwrap_or(20);
-
-    Ok(Json(PaginatedResponse::new(items, total, page, per_page)))
 }
 
-/// Get item details by ID
+/// Get the bibliographic record for a physical copy.
+///
+/// Response is a full [`Biblio`]; `items` contains **only** the copy whose id was requested.
 #[utoipa::path(
     get,
     path = "/items/{id}",
     tag = "items",
     security(("bearer_auth" = [])),
     params(
-        ("id" = i32, Path, description = "Item ID"),
-        ("full_record" = Option<bool>, Query, description = "If true, include full MARC record data")
+        ("id" = i64, Path, description = "Physical copy (item) ID")
     ),
     responses(
-        (status = 200, description = "Item details", body = Item),
-        (status = 404, description = "Item not found")
+        (status = 200, description = "Biblio with a single item entry", body = Biblio),
+        (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse),
+        (status = 404, description = "Item not found or archived", body = crate::error::ErrorResponse),
+        (status = 410, description = "Bibliographic record is archived", body = crate::error::ErrorResponse)
     )
 )]
-pub async fn get_item(
+pub async fn get_biblio_by_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
-    Path(id): Path<i64>,
-    Query(query): Query<GetItemQuery>,
-) -> AppResult<Json<Item>> {
+    Path(item_id): Path<i64>,
+) -> AppResult<Json<Biblio>> {
     claims.require_read_items()?;
-
-   
-    let item = state.services.catalog.get_item(id).await?;
-    Ok(Json(item))
+    let biblio = state.services.catalog.get_biblio_for_item(item_id).await?;
+    Ok(Json(biblio))
 }
 
-/// Query params for create item
-#[serde_as]
-#[derive(Debug, Deserialize, Default, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateItemQuery {
-    /// If true, allow creating an item even when another item has the same ISBN
-    #[serde(default)]
-    pub allow_duplicate_isbn: bool,
-    /// Set to the existing item ID to confirm replacement of a duplicate
-    pub confirm_replace_existing_id: Option<i64>,
-}
-
-/// Response body for item creation (item + optional dedup report)
-#[derive(Serialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateItemResponse {
-    pub item: Item,
-    pub import_report: ImportReport,
-}
-
-/// Query params for UNIMARC upload
-#[derive(Debug, Deserialize)]
-pub struct UploadUnimarcQuery {
-}
-
-/// Query params for MARC batch import
-#[serde_as]
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportMarcBatchQuery {
-    /// Source ID
-    #[serde_as(as = "DisplayFromStr")]
-    #[schema(value_type = String)]
-    pub source_id: i64,
-    /// Batch identifier returned by upload_unimarc
-    #[serde_as(as = "DisplayFromStr")]
-    #[schema(value_type = String)]
-    pub batch_id: i64,
-    /// Optional record id inside the batch (e.g. \"1\", \"2\", ...)
-    pub record_id: Option<usize>,
-}
-
-/// Create a new item (with ISBN deduplication)
-#[utoipa::path(
-    post,
-    path = "/items",
-    tag = "items",
-    security(("bearer_auth" = [])),
-    params(
-        ("allow_duplicate_isbn" = Option<bool>, Query, description = "Allow duplicate ISBN (default: false)"),
-        ("confirm_replace_existing_id" = Option<i64>, Query, description = "Confirm replacement of duplicate item")
-    ),
-    request_body = Item,
-    responses(
-        (status = 201, description = "Item created or merged", body = CreateItemResponse),
-        (status = 400, description = "Invalid input"),
-        (status = 409, description = "Duplicate ISBN requires confirmation", body = crate::models::import_report::DuplicateConfirmationRequired)
-    )
-)]
-pub async fn create_item(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    ClientIp(ip): ClientIp,
-    Query(query): Query<CreateItemQuery>,
-    Json(item): Json<Item>,
-) -> AppResult<(StatusCode, Json<CreateItemResponse>)> {
-    claims.require_write_items()?;
-    let (item, import_report) = state
-        .services
-        .catalog
-        .create_item(item, query.allow_duplicate_isbn, query.confirm_replace_existing_id)
-        .await?;
-
-    state.services.audit.log(
-        audit::event::ITEM_CREATED,
-        Some(claims.user_id),
-        Some("item"),
-        item.id,
-        ip,
-        Some(&item),
-    );
-
-    Ok((StatusCode::CREATED, Json(CreateItemResponse { item, import_report })))
-}
-
-/// Upload a UNIMARC file and return parsed items with linked specimens (995/952).
-#[utoipa::path(
-    post,
-    path = "/items/load-marc",
-    tag = "items",
-    security(("bearer_auth" = [])),
-    params(
-        ("source_id" = i64, Query, description = "Source ID associated to this MARC batch")
-    ),
-    responses(
-        (status = 200, description = "Parsed items with specimens", body = EnqueueResult),
-        (status = 400, description = "Missing file or invalid UNIMARC"),
-        (status = 401, description = "Not authenticated")
-    )
-)]
-pub async fn upload_unimarc(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    mut multipart: Multipart,
-) -> AppResult<Json<EnqueueResult>> {
-    claims.require_read_items()?;
-
-    let mut data = Vec::new();
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("Multipart error: {}", e)))?
-    {
-        if field.name().as_deref() == Some("file") {
-            let bytes = field
-                .bytes()
-                .await
-                .map_err(|e| AppError::BadRequest(format!("Failed to read field: {}", e)))?;
-            data = bytes.to_vec();
-            break;
-        }
-    }
-    if data.is_empty() {
-        return Err(AppError::BadRequest(
-            "Missing 'file' field in multipart form".to_string(),
-        ));
-    }
-
-    let enqueue_result = state
-        .services
-        .marc
-        .enqueue_unimarc_batch(&data)
-        .await?;
-
-    // store 
-    Ok(Json(enqueue_result))
-}
-
-/// Import cached MARC records from a batch into the catalog.
-#[utoipa::path(
-    post,
-    path = "/items/import-marc-batch",
-    tag = "items",
-    security(("bearer_auth" = [])),
-    params(
-        ("batch_id" = String, Query, description = "MARC batch identifier returned by upload_unimarc"),
-        ("record_id" = Option<String>, Query, description = "Optional record id inside batch; if omitted, import all records")
-    ),
-    responses(
-        (status = 200, description = "MARC batch import report", body = MarcBatchImportReport),
-        (status = 401, description = "Not authenticated")
-    )
-)]
-pub async fn import_marc_batch(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    ClientIp(ip): ClientIp,
-    Query(params): Query<ImportMarcBatchQuery>,
-) -> AppResult<Json<MarcBatchImportReport>> {
-    claims.require_write_items()?;
-    let report = state
-        .services
-        .marc
-        .import_from_batch(params.batch_id, params.source_id, params.record_id)
-        .await?;
-
-    state.services.audit.log(
-        audit::event::IMPORT_MARC_BATCH,
-        Some(claims.user_id),
-        None,
-        None,
-        ip,
-        Some(&params),
-    );
-
-    Ok(Json(report))
-}
-
-/// Update an existing item
+/// Update a physical item. The path id is authoritative.
 #[utoipa::path(
     put,
     path = "/items/{id}",
     tag = "items",
     security(("bearer_auth" = [])),
     params(
-        ("id" = i32, Path, description = "Item ID"),
-        ("allow_duplicate_isbn" = Option<bool>, Query, description = "Allow duplicate ISBN (default: false)")
+        ("id" = i64, Path, description = "Physical copy (item) ID")
     ),
     request_body = Item,
     responses(
-        (status = 200, description = "Item updated", body = Item),
-        (status = 404, description = "Item not found"),
-        (status = 409, description = "Duplicate ISBN requires confirmation")
+        (status = 200, description = "Physical item updated", body = Item),
+        (status = 400, description = "Validation error", body = crate::error::ErrorResponse),
+        (status = 404, description = "Biblio or item not found", body = crate::error::ErrorResponse),
+        (status = 409, description = "An item with this barcode already exists")
     )
 )]
 pub async fn update_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
-    Path(id): Path<i64>,
-    Query(query): Query<UpdateItemQuery>,
-    Json(item): Json<Item>,
+    Path(item_id): Path<i64>,
+    ValidatedJson(mut item): ValidatedJson<Item>,
 ) -> AppResult<Json<Item>> {
     claims.require_write_items()?;
-    let updated = state.services.catalog.update_item(id, item, query.allow_duplicate_isbn).await?;
+    let (biblio_id, _) = state
+        .services
+        .catalog
+        .update_item(item_id, &mut item)
+        .await?;
 
     state.services.audit.log(
         audit::event::ITEM_UPDATED,
         Some(claims.user_id),
         Some("item"),
-        Some(id),
+        Some(item_id),
         ip,
-        Some((id, &updated)),
+        Some((biblio_id, &item)),
     );
 
-    Ok(Json(updated))
+    Ok(Json(item))
 }
 
-#[derive(Debug, Deserialize, Default, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateItemQuery {
-    #[serde(default)]
-    pub allow_duplicate_isbn: bool,
-}
-
-/// Delete an item
+/// Delete a physical item (soft delete unless `force` when borrowed).
 #[utoipa::path(
     delete,
     path = "/items/{id}",
     tag = "items",
     security(("bearer_auth" = [])),
     params(
-        ("id" = i32, Path, description = "Item ID"),
-        ("force" = Option<bool>, Query, description = "Force delete even if specimens are borrowed")
+        ("id" = i64, Path, description = "Physical copy (item) ID"),
+        ("force" = Option<bool>, Query, description = "Force delete even if borrowed")
     ),
     responses(
-        (status = 204, description = "Item deleted"),
+        (status = 204, description = "Physical item deleted"),
         (status = 404, description = "Item not found"),
-        (status = 409, description = "Item has borrowed specimens")
+        (status = 409, description = "Item is borrowed")
     )
 )]
 pub async fn delete_item(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
-    Path(id): Path<i64>,
+    Path(item_id): Path<i64>,
     Query(params): Query<DeleteItemParams>,
 ) -> AppResult<StatusCode> {
     claims.require_write_items()?;
-    state
-        .services
-        .catalog
-        .delete_item(id, params.force.unwrap_or(false))
-        .await?;
+    let force = params.force.unwrap_or(false);
+    let biblio_id = state.services.catalog.delete_item(item_id, force).await?;
 
     state.services.audit.log(
         audit::event::ITEM_DELETED,
         Some(claims.user_id),
         Some("item"),
-        Some(id),
-        ip,
-        Some(serde_json::json!({ "id": id, "force": params.force.unwrap_or(false) })),
-    );
-
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Deserialize)]
-pub struct DeleteItemParams {
-    pub force: Option<bool>,
-}
-
-/// List specimens for an item
-#[utoipa::path(
-    get,
-    path = "/items/{id}/specimens",
-    tag = "items",
-    security(("bearer_auth" = [])),
-    params(
-        ("id" = i32, Path, description = "Item ID")
-    ),
-    responses(
-        (status = 200, description = "List of specimens", body = Vec<Specimen>),
-        (status = 404, description = "Item not found")
-    )
-)]
-pub async fn list_specimens(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    Path(item_id): Path<i64>,
-) -> AppResult<Json<Vec<Specimen>>> {
-    claims.require_read_items()?;
-
-    let specimens = state.services.catalog.get_specimens(item_id).await?;
-    Ok(Json(specimens))
-}
-
-/// Create a new specimen for an item
-#[utoipa::path(
-    post,
-    path = "/items/{id}/specimens",
-    tag = "items",
-    security(("bearer_auth" = [])),
-    params(
-        ("id" = i32, Path, description = "Item ID")
-    ),
-    request_body = Specimen,
-    responses(
-        (status = 201, description = "Specimen created", body = Specimen),
-        (status = 404, description = "Item not found"),
-        (status = 409, description = "A specimen with this barcode already exists")
-    )
-)]
-pub async fn create_specimen(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    ClientIp(ip): ClientIp,
-    Path(item_id): Path<i64>,
-    ValidatedJson(specimen): ValidatedJson<Specimen>,
-) -> AppResult<(StatusCode, Json<Specimen>)> {
-    claims.require_write_items()?;
-    let created = state
-        .services
-        .catalog
-        .create_specimen(item_id, specimen)
-        .await?;
-
-    state.services.audit.log(
-        audit::event::SPECIMEN_CREATED,
-        Some(claims.user_id),
-        Some("specimen"),
-        created.id,
-        ip,
-        Some((item_id, &created)),
-    );
-
-    Ok((StatusCode::CREATED, Json(created)))
-}
-
-/// Update a specimen
-#[utoipa::path(
-    put,
-    path = "/items/{item_id}/specimens/{specimen_id}",
-    tag = "items",
-    security(("bearer_auth" = [])),
-    params(
-        ("item_id" = i32, Path, description = "Item ID"),
-        ("specimen_id" = i32, Path, description = "Specimen ID")
-    ),
-    request_body = Specimen,
-    responses(
-        (status = 200, description = "Specimen updated", body = Specimen),
-        (status = 404, description = "Item or specimen not found"),
-        (status = 409, description = "A specimen with this barcode already exists")
-    )
-)]
-pub async fn update_specimen(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    ClientIp(ip): ClientIp,
-    Path(item_id): Path<i64>,
-    ValidatedJson(mut specimen): ValidatedJson<Specimen>,
-) -> AppResult<Json<Specimen>> {
-    claims.require_write_items()?;
-    let specimen_id = specimen.id;
-    state
-        .services
-        .catalog
-        .update_specimen(item_id, &mut specimen)
-        .await?;
-
-    state.services.audit.log(
-        audit::event::SPECIMEN_UPDATED,
-        Some(claims.user_id),
-        Some("specimen"),
-        specimen_id,
-        ip,
-        Some((item_id, &specimen)),
-    );
-
-    Ok(Json(specimen))
-}
-
-/// Delete a specimen
-#[utoipa::path(
-    delete,
-    path = "/items/{item_id}/specimens/{specimen_id}",
-    tag = "items",
-    security(("bearer_auth" = [])),
-    params(
-        ("item_id" = i32, Path, description = "Item ID"),
-        ("specimen_id" = i32, Path, description = "Specimen ID"),
-        ("force" = Option<bool>, Query, description = "Force delete even if borrowed")
-    ),
-    responses(
-        (status = 204, description = "Specimen deleted"),
-        (status = 404, description = "Specimen not found"),
-        (status = 409, description = "Specimen is borrowed")
-    )
-)]
-pub async fn delete_specimen(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    ClientIp(ip): ClientIp,
-    Path((item_id, specimen_id)): Path<(i64, i64)>,
-    Query(params): Query<DeleteSpecimenParams>,
-) -> AppResult<StatusCode> {
-    claims.require_write_items()?;
-    state
-        .services
-        .catalog
-        .delete_specimen(item_id, specimen_id, params.force.unwrap_or(false))
-        .await?;
-
-    state.services.audit.log(
-        audit::event::SPECIMEN_DELETED,
-        Some(claims.user_id),
-        Some("specimen"),
-        Some(specimen_id),
+        Some(item_id),
         ip,
         Some(serde_json::json!({
+            "biblio_id": biblio_id,
             "item_id": item_id,
-            "specimen_id": specimen_id,
-            "force": params.force.unwrap_or(false),
+            "force": force,
         })),
     );
 
@@ -561,98 +139,7 @@ pub async fn delete_specimen(
 }
 
 #[derive(Deserialize)]
-pub struct DeleteSpecimenParams {
+#[serde(rename_all = "camelCase")]
+pub struct DeleteItemParams {
     pub force: Option<bool>,
-}
-
-/// Export catalog as CSV
-///
-/// Returns a UTF-8 CSV file with all items matching the query.
-/// Streams all pages — does not paginate. Use the same query params as `GET /items`.
-#[utoipa::path(
-    get,
-    path = "/items/export.csv",
-    tag = "items",
-    security(("bearer_auth" = [])),
-    params(
-        ("title" = Option<String>, Query, description = "Filter by title"),
-        ("author" = Option<String>, Query, description = "Filter by author"),
-        ("media_type" = Option<String>, Query, description = "Filter by media type")
-    ),
-    responses(
-        (status = 200, description = "CSV file", content_type = "text/csv"),
-        (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse)
-    )
-)]
-pub async fn export_items_csv(
-    State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
-    Query(mut query): Query<ItemQuery>,
-) -> AppResult<axum::response::Response> {
-    claims.require_read_catalog()?;
-
-    // Fetch all results (high per_page)
-    query.page = Some(1);
-    query.per_page = Some(10_000);
-
-    let (items, _) = state.services.catalog.search_items(&query).await?;
-
-    let mut csv = String::from("id,isbn,title,author,media_type,date,specimens\n");
-    for item in &items {
-        let author_name = item
-            .author
-            .as_ref()
-            .map(|a| {
-                format!(
-                    "{} {}",
-                    a.firstname.as_deref().unwrap_or(""),
-                    a.lastname.as_deref().unwrap_or("")
-                )
-                .trim()
-                .to_string()
-            })
-            .unwrap_or_default();
-        csv.push_str(&format!(
-            "{},{},{},{},{},{},{}\n",
-            item.id,
-            escape_csv(item.isbn.as_ref().map(|i| i.as_str()).unwrap_or("")),
-            escape_csv(item.title.as_deref().unwrap_or("")),
-            escape_csv(&author_name),
-            escape_csv(item.media_type.as_db_str()),
-            escape_csv(item.date.as_deref().unwrap_or("")),
-            item.specimens.len(),
-        ));
-    }
-
-    use axum::http::header;
-    Ok((
-        [
-            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
-            (
-                header::CONTENT_DISPOSITION,
-                "attachment; filename=\"catalog.csv\"",
-            ),
-        ],
-        csv,
-    )
-        .into_response())
-}
-
-fn escape_csv(s: &str) -> String {
-    if s.contains([',', '"', '\n']) {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
-    }
-}
-
-/// Build the items/specimens routes for this domain.
-pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post};
-    axum::Router::new()
-        .route("/items", get(list_items).post(create_item))
-        .route("/items/export.csv", get(export_items_csv))
-        .route("/items/{id}", get(get_item).put(update_item).delete(delete_item))
-        .route("/items/{item_id}/specimens", get(list_specimens).post(create_specimen).put(update_specimen))
-        .route("/items/{item_id}/specimens/{specimen_id}", delete(delete_specimen))
 }

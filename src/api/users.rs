@@ -25,6 +25,10 @@ pub fn router() -> axum::Router<crate::AppState> {
         .route("/users/:id/account-type", put(update_account_type))
         .route("/users/:id/force-password-change", put(force_password_change))
         .route("/users/:id/loans", get(super::loans::get_user_loans))
+        .route(
+            "/users/:id/loans/export",
+            get(super::loans::export_user_loans_marc),
+        )
 }
 
 

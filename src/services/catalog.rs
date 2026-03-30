@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::{
     error::{AppError, AppResult},
+    marc::MarcRecord,
     models::{
         import_report::{ImportAction, ImportReport},
         biblio::{
@@ -147,6 +148,32 @@ impl CatalogService {
             .await
     }
 
+    /// Get the bibliographic record for a physical copy (`item_id`).
+    ///
+    /// The returned [`Biblio`].`items` contains **only** that item, not all copies of the record.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn get_biblio_for_item(&self, item_id: i64) -> AppResult<Biblio> {
+        let item = self.repository.items_get_active_by_id(item_id).await?;
+        let biblio_id = item
+            .biblio_id
+            .ok_or_else(|| AppError::Internal("Item has no biblio_id".to_string()))?;
+        let mut biblio = self.repository.biblios_get_by_id(biblio_id).await?;
+        biblio.items = vec![item];
+        Ok(biblio)
+    }
+
+    /// Like [`Self::get_biblio_for_item`], plus `biblio.marc_record` when stored in DB (for MARC export).
+    pub async fn get_biblio_for_item_with_marc(&self, item_id: i64) -> AppResult<Biblio> {
+        let mut biblio = self.get_biblio_for_item(item_id).await?;
+        let bid = biblio
+            .id
+            .ok_or_else(|| AppError::Internal("Biblio id missing".to_string()))?;
+        if let Some(rec) = self.repository.biblios_get_marc_record_optional(bid).await? {
+            biblio.marc_record = Some(rec);
+        }
+        Ok(biblio)
+    }
+
     /// Create a new biblio with ISBN deduplication.
     ///
     /// - No duplicate ISBN among active biblios → create OK.
@@ -248,6 +275,28 @@ impl CatalogService {
        
     }
 
+    /// Replace bibliographic data and stored MARC from a Z39.50 fetch; keeps existing physical items and `created_at`.
+    #[tracing::instrument(skip(self, remote_marc), err)]
+    pub async fn refresh_biblio_from_z3950_marc(
+        &self,
+        biblio_id: i64,
+        remote_marc: MarcRecord,
+    ) -> AppResult<Biblio> {
+        let existing = self.repository.biblios_get_by_id(biblio_id).await?;
+        let mut merged: Biblio = remote_marc.into();
+        merged.id = Some(biblio_id);
+        merged.items = existing.items;
+        merged.created_at = existing.created_at;
+        if let Some(ref isbn) = merged.isbn {
+            self.ensure_isbn_unique(isbn.as_str(), Some(biblio_id)).await?;
+        }
+        self.repository
+            .biblios_full_bibliographic_replace(biblio_id, &mut merged)
+            .await?;
+        self.sync_index(biblio_id).await;
+        self.repository.biblios_get_by_id(biblio_id).await
+    }
+
     /// Delete a biblio (soft delete)
     #[tracing::instrument(skip(self), err)]
     pub async fn delete_biblio(&self, id: i64, force: bool) -> AppResult<()> {
@@ -286,23 +335,38 @@ impl CatalogService {
         Ok(result)
     }
 
-    /// Update an item (physical copy).
+    /// Update an item (physical copy). Resolves the bibliographic parent via the item row.
+    ///
+    /// `item_id` (path) is the source of truth; if `item.id` is set it must match.
     #[tracing::instrument(skip(self), err)]
-    pub async fn update_item<'a>(&self, biblio_id: i64, item: &'a mut Item) -> AppResult<&'a mut Item> {
-        let item_id = item.id.ok_or_else(|| {
-            AppError::NotFound("Item id is required".to_string())
+    pub async fn update_item<'a>(
+        &self,
+        item_id: i64,
+        item: &'a mut Item,
+    ) -> AppResult<(i64, &'a mut Item)> {
+        if let Some(body_id) = item.id {
+            if body_id != item_id {
+                return Err(AppError::Validation(
+                    "Item id in body must match path id".to_string(),
+                ));
+            }
+        }
+        item.id = Some(item_id);
+
+        let existing = self.repository.items_get_active_by_id(item_id).await?;
+        let biblio_id = existing.biblio_id.ok_or_else(|| {
+            AppError::Internal("Active item is missing biblio_id".to_string())
         })?;
 
-        self.repository
-            .biblios_get_by_id(biblio_id)
-            .await?;
-
-        let items = self.repository.biblios_get_items(biblio_id).await?;
-        if !items.iter().any(|i| i.id == Some(item_id)) {
-            return Err(AppError::NotFound(
-                format!("Item {} not found for biblio {}", item_id, biblio_id),
-            ));
+        if let Some(body_biblio) = item.biblio_id {
+            if body_biblio != biblio_id {
+                return Err(AppError::Validation(
+                    "Item biblioId in body must match the item's bibliographic record".to_string(),
+                ));
+            }
         }
+
+        self.repository.biblios_get_by_id(biblio_id).await?;
 
         if let Some(ref barcode) = item.barcode {
             self.ensure_barcode_unique(barcode, Some(item_id)).await?;
@@ -310,17 +374,20 @@ impl CatalogService {
 
         let result = self.repository.items_update(item).await?;
         self.sync_index(biblio_id).await;
-        Ok(result)
+        Ok((biblio_id, result))
     }
 
-    /// Delete an item (physical copy)
+    /// Delete an item (physical copy). Returns the bibliographic id for callers (e.g. audit).
     #[tracing::instrument(skip(self), err)]
-    pub async fn delete_item(&self, biblio_id: i64, item_id: i64, force: bool) -> AppResult<()> {
-        self.repository
-            .items_delete(item_id, force)
-            .await?;
+    pub async fn delete_item(&self, item_id: i64, force: bool) -> AppResult<i64> {
+        let existing = self.repository.items_get_active_by_id(item_id).await?;
+        let biblio_id = existing.biblio_id.ok_or_else(|| {
+            AppError::Internal("Active item is missing biblio_id".to_string())
+        })?;
+
+        self.repository.items_delete(item_id, force).await?;
         self.sync_index(biblio_id).await;
-        Ok(())
+        Ok(biblio_id)
     }
 
     /// List all biblios in a series (ordered by volume number)

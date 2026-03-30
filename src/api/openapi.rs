@@ -5,7 +5,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, holds, inventory, library_info, loans, maintenance, opac, public_types, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
+use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, holds, inventory, items, library_info, loans, maintenance, opac, public_types, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -45,8 +45,9 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         biblios::delete_biblio,
         biblios::list_items,
         biblios::create_item,
-        biblios::update_item,
-        biblios::delete_item,
+        items::get_biblio_by_item,
+        items::update_item,
+        items::delete_item,
         // Users
         users::list_users,
         users::get_user,
@@ -57,6 +58,7 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         users::update_account_type,
         // Loans
         loans::get_user_loans,
+        loans::export_user_loans_marc,
         loans::create_loan,
         loans::return_loan,
         loans::renew_loan,
@@ -245,6 +247,9 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
             inventory::ListInventorySessionsQuery,
             inventory::ListInventoryPageQuery,
             loans::GetUserLoansQuery,
+            loans::ExportUserLoansMarcQuery,
+            crate::models::loan::LoanMarcExportFormat,
+            crate::models::loan::LoanMarcExportEncoding,
             loans::SendRemindersQuery,
             crate::models::loan::LoanDetails,
             crate::services::reminders::ReminderReport,
@@ -345,6 +350,10 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
             maintenance::MaintenanceAction,
             maintenance::MaintenanceActionReport,
             maintenance::MaintenanceResponse,
+            maintenance::MaintenanceTaskProgress,
+            maintenance::CatalogZ3950RefreshProgress,
+            maintenance::CatalogZ3950RefreshProgressStatus,
+            maintenance::CatalogZ3950RefreshResult,
             // Background tasks
             tasks::TaskAcceptedResponse,
             crate::models::task::BackgroundTask,
@@ -376,6 +385,7 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         (name = "health", description = "Health check endpoints"),
         (name = "auth", description = "Authentication endpoints"),
         (name = "biblios", description = "Bibliographic record management"),
+        (name = "items", description = "Physical copies (items) — get biblio for a copy, update/delete by item id"),
         (name = "users", description = "User management"),
         (name = "loans", description = "Loan management"),
         (name = "holds", description = "Physical item hold queue"),

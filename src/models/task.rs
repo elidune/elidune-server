@@ -63,7 +63,7 @@ pub struct BackgroundTask {
     ///
     /// Shape depends on `kind`:
     /// - `marcBatchImport` → `MarcBatchImportReport`
-    /// - `maintenance`     → `MaintenanceResponse`
+    /// - `maintenance`     → `MaintenanceResponse` (per-action `details` may include Z39.50 summaries)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
 

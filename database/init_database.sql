@@ -238,7 +238,7 @@ CREATE TABLE IF NOT EXISTS biblios (
     abstract                    TEXT,
     notes                       TEXT,
     keywords                    VARCHAR[],
-    is_valid                    SMALLINT    DEFAULT 1,
+    is_valid                    BOOLEAN     NOT NULL DEFAULT true,
     marc_record                 JSONB,
     created_at                  TIMESTAMPTZ DEFAULT NOW(),
     updated_at                  TIMESTAMPTZ DEFAULT NOW(),

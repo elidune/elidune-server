@@ -128,6 +128,22 @@ AUDIENCE_TYPE_INT_TO_DB = {
     117: 'unknown',
 }
 
+
+def legacy_biblio_is_valid_to_bool(is_valid):
+    """Map legacy SMALLINT 0/1 to bool for `biblios.is_valid` (BOOLEAN). 0 => False, 1 => True."""
+    if is_valid is None:
+        return True
+    try:
+        v = int(is_valid)
+    except (TypeError, ValueError):
+        return True
+    if v == 0:
+        return False
+    if v == 1:
+        return True
+    return True
+
+
 # Author function codes -> camelCase DB strings (migration 043)
 # Integer codes from AuthorFunction enum + MARC relator codes
 AUTHOR_FUNCTION_TO_DB = {
@@ -218,6 +234,14 @@ def slug_from_name(name, fallback_id):
         return f'item_{fallback_id}'
     slug = re.sub(r'[^a-z0-9]+', '_', name.lower().strip()).strip('_')
     return slug or f'item_{fallback_id}'
+
+
+def legacy_field_looks_like_single_token(s):
+    """True if s is a non-empty string with no whitespace (typical barcode token)."""
+    if not isinstance(s, str):
+        return False
+    t = s.strip()
+    return bool(t) and re.fullmatch(r'\S+', t) is not None
 
 
 def batch_insert(cursor, conn, sql, rows, batch_size=500):
@@ -769,7 +793,7 @@ def migrate_items(src, dst):
                 lang, lang_orig, publication_date,
                 source_id, edition_id, nb_pages, fmt,
                 content, addon, abstract_, notes,
-                keywords_arr, is_valid,
+                keywords_arr, legacy_biblio_is_valid_to_bool(is_valid),
                 crea_dt, modif_dt, archived_at,
             ))
 
@@ -946,6 +970,13 @@ def migrate_specimens(src, dst, skipped_biblio_ids=None):
                     duplicate_barcode_dropped += 1
                 else:
                     seen_barcodes.add(barcode)
+
+
+            # barcode and call_number are sometimes mixed up in legacy data:
+            # swap if call_number (cote) looks like a single token and identification (barcode) does not.
+            if legacy_field_looks_like_single_token(cote) and not legacy_field_looks_like_single_token(barcode):
+                (cote, barcode) = (barcode, None)
+                
 
 
             dst_cur.execute("""

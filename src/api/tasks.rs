@@ -24,6 +24,17 @@ use crate::{
 
 use super::AuthenticatedUser;
 
+
+// ── Router ─────────────────────────────────────────────────────────────────────
+
+pub fn router() -> axum::Router<AppState> {
+    use axum::routing::get;
+    axum::Router::new()
+        .route("/tasks", get(list_tasks))
+        .route("/tasks/:id", get(get_task))
+}
+
+
 // ── Response types ─────────────────────────────────────────────────────────────
 
 /// Returned by endpoints that kick off a background task (`202 Accepted`).
@@ -108,11 +119,3 @@ pub async fn get_task(
     Ok(Json(task))
 }
 
-// ── Router ─────────────────────────────────────────────────────────────────────
-
-pub fn router() -> axum::Router<AppState> {
-    use axum::routing::get;
-    axum::Router::new()
-        .route("/tasks", get(list_tasks))
-        .route("/tasks/:id", get(get_task))
-}

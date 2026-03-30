@@ -81,9 +81,10 @@ All auth routes are rate-limited via GovernorLayer.
 | `PUT /biblios/:id` | JWT + `require_write_items()` |
 | `DELETE /biblios/:id` | JWT + `require_write_items()` |
 | `GET /biblios/:id/items` | JWT + `require_read_items()` |
+| `GET /items/:id` | JWT + `require_read_items()` (biblio for that copy; `items` array length 1) |
 | `POST /biblios/:id/items` | JWT + `require_write_items()` |
-| `PUT /biblios/:id/items` | JWT + `require_write_items()` |
-| `DELETE /biblios/:biblio_id/items/:item_id` | JWT + `require_write_items()` |
+| `PUT /items/:id` | JWT + `require_write_items()` |
+| `DELETE /items/:id` | JWT + `require_write_items()` |
 | `GET /biblios/export.csv` | JWT + `require_read_items()` |
 | `POST /biblios/load-marc` | JWT + `require_read_items()` |
 | `POST /biblios/import-marc-batch` | JWT + `require_write_items()` |

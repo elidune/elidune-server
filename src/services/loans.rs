@@ -7,13 +7,18 @@ use std::sync::Arc;
 use crate::{
     api::loans::{LoanSettings as LoanSettingsApi, UpdateLoanSettingsRequest},
     error::{AppError, AppResult},
+    marc::{marc_record_for_loan_export, MarcRecord},
     models::{
         biblio::MediaType,
-        loan::{CreateLoan, LoanDetails},
+        loan::{
+            CreateLoan, LoanDetails, LoanMarcExportEncoding, LoanMarcExportFormat,
+            LOANS_MARC_EXPORT_MAX,
+        },
         user::UserStatus,
     },
     repository::LoansServiceRepository,
 };
+use z3950_rs::marc_rs::{BinaryWriter, Encoding as MarcEncoding, MarcFormat, XmlWriter};
 
 #[derive(Clone)]
 pub struct LoansService {
@@ -170,6 +175,120 @@ impl LoansService {
         }
         self.get_global_loan_settings().await
     }
+
+    /// Build a downloadable MARC export for all active or archived loans of a user (no pagination).
+    /// Caller must enforce `require_self_or_staff`; this method only checks the user exists.
+    pub async fn export_user_loans_marc_file(
+        &self,
+        user_id: i64,
+        archived: bool,
+        format: LoanMarcExportFormat,
+        encoding: LoanMarcExportEncoding,
+    ) -> AppResult<(Vec<u8>, &'static str, &'static str)> {
+        self.repository.users_get_by_id(user_id).await?;
+        let rows = self
+            .repository
+            .loans_get_for_marc_export(user_id, archived)
+            .await?;
+        if rows.len() > LOANS_MARC_EXPORT_MAX {
+            return Err(AppError::Validation(format!(
+                "Too many loans to export ({} > max {})",
+                rows.len(),
+                LOANS_MARC_EXPORT_MAX
+            )));
+        }
+        let mut records: Vec<MarcRecord> = Vec::with_capacity(rows.len());
+        for row in rows {
+            records.push(marc_record_for_loan_export(
+                &row.biblio,
+                row.start_date,
+                row.expiry_at,
+                row.returned_at,
+            ));
+        }
+        let bytes = serialize_marc_export_records(&records, format, encoding)?;
+        let (ct, name) = export_marc_content_type_filename(format);
+        Ok((bytes, ct, name))
+    }
+}
+
+fn export_marc_content_type_filename(
+    format: LoanMarcExportFormat,
+) -> (&'static str, &'static str) {
+    match format {
+        LoanMarcExportFormat::Json => ("application/json", "loans-export.json"),
+        LoanMarcExportFormat::Marc21 => ("application/marc", "loans-export.mrc"),
+        LoanMarcExportFormat::Unimarc => ("application/marc", "loans-export.mrc"),
+        LoanMarcExportFormat::Marcxml => ("application/xml", "loans-export.xml"),
+    }
+}
+
+fn serialize_marc_export_records(
+    records: &[MarcRecord],
+    format: LoanMarcExportFormat,
+    encoding: LoanMarcExportEncoding,
+) -> AppResult<Vec<u8>> {
+    let marc_enc = match encoding {
+        LoanMarcExportEncoding::Utf8 => MarcEncoding::Utf8,
+        LoanMarcExportEncoding::Marc8 => MarcEncoding::Marc8,
+    };
+    match format {
+        LoanMarcExportFormat::Json => serde_json::to_vec(records).map_err(|e| {
+            AppError::Internal(format!("MARC JSON export serialization: {}", e))
+        }),
+        LoanMarcExportFormat::Marc21 => {
+            let mut buf = Vec::new();
+            let fmt = MarcFormat::Marc21(marc_enc);
+            {
+                let mut w = BinaryWriter::new(&mut buf);
+                for r in records {
+                    let mut rec = r.clone();
+                    w.write_record(&fmt, &mut rec).map_err(|e| {
+                        AppError::Internal(format!("MARC21 binary write: {}", e))
+                    })?;
+                }
+                w.flush()
+                    .map_err(|e| AppError::Internal(format!("MARC21 binary flush: {}", e)))?;
+            }
+            Ok(buf)
+        }
+        LoanMarcExportFormat::Unimarc => {
+            let mut buf = Vec::new();
+            let fmt = MarcFormat::Unimarc(marc_enc);
+            {
+                let mut w = BinaryWriter::new(&mut buf);
+                for r in records {
+                    let mut rec = r.clone();
+                    w.write_record(&fmt, &mut rec).map_err(|e| {
+                        AppError::Internal(format!("UNIMARC binary write: {}", e))
+                    })?;
+                }
+                w.flush()
+                    .map_err(|e| AppError::Internal(format!("UNIMARC binary flush: {}", e)))?;
+            }
+            Ok(buf)
+        }
+        LoanMarcExportFormat::Marcxml => {
+            let mut buf = Vec::new();
+            // MARC-XML output is always UTF-8; semantic record is serialized via the chosen format.
+            let fmt = MarcFormat::Marc21(MarcEncoding::Utf8);
+            {
+                let mut w = XmlWriter::new(&mut buf);
+                w.start_collection()
+                    .map_err(|e| AppError::Internal(format!("MARC-XML collection start: {}", e)))?;
+                for r in records {
+                    w.write_record(&fmt, r).map_err(|e| {
+                        AppError::Internal(format!("MARC-XML record: {}", e))
+                    })?;
+                }
+                w.end_collection()
+                    .map_err(|e| AppError::Internal(format!("MARC-XML collection end: {}", e)))?;
+                w.flush()
+                    .map_err(|e| AppError::Internal(format!("MARC-XML flush: {}", e)))?;
+            }
+            Ok(buf)
+        }
+    }
 }
 
 // =============================================================================
@@ -256,6 +375,13 @@ mod tests {
             _: i64,
         ) -> AppResult<(Vec<LoanDetails>, i64)> {
             Ok((vec![], 0))
+        }
+        async fn loans_get_for_marc_export(
+            &self,
+            _: i64,
+            _: bool,
+        ) -> AppResult<Vec<crate::models::loan::LoanMarcExportRow>> {
+            Ok(vec![])
         }
         async fn loans_create(&self, _: &CreateLoan) -> AppResult<(i64, chrono::DateTime<Utc>)> {
             Ok((self.loan_id, Utc::now()))

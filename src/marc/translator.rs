@@ -1,15 +1,18 @@
-
+use chrono::{DateTime, Utc};
 
 use z3950_rs::marc_rs::record::{
-    Agent, Barcode, BibliographicLevel, Description, Indexing, Item as MarcItem, LinkType, Local, Note, NoteType, Publication, Record as MarcRecord, RecordStatus, RecordType, Subject, SubjectType, Title
+    Agent, BibliographicLevel, Description, Indexing, Isbn as MarcIsbn, Item as MarcItem,
+    LinkType, LinkedRecord, Local, Note, NoteType, Person, Publication, Record as MarcRecord,
+    RecordStatus, RecordType, Relator, Responsibility, SeriesStatement, Subject, SubjectType,
+    TargetAudience, Title,
 };
 
-use crate::models::{
+use crate::{marc::MarcImportPreview, models::{
     Language, MediaType,
     author::{Author, Function},
-    biblio::{AudienceType, Collection, Edition, Isbn, Biblio, Serie},
+    biblio::{AudienceType, Biblio, Collection, Edition, Isbn, Serie},
     item::Item,
-};
+}};
 
 use std::str::FromStr;
 
@@ -43,6 +46,85 @@ fn extract_volume_number(s: &str) -> Option<i16> {
             let digits: String = word.chars().filter(|c| c.is_ascii_digit()).collect();
             digits.parse().ok()
         })
+}
+
+/// Reverse of [`MediaType`] as derived from MARC [`RecordType`] in [`From<&RecordType> for MediaType`].
+fn record_type_from_media_type(mt: &MediaType) -> RecordType {
+    match mt {
+        MediaType::PrintedText | MediaType::Comics | MediaType::Unknown | MediaType::All => {
+            RecordType::LanguageMaterial
+        }
+        MediaType::Periodic => RecordType::LanguageMaterial,
+        MediaType::Video | MediaType::VideoTape | MediaType::VideoDvd => {
+            RecordType::ProjectedOrVideo
+        }
+        MediaType::Audio
+        | MediaType::AudioNonMusic
+        | MediaType::AudioNonMusicTape
+        | MediaType::AudioNonMusicCd => RecordType::NonMusicalSound,
+        MediaType::AudioMusic | MediaType::AudioMusicTape | MediaType::AudioMusicCd => {
+            RecordType::NotatedMusic
+        }
+        MediaType::Multimedia | MediaType::CdRom => RecordType::ElectronicResource,
+        MediaType::Images => RecordType::GraphicTwoDimensional,
+    }
+}
+
+fn function_to_relator(f: Function) -> Relator {
+    match f {
+        Function::Author => Relator::Author,
+        Function::Illustrator => Relator::Illustrator,
+        Function::Translator => Relator::Translator,
+        Function::ScientificAdvisor => Relator::Editor,
+        Function::PrefaceWriter => Relator::PrefaceWriter,
+        Function::Photographer => Relator::Photographer,
+        Function::PublishingDirector => Relator::Publisher,
+        Function::Composer => Relator::Composer,
+    }
+}
+
+/// Reverse of [`From<z3950_rs::marc_rs::record::TargetAudience> for AudienceType`].
+fn audience_type_to_target_audience(a: &AudienceType) -> TargetAudience {
+    match a {
+        AudienceType::Juvenile => TargetAudience::Juvenile,
+        AudienceType::Preschool => TargetAudience::Preschool,
+        AudienceType::Primary => TargetAudience::Primary,
+        AudienceType::Children => TargetAudience::Children,
+        AudienceType::YoungAdult => TargetAudience::YoungAdult,
+        AudienceType::AdultSerious => TargetAudience::AdultSerious,
+        AudienceType::Adult => TargetAudience::Adult,
+        AudienceType::General => TargetAudience::General,
+        AudienceType::Specialized => TargetAudience::Specialized,
+        AudienceType::Unknown => TargetAudience::Unknown,
+        AudienceType::Other(s) => TargetAudience::Other(s.clone()),
+    }
+}
+
+fn author_to_marc_agent(author: &Author) -> Option<Agent> {
+    let last = author
+        .lastname
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let first = author
+        .firstname
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let (name, forename) = match (last, first) {
+        (Some(l), f_opt) => (l.to_string(), f_opt.map(|s| s.to_string())),
+        (None, Some(f)) => (f.to_string(), None),
+        (None, None) => return None,
+    };
+    Some(Agent::Person(Person {
+        name,
+        forename,
+        dates: None,
+        numeration: None,
+        titles_associated: None,
+        fuller_form: None,
+        relator: author.function.map(function_to_relator),
+    }))
 }
 
 
@@ -190,7 +272,7 @@ where
 // ── MarcRecord → Biblio ───────────────────────────────────────────────────────
 
 impl From<MarcRecord> for Biblio {
-    fn from(record: MarcRecord) -> Self {
+    fn from(mut record: MarcRecord) -> Self {
         // --- ISBN ---
         // Requires `record.isbn_string()` in marc-rs (see module doc).
         let isbn = record.isbn_string().map(Isbn::new).filter(|i| !i.is_empty());
@@ -327,7 +409,9 @@ impl From<MarcRecord> for Biblio {
         }
 
         // --- Physical items (from local MARC data) ---
+        // and remove thoses from the record, we don't need them in the biblio
         let items: Vec<Item> = record.local.items.iter().map(Item::from).collect();
+        record.local.items.clear();
 
         let collection_volume_numbers: Vec<Option<i16>> =
             collection.as_ref().map(|c| vec![c.volume_number]).unwrap_or_default();
@@ -350,7 +434,7 @@ impl From<MarcRecord> for Biblio {
             abstract_,
             notes,
             keywords,
-            is_valid: Some(1),
+            is_valid: Some(record.valid),
             series_ids: vec![],
             series_volume_numbers: series_list.iter().map(|s| s.volume_number).collect(),
             edition_id: None,
@@ -369,6 +453,16 @@ impl From<MarcRecord> for Biblio {
     }
 }
 
+
+impl From<MarcRecord> for MarcImportPreview {
+    fn from(record: MarcRecord) -> Self {
+        MarcImportPreview {
+            validation_issues: record.validation_issues.clone(),
+            biblio: Biblio::from(record).into(),
+        }
+    }
+}
+
 // ── Item (physical copy) mapping from MARC local data ────────────────────────
 
 impl From<&MarcItem> for Item {
@@ -383,7 +477,7 @@ impl From<&MarcItem> for Item {
             id: None,
             biblio_id: None,
             source_id: None,
-            barcode: s.barcode.clone().map(|b| b.to_string()),
+            barcode: s.barcode.clone(),
             call_number: s.call_number.clone(),
             volume_designation: None,
             place: None,
@@ -409,12 +503,39 @@ impl From<&Biblio> for MarcRecord {
             return rec.clone();
         }
 
-        // Otherwise build a minimal record.
+        // Otherwise build a semantic record from relational data (mirrors [`From<MarcRecord> for Biblio`]).
         let mut record = MarcRecord::default();
 
         record.leader.status = RecordStatus::New;
-        record.leader.record_type = RecordType::LanguageMaterial;
-        record.leader.bibliographic_level = BibliographicLevel::Monograph;
+        record.leader.record_type = record_type_from_media_type(&item.media_type);
+        record.leader.bibliographic_level = if item.media_type == MediaType::Periodic {
+            BibliographicLevel::Serial
+        } else {
+            BibliographicLevel::Monograph
+        };
+
+        if let Some(ref isbn) = item.isbn {
+            let s = isbn.as_str().trim();
+            if !s.is_empty() {
+                record.identification.isbn.push(MarcIsbn {
+                    value: s.to_string(),
+                    qualifying: None,
+                });
+            }
+        }
+
+        let agents: Vec<Agent> = item
+            .authors
+            .iter()
+            .filter_map(author_to_marc_agent)
+            .collect();
+        if !agents.is_empty() {
+            let mut it = agents.into_iter();
+            record.responsibility = Responsibility {
+                main_entry: it.next(),
+                added_entries: it.collect(),
+            };
+        }
 
         // Title
         if let Some(ref title) = item.title {
@@ -426,6 +547,44 @@ impl From<&Biblio> for MarcRecord {
                 medium: None,
                 number_of_part: None,
                 name_of_part: None,
+            });
+        }
+
+        // Series (UNIMARC 225 / MARC21 490) — same source as [`From<MarcRecord>`] uses for `Serie`.
+        for s in &item.series {
+            if let Some(ref title) = s.name {
+                if title.is_empty() {
+                    continue;
+                }
+                record.description.series.push(SeriesStatement {
+                    title: title.clone(),
+                    volume: s.volume_number.map(|v| v.to_string()),
+                    issn: s.issn.clone(),
+                });
+            }
+        }
+
+        // Collections (e.g. UNIMARC 461) — [`LinkType::SetLevel`], same as import fallback for `Collection`.
+        for c in &item.collections {
+            let has_title = c.name.as_ref().map_or(false, |t| !t.is_empty());
+            if !has_title && c.id.is_none() && c.key.as_ref().map_or(true, |k| k.is_empty()) {
+                continue;
+            }
+            let identifier = c
+                .id
+                .map(|id| id.to_string())
+                .or_else(|| c.key.clone())
+                .or_else(|| c.name.clone())
+                .unwrap_or_else(|| "collection".to_string());
+            record.links.records.push(LinkedRecord {
+                link_type: Some(LinkType::SetLevel),
+                identifier,
+                title: c.name.clone(),
+                edition: None,
+                qualifier: None,
+                issn: c.issn.clone(),
+                volume: c.volume_number.map(|v| v.to_string()),
+                relationship_info: None,
             });
         }
 
@@ -509,37 +668,82 @@ impl From<&Biblio> for MarcRecord {
             record.coded.original_languages.push((*lang_orig).into());
         }
 
+        if let Some(ref aud) = item.audience_type {
+            record.coded.target_audience = Some(audience_type_to_target_audience(aud));
+        }
+
+        record.valid = item.is_valid.unwrap_or(true);
+
         // Local items (physical copies)
         record.local = Local {
-            items: item
-                .items
-                .iter()
-                .map(|s| {
-                    MarcItem {
-                        library: s.source_name.clone(),
-                        sub_library: None,
-                        section: None,
-                        section_code: None,
-                        level_code: None,
-                        barcode: s.barcode.as_deref().map(|b| Barcode::from_str(b).unwrap_or_default()),
-                        call_number: s.call_number.clone(),
-                        inventory_number: None,
-                        creation_date: None,
-                        modification_date: None,
-                        loan_date: None,
-                        return_date: None,
-                        acquisition_date: None,
-                        item_type: None,
-                        record_control_number: None,
-                        document_type: s.notes.clone(),
-                        circulation_status: None,
-                    }
-                })
-                .collect(),
+            items: biblio_items_to_marc_items(&item.items, None, None, None),
         };
 
         record
     }
+}
+
+/// Maps catalog [`Item`] rows to marc-rs local [`MarcItem`] entries.
+///
+/// When `loan_start` / `loan_expiry` / `returned_at` are provided (export with loan context),
+/// `loan_date` and `return_date` are filled (ISO 8601 dates `YYYY-MM-DD`). For active loans,
+/// `return_date` is the due date (`loan_expiry`); when the loan is returned, it is the actual
+/// return date (`returned_at`).
+pub fn biblio_items_to_marc_items(
+    items: &[Item],
+    loan_start: Option<DateTime<Utc>>,
+    loan_expiry: Option<DateTime<Utc>>,
+    returned_at: Option<DateTime<Utc>>,
+) -> Vec<MarcItem> {
+    let loan_date = loan_start.map(|d| d.format("%Y-%m-%d").to_string());
+    let return_date = match returned_at {
+        Some(d) => Some(d.format("%Y-%m-%d").to_string()),
+        None => loan_expiry.map(|d| d.format("%Y-%m-%d").to_string()),
+    };
+    items
+        .iter()
+        .map(|s| MarcItem {
+            library: s.source_name.clone(),
+            sub_library: None,
+            section: None,
+            section_code: None,
+            level_code: None,
+            barcode: s.barcode.clone(),
+            call_number: s.call_number.clone(),
+            inventory_number: None,
+            creation_date: None,
+            modification_date: None,
+            loan_date: loan_date.clone(),
+            return_date: return_date.clone(),
+            acquisition_date: None,
+            item_type: None,
+            record_control_number: None,
+            document_type: s.notes.clone(),
+            circulation_status: None,
+        })
+        .collect()
+}
+
+/// Builds a [`MarcRecord`] for loan export: uses stored `biblio.marc_record` when present
+/// (bibliographic notice without local items), otherwise [`MarcRecord::from`] the relational
+/// biblio. Always sets `local.items` to the borrowed copy(ies) in `biblio.items`, with loan dates.
+pub fn marc_record_for_loan_export(
+    biblio: &Biblio,
+    loan_start: DateTime<Utc>,
+    loan_expiry: DateTime<Utc>,
+    returned_at: Option<DateTime<Utc>>,
+) -> MarcRecord {
+    let mut record = match &biblio.marc_record {
+        Some(rec) => rec.clone(),
+        None => MarcRecord::from(biblio),
+    };
+    record.local.items = biblio_items_to_marc_items(
+        &biblio.items,
+        Some(loan_start),
+        Some(loan_expiry),
+        returned_at,
+    );
+    record
 }
 
 #[cfg(test)]
