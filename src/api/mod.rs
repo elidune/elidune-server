@@ -10,6 +10,7 @@ pub mod covers;
 pub mod equipment;
 pub mod events;
 pub mod fines;
+pub mod first_setup;
 pub mod health;
 pub mod inventory;
 pub mod items;

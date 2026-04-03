@@ -1,6 +1,8 @@
 //! Statistics endpoints
 
 use axum::extract::Path;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::{get, post, put};
 use axum::{extract::Query, extract::State, Json, Router};
 use chrono::{DateTime, NaiveDate, Utc};
@@ -11,7 +13,7 @@ use utoipa::{IntoParams, ToSchema};
 use crate::{
     error::AppResult,
     models::biblio::MediaType,
-    models::stats_builder::{SavedStatsQuery, SavedStatsQueryWrite, StatsBuilderBody, StatsTableResponse},
+    models::stats_builder::{SavedStatsQuery, SavedStatsQueryWrite, StatsBuilderBody},
     services::stats::{discovery_json, run_stats_query},
     repository::stats::saved_queries,
 };
@@ -711,7 +713,8 @@ pub async fn get_stats_schema(
     security(("bearer_auth" = [])),
     request_body = StatsBuilderBody,
     responses(
-        (status = 200, description = "Tabular stats", body = StatsTableResponse),
+        (status = 200, description = "Tabular stats", body = crate::models::stats_builder::StatsTableResponse),
+        (status = 422, description = "PostgreSQL rejected the generated SQL", body = crate::models::stats_builder::StatsTableResponse),
         (status = 400, description = "Invalid query"),
         (status = 403, description = "Staff only")
     )
@@ -720,10 +723,15 @@ pub async fn post_stats_query(
     State(state): State<crate::AppState>,
     _staff: StaffUser,
     Json(body): Json<StatsBuilderBody>,
-) -> AppResult<Json<StatsTableResponse>> {
+) -> Result<impl IntoResponse, crate::error::AppError> {
     let pool = state.services.repository_pool();
-    let res = run_stats_query(pool, Some(&state.services.redis), &body).await?;
-    Ok(Json(res))
+    let res = run_stats_query(pool, None, &body).await?;
+    let status = if res.sql_error.is_some() {
+        StatusCode::UNPROCESSABLE_ENTITY
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(res)))
 }
 
 /// List saved stats queries (own + shared; admins see all).
@@ -830,7 +838,8 @@ pub async fn delete_saved_query(
         ("id" = i64, Path, description = "Saved query id")
     ),
     responses(
-        (status = 200, description = "Tabular stats", body = StatsTableResponse),
+        (status = 200, description = "Tabular stats", body = crate::models::stats_builder::StatsTableResponse),
+        (status = 422, description = "PostgreSQL rejected the generated SQL", body = crate::models::stats_builder::StatsTableResponse),
         (status = 403, description = "Forbidden"),
         (status = 404, description = "Not found")
     )
@@ -839,11 +848,16 @@ pub async fn run_saved_query(
     State(state): State<crate::AppState>,
     StaffUser(claims): StaffUser,
     Path(id): Path<i64>,
-) -> AppResult<Json<StatsTableResponse>> {
+) -> Result<impl IntoResponse, crate::error::AppError> {
     let pool = state.services.repository_pool();
     let saved = saved_queries::get_by_id(pool, id, claims.user_id, claims.is_admin())
         .await?
         .ok_or_else(|| crate::error::AppError::NotFound("Saved query not found".into()))?;
     let res = run_stats_query(pool, Some(&state.services.redis), &saved.query).await?;
-    Ok(Json(res))
+    let status = if res.sql_error.is_some() {
+        StatusCode::UNPROCESSABLE_ENTITY
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(res)))
 }

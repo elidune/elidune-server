@@ -1,7 +1,7 @@
 //! Background task status API.
 //!
 //! Allows the frontend to list and poll long-running server operations
-//! (MARC batch imports, maintenance runs, …) for a given authenticated user.
+//! (MARC batch imports, maintenance runs, inventory batch scans, …) for a given authenticated user.
 //!
 //! ## Lifecycle
 //! 1. A long-running endpoint returns `202 Accepted` with `{ "taskId": "<id>" }`.

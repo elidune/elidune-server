@@ -11,6 +11,7 @@ use utoipa::ToSchema;
 pub enum TaskKind {
     MarcBatchImport,
     Maintenance,
+    InventoryBatchScan,
 }
 
 /// Lifecycle status of a background task.
@@ -62,8 +63,9 @@ pub struct BackgroundTask {
     /// Typed result payload; present only when `status == Completed`.
     ///
     /// Shape depends on `kind`:
-    /// - `marcBatchImport` → `MarcBatchImportReport`
-    /// - `maintenance`     → `MaintenanceResponse` (per-action `details` may include Z39.50 summaries)
+    /// - `marcBatchImport`      → `MarcBatchImportReport`
+    /// - `maintenance`          → `MaintenanceResponse` (per-action `details` may include Z39.50 summaries)
+    /// - `inventoryBatchScan`   → `InventoryScan[]` (same order as request barcodes)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
 

@@ -145,6 +145,12 @@ pub struct StatsTableResponse {
     pub total_rows: u64,
     pub limit: u32,
     pub offset: u32,
+    /// Executed SQL (`data` and `count` queries, labeled).
+    #[serde(default)]
+    pub sql: String,
+    /// Set when PostgreSQL rejected the query or a timeout occurred; HTTP status is typically 422.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

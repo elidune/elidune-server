@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::{
-    error::{AppError, AppResult},
+    error::AppResult,
     models::inventory::{
         InventoryMissingRow, InventoryReport, InventoryScan, InventorySession, InventoryStatus,
     },
@@ -69,31 +69,6 @@ impl InventoryService {
         self.repository
             .inventory_scan_barcode(session_id, barcode, scanned_by)
             .await
-    }
-
-    /// Record many barcodes (open session only — validate at API layer).
-    #[tracing::instrument(skip(self, barcodes), err)]
-    pub async fn scan_barcodes_batch(
-        &self,
-        session_id: i64,
-        barcodes: &[String],
-        scanned_by: Option<i64>,
-    ) -> AppResult<Vec<InventoryScan>> {
-        if barcodes.len() > INVENTORY_BATCH_MAX_BARCODES {
-            return Err(AppError::Validation(format!(
-                "At most {} barcodes per batch",
-                INVENTORY_BATCH_MAX_BARCODES
-            )));
-        }
-        let mut out = Vec::with_capacity(barcodes.len());
-        for b in barcodes {
-            let scan = self
-                .repository
-                .inventory_scan_barcode(session_id, b, scanned_by)
-                .await?;
-            out.push(scan);
-        }
-        Ok(out)
     }
 
     #[tracing::instrument(skip(self), err)]

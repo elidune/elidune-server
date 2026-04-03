@@ -6,6 +6,18 @@ use serde_with::{serde_as, DisplayFromStr};
 use sqlx::FromRow;
 use utoipa::{IntoParams, ToSchema};
 
+/// Optional attachment supplied when creating an event (Base64-encoded payload).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EventAttachmentInput {
+    /// Display file name (path segments are stripped server-side).
+    pub file_name: String,
+    /// MIME type (e.g. `application/pdf`, `image/png`).
+    pub mime_type: String,
+    /// File content encoded as standard Base64.
+    pub data_base64: String,
+}
+
 /// Event record
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
@@ -42,6 +54,16 @@ pub struct Event {
     pub update_at: Option<DateTime<Utc>>,
     /// Date the announcement email was last sent
     pub announcement_sent_at: Option<DateTime<Utc>>,
+    /// Original attachment file name when present
+    pub attachment_filename: Option<String>,
+    /// Attachment MIME type when present
+    pub attachment_mime_type: Option<String>,
+    /// Attachment size in bytes when present.
+    pub attachment_size: Option<i32>,
+    /// Full attachment as standard Base64. Included only in single-event responses (`GET` / `POST` / `PUT`), not in list responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[sqlx(skip)]
+    pub attachment_data_base64: Option<String>,
 }
 
 /// Create event request
@@ -66,6 +88,8 @@ pub struct CreateEvent {
     pub partner_name: Option<String>,
     pub description: Option<String>,
     pub notes: Option<String>,
+    /// Optional attachment (stored in-database; max size enforced server-side).
+    pub attachment: Option<EventAttachmentInput>,
 }
 
 /// Update event request
@@ -85,6 +109,10 @@ pub struct UpdateEvent {
     pub partner_name: Option<String>,
     pub description: Option<String>,
     pub notes: Option<String>,
+    /// When `true`, removes the attachment. Takes precedence over `attachment`.
+    pub remove_attachment: Option<bool>,
+    /// Replaces the attachment (same shape as in [`CreateEvent`]).
+    pub attachment: Option<EventAttachmentInput>,
 }
 
 /// Query parameters for events

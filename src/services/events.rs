@@ -3,13 +3,21 @@
 use std::path::Path;
 use std::sync::Arc;
 
+/// Maximum size for an event attachment (10 MiB).
+pub const MAX_EVENT_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+
 use crate::{
     dynamic_config::DynamicConfig,
-    error::AppResult,
-    models::{event::{CreateEvent, Event, EventQuery, UpdateEvent}, Language},
+    error::{AppError, AppResult},
+    models::{
+        event::{CreateEvent, Event, EventAttachmentInput, EventQuery, UpdateEvent},
+        Language,
+    },
     repository::{events::EventAnnualStats, EventsServiceRepository},
     services::{
         audit::{self, AuditService},
@@ -76,17 +84,62 @@ impl EventsService {
         self.repository.events_list(query).await
     }
 
+    /// Load event metadata only (no `attachment_data_base64`). Used internally, e.g. announcement emails.
     pub async fn get_by_id(&self, id: i64) -> AppResult<Event> {
         self.repository.events_get_by_id(id).await
     }
 
+    /// Load event including `attachment_data_base64` when an attachment exists (single-resource API).
     #[tracing::instrument(skip(self), err)]
-    pub async fn create(&self, data: &CreateEvent) -> AppResult<Event> {
-        self.repository.events_create(data).await
+    pub async fn get_by_id_with_attachment(&self, id: i64) -> AppResult<Event> {
+        let event = self.repository.events_get_by_id(id).await?;
+        self.enrich_with_attachment_base64(event).await
     }
 
+    #[tracing::instrument(skip(self), err)]
+    pub async fn create(&self, data: &CreateEvent) -> AppResult<Event> {
+        let attachment = match &data.attachment {
+            Some(a) => Some(decode_event_attachment_input(a)?),
+            None => None,
+        };
+        let event = self.repository.events_create(data, attachment).await?;
+        self.enrich_with_attachment_base64(event).await
+    }
+
+    #[tracing::instrument(skip(self), err)]
     pub async fn update(&self, id: i64, data: &UpdateEvent) -> AppResult<Event> {
-        self.repository.events_update(id, data).await
+        let remove = data.remove_attachment == Some(true);
+        let new_attachment = if !remove {
+            match &data.attachment {
+                Some(a) => Some(decode_event_attachment_input(a)?),
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        let mut event = self.repository.events_update(id, data).await?;
+
+        event = if remove {
+            self.repository.events_delete_attachment(id).await?
+        } else if let Some((bytes, fname, mime)) = new_attachment {
+            self.repository
+                .events_put_attachment(id, &bytes, &fname, &mime)
+                .await?
+        } else {
+            event
+        };
+
+        self.enrich_with_attachment_base64(event).await
+    }
+
+    async fn enrich_with_attachment_base64(&self, mut event: Event) -> AppResult<Event> {
+        if event.attachment_size.unwrap_or(0) > 0 {
+            if let Some((bytes, _, _)) = self.repository.events_get_attachment_blob(event.id).await? {
+                event.attachment_data_base64 = Some(B64.encode(&bytes));
+            }
+        }
+        Ok(event)
     }
 
     #[tracing::instrument(skip(self), err)]
@@ -259,4 +312,48 @@ impl EventsService {
 
         Ok(AnnouncementReport { event_id, emails_sent, skipped, errors })
     }
+}
+
+fn decode_event_attachment_input(input: &EventAttachmentInput) -> AppResult<(Vec<u8>, String, String)> {
+    let bytes = B64
+        .decode(input.data_base64.trim())
+        .map_err(|_| AppError::Validation("Invalid Base64 in attachment".to_string()))?;
+    if bytes.is_empty() {
+        return Err(AppError::Validation("Attachment payload is empty".to_string()));
+    }
+    if bytes.len() > MAX_EVENT_ATTACHMENT_BYTES {
+        return Err(AppError::Validation(format!(
+            "Attachment exceeds maximum size of {} bytes",
+            MAX_EVENT_ATTACHMENT_BYTES
+        )));
+    }
+    let fname = sanitize_attachment_filename(&input.file_name);
+    let mime = normalize_mime_type(&input.mime_type);
+    Ok((bytes, fname, mime))
+}
+
+fn sanitize_attachment_filename(name: &str) -> String {
+    let base = Path::new(name.trim())
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("attachment");
+    let cleaned: String = base
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+        .take(200)
+        .collect();
+    let trimmed = cleaned.trim_matches('.');
+    if trimmed.is_empty() {
+        "attachment".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_mime_type(mime: &str) -> String {
+    let s = mime.trim();
+    if s.is_empty() {
+        return "application/octet-stream".to_string();
+    }
+    s.chars().take(255).collect()
 }

@@ -9,6 +9,7 @@ use crate::error::AppResult;
 #[async_trait]
 pub trait RuntimeSettingsRepository: Send + Sync {
     async fn settings_load_overrides(&self) -> AppResult<Vec<(String, serde_json::Value)>>;
+    async fn settings_count(&self) -> AppResult<i64>;
     async fn settings_list_keys(&self) -> AppResult<Vec<String>>;
     async fn settings_upsert_section(
         &self,
@@ -22,6 +23,10 @@ pub trait RuntimeSettingsRepository: Send + Sync {
 impl RuntimeSettingsRepository for Repository {
     async fn settings_load_overrides(&self) -> AppResult<Vec<(String, serde_json::Value)>> {
         Repository::settings_load_overrides(self).await
+    }
+
+    async fn settings_count(&self) -> AppResult<i64> {
+        Repository::settings_count(self).await
     }
 
     async fn settings_list_keys(&self) -> AppResult<Vec<String>> {
@@ -50,6 +55,14 @@ impl Repository {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows)
+    }
+
+    /// Number of rows in `settings` (runtime config overrides).
+    pub async fn settings_count(&self) -> AppResult<i64> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM settings")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(count)
     }
 
     /// Keys currently present in `settings` (overridden sections).

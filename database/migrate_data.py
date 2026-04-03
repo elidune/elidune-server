@@ -4,7 +4,7 @@ Data migration script for Elidune
 Migrates data from the legacy C/XML-RPC PostgreSQL schema to the new Rust schema.
 
 Source schema: legacy database (see elidune-pgdump.sql)
-Target schema: new database (see init_database.sql)
+Target schema: new database (see migrations/001_initial_schema.sql, symlinked as database/init_database.sql)
 
 Usage:
     python migrate_data.py --source-db <old_db_url> --target-db <new_db_url>
@@ -362,7 +362,7 @@ def reset_target_database(conn):
     sql = init_sql_path.read_text(encoding='utf-8')
     cur.execute(sql)
     conn.commit()
-    print("  Schema recreated from init_database.sql")
+    print("  Schema recreated from migrations/001_initial_schema.sql")
 
 
 # =============================================================================

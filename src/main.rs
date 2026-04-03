@@ -264,30 +264,30 @@ async fn main() -> anyhow::Result<()> {
     let services = Arc::new(services);
 
     // Seed default admin user if the users table is empty (first run)
-    match services.users.seed_admin_if_empty().await {
-        Ok(Some((login, password))) => {
-            tracing::warn!(
-                "╔══════════════════════════════════════════════════════╗"
-            );
-            tracing::warn!(
-                "║          INITIAL ADMIN ACCOUNT CREATED               ║"
-            );
-            tracing::warn!(
-                "║  Login    : {:<41}║", login
-            );
-            tracing::warn!(
-                "║  Password : {:<41}║", password
-            );
-            tracing::warn!(
-                "║  Change the password immediately after first login.  ║"
-            );
-            tracing::warn!(
-                "╚══════════════════════════════════════════════════════╝"
-            );
-        }
-        Ok(None) => {}
-        Err(e) => tracing::error!("Failed to seed admin user: {}", e),
-    }
+    // match services.users.seed_admin_if_empty().await {
+    //     Ok(Some((login, password))) => {
+    //         tracing::warn!(
+    //             "╔══════════════════════════════════════════════════════╗"
+    //         );
+    //         tracing::warn!(
+    //             "║          INITIAL ADMIN ACCOUNT CREATED               ║"
+    //         );
+    //         tracing::warn!(
+    //             "║  Login    : {:<41}║", login
+    //         );
+    //         tracing::warn!(
+    //             "║  Password : {:<41}║", password
+    //         );
+    //         tracing::warn!(
+    //             "║  Change the password immediately after first login.  ║"
+    //         );
+    //         tracing::warn!(
+    //             "╚══════════════════════════════════════════════════════╝"
+    //         );
+    //     }
+    //     Ok(None) => {}
+    //     Err(e) => tracing::error!("Failed to seed admin user: {}", e),
+    // }
 
     // Log system startup audit event
     services.audit.log(
@@ -426,6 +426,7 @@ fn create_router(state: AppState) -> Router {
 
     let api_v1 = Router::new()
         .merge(api::health::router())
+        .merge(api::first_setup::router())
         .merge(auth_router)
         .merge(public_router)
         .merge(api::biblios::router())

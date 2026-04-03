@@ -76,6 +76,8 @@ pub mod event {
 
     // Settings
     pub const SETTINGS_UPDATED: &str = "settings.updated";
+    /// One-time initial library setup (first admin, library info, optional email override)
+    pub const FIRST_SETUP_COMPLETED: &str = "system.first_setup_completed";
 
     // Library info
     pub const LIBRARY_INFO_UPDATED: &str = "library_info.updated";
@@ -216,6 +218,8 @@ pub fn mask_sensitive_fields(mut value: Value) -> Value {
     const SENSITIVE: &[&str] = &[
         "password",
         "smtp_password",
+        "dataBase64",
+        "attachmentDataBase64",
         "token",
         "totp_secret",
         "recovery_codes",

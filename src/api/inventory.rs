@@ -10,15 +10,18 @@ use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
-    error::AppResult,
-    models::inventory::{
-        BatchScanBarcodes, CreateInventorySession, InventoryMissingRow, InventoryReport,
-        InventoryScan, InventorySession, InventoryStatus, ScanBarcode,
+    error::{AppError, AppResult},
+    models::{
+        inventory::{
+            BatchScanBarcodes, CreateInventorySession, InventoryMissingRow, InventoryReport,
+            InventoryScan, InventorySession, InventoryStatus, ScanBarcode,
+        },
+        task::TaskKind,
     },
-    services::audit,
+    services::{audit, inventory::INVENTORY_BATCH_MAX_BARCODES},
 };
 
-use super::{biblios::PaginatedResponse, StaffUser};
+use super::{biblios::PaginatedResponse, tasks::TaskAcceptedResponse, StaffUser};
 
 pub fn router() -> axum::Router<crate::AppState> {
     use axum::routing::{get, post};
@@ -209,6 +212,9 @@ pub async fn scan_barcode(
 }
 
 /// Batch scan barcodes (open session only, max `INVENTORY_BATCH_MAX_BARCODES`).
+///
+/// Returns `202 Accepted` with a `taskId`. Poll `GET /tasks/:id` until
+/// `status` is `completed` or `failed`. On success, `result` is `InventoryScan[]` in request order.
 #[utoipa::path(
     post,
     path = "/inventory/sessions/{id}/scans/batch",
@@ -217,7 +223,7 @@ pub async fn scan_barcode(
     params(("id" = i64, Path, description = "Session ID")),
     request_body = BatchScanBarcodes,
     responses(
-        (status = 201, description = "Scans recorded", body = Vec<InventoryScan>),
+        (status = 202, description = "Batch accepted; poll GET /tasks/:id", body = TaskAcceptedResponse),
         (status = 400, description = "Session closed or batch too large", body = crate::error::ErrorResponse),
         (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse),
         (status = 404, description = "Session not found", body = crate::error::ErrorResponse)
@@ -228,19 +234,50 @@ pub async fn batch_scan(
     StaffUser(claims): StaffUser,
     Path(id): Path<i64>,
     Json(req): Json<BatchScanBarcodes>,
-) -> AppResult<(StatusCode, Json<Vec<InventoryScan>>)> {
+) -> AppResult<(StatusCode, Json<TaskAcceptedResponse>)> {
     let session = state.services.inventory.get_session(id).await?;
     if session.status != InventoryStatus::Open {
-        return Err(crate::error::AppError::BadRequest(
+        return Err(AppError::BadRequest(
             "Session is closed — cannot scan".to_string(),
         ));
     }
-    let scans = state
-        .services
-        .inventory
-        .scan_barcodes_batch(id, &req.barcodes, Some(claims.user_id))
-        .await?;
-    Ok((StatusCode::CREATED, Json(scans)))
+    if req.barcodes.len() > INVENTORY_BATCH_MAX_BARCODES {
+        return Err(AppError::Validation(format!(
+            "At most {} barcodes per batch",
+            INVENTORY_BATCH_MAX_BARCODES
+        )));
+    }
+
+    let inventory = state.services.inventory.clone();
+    let tasks = state.services.tasks.clone();
+    let session_id = id;
+    let barcodes = req.barcodes;
+    let scanned_by = Some(claims.user_id);
+    let user_id = claims.user_id;
+
+    let task_id = tasks.spawn_task(TaskKind::InventoryBatchScan, user_id, move |handle| async move {
+        let total = barcodes.len();
+        let mut scans: Vec<InventoryScan> = Vec::with_capacity(total);
+        for (i, b) in barcodes.iter().enumerate() {
+            match inventory
+                .scan_barcode(session_id, b, scanned_by)
+                .await
+            {
+                Ok(scan) => {
+                    scans.push(scan);
+                    handle.set_progress(i + 1, total, None).await;
+                }
+                Err(e) => {
+                    handle.fail(e.to_string()).await;
+                    return;
+                }
+            }
+        }
+        let result = serde_json::to_value(&scans).unwrap_or_default();
+        handle.complete(result).await;
+    });
+
+    Ok((StatusCode::ACCEPTED, Json(TaskAcceptedResponse { task_id })))
 }
 
 /// Get scans for a session (paginated, oldest first).

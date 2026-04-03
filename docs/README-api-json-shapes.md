@@ -744,6 +744,8 @@ See **[Inventory API — frontend guide](inventory-api-frontend.md)** for semant
 ## Events (`/api/v1/events`)
 
 ### `Event`
+List responses omit **`attachmentDataBase64`**; **`GET /events/:id`**, **`POST /events`**, and **`PUT /events/:id`** include it when an attachment is stored.
+
 ```json
 {
   "id": "927364819265437704",
@@ -762,9 +764,15 @@ See **[Inventory API — frontend guide](inventory-api-frontend.md)** for semant
   "notes": null,
   "createdAt": "2026-03-01T10:00:00Z",
   "updateAt": null,
-  "announcementSentAt": null
+  "announcementSentAt": null,
+  "attachmentFileName": "flyer.pdf",
+  "attachmentMimeType": "application/pdf",
+  "attachmentSize": 48210,
+  "attachmentDataBase64": "JVBERi0xLjQK…"
 }
 ```
+
+**`CreateEvent` / `UpdateEvent` attachment input** (optional): `{ "fileName": "…", "mimeType": "application/pdf", "dataBase64": "…" }`. **`UpdateEvent`** may set **`removeAttachment`: `true`** to clear the file. See **`docs/events-api-frontend.md`**.
 
 ### `EventsListResponse`
 ```json

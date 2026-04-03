@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::{NaiveDate, NaiveTime, Utc};
+use sqlx::Row;
 
 use super::Repository;
 use crate::{
@@ -9,15 +10,38 @@ use crate::{
     models::event::{CreateEvent, Event, EventQuery, UpdateEvent},
 };
 
+/// Columns for [`Event`] mapping (excludes `attachment_data` BYTEA; exposes `attachment_size`).
+const EVENT_COLUMNS: &str = r#"
+  id, name, event_type, event_date, start_time, end_time,
+  attendees_count, target_public, school_name, class_name, students_count,
+  partner_name, description, notes, created_at, update_at, announcement_sent_at,
+  attachment_filename,
+  attachment_mime_type,
+  CASE WHEN attachment_data IS NULL THEN NULL ELSE octet_length(attachment_data)::integer END AS attachment_size
+"#;
+
 #[cfg_attr(test, mockall::automock)]
 #[async_trait]
 pub trait EventsRepository: Send + Sync {
     async fn events_list(&self, query: &EventQuery) -> AppResult<(Vec<Event>, i64)>;
     async fn events_get_by_id(&self, id: i64) -> AppResult<Event>;
-    async fn events_create(&self, data: &CreateEvent) -> AppResult<Event>;
+    async fn events_create(
+        &self,
+        data: &CreateEvent,
+        attachment: Option<(Vec<u8>, String, String)>,
+    ) -> AppResult<Event>;
     async fn events_update(&self, id: i64, data: &UpdateEvent) -> AppResult<Event>;
     async fn events_set_announcement_sent_at(&self, id: i64) -> AppResult<()>;
     async fn events_delete(&self, id: i64) -> AppResult<()>;
+    async fn events_put_attachment(
+        &self,
+        id: i64,
+        data: &[u8],
+        filename: &str,
+        mime_type: &str,
+    ) -> AppResult<Event>;
+    async fn events_delete_attachment(&self, id: i64) -> AppResult<Event>;
+    async fn events_get_attachment_blob(&self, id: i64) -> AppResult<Option<(Vec<u8>, String, String)>>;
     async fn events_annual_stats(&self, year: i32) -> AppResult<EventAnnualStats>;
 }
 
@@ -34,8 +58,12 @@ impl EventsRepository for super::Repository {
     async fn events_get_by_id(&self, id: i64) -> crate::error::AppResult<crate::models::event::Event> {
         super::Repository::events_get_by_id(self, id).await
     }
-    async fn events_create(&self, data: &crate::models::event::CreateEvent) -> crate::error::AppResult<crate::models::event::Event> {
-        super::Repository::events_create(self, data).await
+    async fn events_create(
+        &self,
+        data: &crate::models::event::CreateEvent,
+        attachment: Option<(Vec<u8>, String, String)>,
+    ) -> crate::error::AppResult<crate::models::event::Event> {
+        super::Repository::events_create(self, data, attachment).await
     }
     async fn events_update(&self, id: i64, data: &crate::models::event::UpdateEvent) -> crate::error::AppResult<crate::models::event::Event> {
         super::Repository::events_update(self, id, data).await
@@ -45,6 +73,21 @@ impl EventsRepository for super::Repository {
     }
     async fn events_delete(&self, id: i64) -> crate::error::AppResult<()> {
         super::Repository::events_delete(self, id).await
+    }
+    async fn events_put_attachment(
+        &self,
+        id: i64,
+        data: &[u8],
+        filename: &str,
+        mime_type: &str,
+    ) -> crate::error::AppResult<crate::models::event::Event> {
+        super::Repository::events_put_attachment(self, id, data, filename, mime_type).await
+    }
+    async fn events_delete_attachment(&self, id: i64) -> crate::error::AppResult<crate::models::event::Event> {
+        super::Repository::events_delete_attachment(self, id).await
+    }
+    async fn events_get_attachment_blob(&self, id: i64) -> crate::error::AppResult<Option<(Vec<u8>, String, String)>> {
+        super::Repository::events_get_attachment_blob(self, id).await
     }
     async fn events_annual_stats(&self, year: i32) -> crate::error::AppResult<EventAnnualStats> {
         super::Repository::events_annual_stats(self, year).await
@@ -97,8 +140,11 @@ impl Repository {
 
         // Fetch rows
         let select_q = format!(
-            "SELECT * FROM events {} ORDER BY event_date DESC LIMIT {} OFFSET {}",
-            where_clause, per_page, offset
+            "SELECT {} FROM events {} ORDER BY event_date DESC LIMIT {} OFFSET {}",
+            EVENT_COLUMNS,
+            where_clause,
+            per_page,
+            offset
         );
         let mut builder = sqlx::query_as::<_, Event>(&select_q);
         if let Some(sd) = start { builder = builder.bind(sd); }
@@ -112,7 +158,8 @@ impl Repository {
     /// Get event by ID
     #[tracing::instrument(skip(self), err)]
     pub async fn events_get_by_id(&self, id: i64) -> AppResult<Event> {
-        sqlx::query_as::<_, Event>("SELECT * FROM events WHERE id = $1")
+        let q = format!("SELECT {} FROM events WHERE id = $1", EVENT_COLUMNS);
+        sqlx::query_as::<_, Event>(&q)
             .bind(id)
             .fetch_optional(&self.pool)
             .await?
@@ -121,7 +168,11 @@ impl Repository {
 
     /// Create an event
     #[tracing::instrument(skip(self), err)]
-    pub async fn events_create(&self, data: &CreateEvent) -> AppResult<Event> {
+    pub async fn events_create(
+        &self,
+        data: &CreateEvent,
+        attachment: Option<(Vec<u8>, String, String)>,
+    ) -> AppResult<Event> {
         let event_date = NaiveDate::parse_from_str(&data.event_date, "%Y-%m-%d")
             .map_err(|_| AppError::Validation("Invalid event_date".to_string()))?;
         let start_time = data.start_time.as_ref()
@@ -129,17 +180,25 @@ impl Repository {
         let end_time = data.end_time.as_ref()
             .and_then(|s| NaiveTime::parse_from_str(s, "%H:%M").ok());
 
-        let row = sqlx::query_as::<_, Event>(
+        let (att_data, att_name, att_mime) = match attachment {
+            Some((b, n, m)) => (Some(b), Some(n), Some(m)),
+            None => (None, None, None),
+        };
+
+        let sql = format!(
             r#"
             INSERT INTO events (
                 name, event_type, event_date, start_time, end_time,
                 attendees_count, target_public,
                 school_name, class_name, students_count,
-                partner_name, description, notes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING *
+                partner_name, description, notes,
+                attachment_data, attachment_filename, attachment_mime_type
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            RETURNING {}
             "#,
-        )
+            EVENT_COLUMNS
+        );
+        let row = sqlx::query_as::<_, Event>(&sql)
         .bind(&data.name)
         .bind(data.event_type.unwrap_or(0))
         .bind(event_date)
@@ -153,6 +212,9 @@ impl Repository {
         .bind(&data.partner_name)
         .bind(&data.description)
         .bind(&data.notes)
+        .bind(att_data.as_deref())
+        .bind(att_name.as_ref())
+        .bind(att_mime.as_ref())
         .fetch_one(&self.pool)
         .await?;
         Ok(row)
@@ -185,7 +247,12 @@ impl Repository {
         add_f!(data.description, "description");
         add_f!(data.notes, "notes");
 
-        let query = format!("UPDATE events SET {} WHERE id = {} RETURNING *", sets.join(", "), id);
+        let query = format!(
+            "UPDATE events SET {} WHERE id = {} RETURNING {}",
+            sets.join(", "),
+            id,
+            EVENT_COLUMNS
+        );
 
         // Parse special types
         let event_date = data.event_date.as_ref()
@@ -244,6 +311,88 @@ impl Repository {
             return Err(AppError::NotFound(format!("Event {} not found", id)));
         }
         Ok(())
+    }
+
+    /// Replace the event attachment (binary stored in-database).
+    #[tracing::instrument(skip(self, data), err)]
+    pub async fn events_put_attachment(
+        &self,
+        id: i64,
+        data: &[u8],
+        filename: &str,
+        mime_type: &str,
+    ) -> AppResult<Event> {
+        let sql = format!(
+            r#"
+            UPDATE events SET
+                attachment_data = $2,
+                attachment_filename = $3,
+                attachment_mime_type = $4,
+                update_at = NOW()
+            WHERE id = $1
+            RETURNING {}
+            "#,
+            EVENT_COLUMNS
+        );
+        sqlx::query_as::<_, Event>(&sql)
+            .bind(id)
+            .bind(data)
+            .bind(filename)
+            .bind(mime_type)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Event {} not found", id)))
+    }
+
+    /// Remove the event attachment.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn events_delete_attachment(&self, id: i64) -> AppResult<Event> {
+        let sql = format!(
+            r#"
+            UPDATE events SET
+                attachment_data = NULL,
+                attachment_filename = NULL,
+                attachment_mime_type = NULL,
+                update_at = NOW()
+            WHERE id = $1
+            RETURNING {}
+            "#,
+            EVENT_COLUMNS
+        );
+        sqlx::query_as::<_, Event>(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Event {} not found", id)))
+    }
+
+    /// Load raw attachment bytes and metadata when present.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn events_get_attachment_blob(&self, id: i64) -> AppResult<Option<(Vec<u8>, String, String)>> {
+        let row = sqlx::query(
+            r#"
+            SELECT attachment_data, attachment_filename, attachment_mime_type
+            FROM events WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Err(AppError::NotFound(format!("Event {} not found", id)));
+        };
+
+        let data: Option<Vec<u8>> = row.try_get("attachment_data")?;
+        let filename: Option<String> = row.try_get("attachment_filename")?;
+        let mime: Option<String> = row.try_get("attachment_mime_type")?;
+
+        match (data, filename, mime) {
+            (Some(bytes), Some(fname), Some(m)) if !bytes.is_empty() => {
+                Ok(Some((bytes, fname, m)))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Get event stats for a year (for annual report)

@@ -39,8 +39,10 @@ pub async fn run_stats_query(
     )
     .await?;
 
-    if let Some(r) = redis {
-        let _ = cache::set(r, &key, &response).await;
+    if response.sql_error.is_none() {
+        if let Some(r) = redis {
+            let _ = cache::set(r, &key, &response).await;
+        }
     }
 
     Ok(response)

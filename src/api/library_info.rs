@@ -35,7 +35,7 @@ pub struct LibraryInfo {
 }
 
 /// Update library information request
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateLibraryInfoRequest {
     /// Library name

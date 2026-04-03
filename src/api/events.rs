@@ -22,7 +22,7 @@ use super::{AuthenticatedUser, ClientIp};
 
 /// Build the events routes for this domain.
 pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post, put};
+    use axum::routing::{get, post};
     axum::Router::new()
         .route("/events", get(list_events).post(create_event))
         .route("/events/:id", get(get_event).put(update_event).delete(delete_event))
@@ -60,7 +60,7 @@ pub async fn list_events(
     Ok(Json(EventsListResponse { events, total }))
 }
 
-/// Get event by ID
+/// Get event by ID (includes `attachmentDataBase64` when an attachment exists)
 #[utoipa::path(
     get,
     path = "/events/{id}",
@@ -79,7 +79,7 @@ pub async fn get_event(
     State(state): State<crate::AppState>,
     Path(id): Path<i64>,
 ) -> AppResult<Json<Event>> {
-    let event = state.services.events.get_by_id(id).await?;
+    let event = state.services.events.get_by_id_with_attachment(id).await?;
     Ok(Json(event))
 }
 
@@ -110,7 +110,7 @@ pub async fn create_event(
     Ok((StatusCode::CREATED, Json(event)))
 }
 
-/// Update an event
+/// Update an event (optional `attachment` / `removeAttachment` same as create semantics)
 #[utoipa::path(
     put,
     path = "/events/{id}",
@@ -202,4 +202,3 @@ pub async fn send_event_announcement(
         .await?;
     Ok(Json(report))
 }
-

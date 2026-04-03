@@ -183,6 +183,12 @@ impl UsersService {
         self.create_token_with_scope(user, None).await
     }
 
+    /// Issue a normal access token (e.g. after bootstrap `POST /first_setup`).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn issue_access_token(&self, user: &User) -> AppResult<String> {
+        self.token_respecting_password_policy(user).await
+    }
+
     /// Create a JWT token, optionally restricting it to a specific scope.
     ///
     /// When `scope` is `Some(SCOPE_CHANGE_PASSWORD)`, the token is short-lived

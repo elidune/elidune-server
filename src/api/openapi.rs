@@ -5,7 +5,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, health, holds, inventory, items, library_info, loans, maintenance, opac, public_types, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
+use crate::api::{admin_config, audit, auth, biblios, collections, equipment, events, first_setup, health, holds, inventory, items, library_info, loans, maintenance, opac, public_types, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -24,6 +24,7 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
         health::health_check,
         health::readiness_check,
         health::version,
+        first_setup::post_first_setup,
         // Auth
         auth::login,
         auth::me,
@@ -333,6 +334,7 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
             crate::models::equipment::UpdateEquipment,
             // Events
             crate::models::event::Event,
+            crate::models::event::EventAttachmentInput,
             crate::models::event::CreateEvent,
             crate::models::event::UpdateEvent,
             crate::models::event::EventQuery,
@@ -375,14 +377,20 @@ use crate::api::{admin_config, audit, auth, biblios, collections, equipment, eve
             crate::repository::events::EventTypeStats,
             // Health
             health::HealthResponse,
+            health::HealthDatabaseStatus,
+            health::HealthSetupStatus,
             health::VersionResponse,
+            first_setup::FirstSetupRequest,
+            first_setup::FirstSetupAdminBody,
+            first_setup::FirstSetupEmailBody,
+            first_setup::FirstSetupResponse,
 
             // Errors
             crate::error::ErrorResponse,
         )
     ),
     tags(
-        (name = "health", description = "Health check endpoints"),
+        (name = "health", description = "Health / readiness, server version, and one-time POST /first_setup when the database has no users and no settings overrides"),
         (name = "auth", description = "Authentication endpoints"),
         (name = "biblios", description = "Bibliographic record management"),
         (name = "items", description = "Physical copies (items) — get biblio for a copy, update/delete by item id"),
