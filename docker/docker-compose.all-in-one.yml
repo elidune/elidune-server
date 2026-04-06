@@ -104,7 +104,3 @@ volumes:
     name: elidune-redis-data
   meili_data:
     name: elidune-meili-data
-
-networks:
-  default:
-    name: elidune-network

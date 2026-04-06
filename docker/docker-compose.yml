@@ -7,18 +7,17 @@
 #
 
 services:
-  app:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    image: ${ELIDUNE_IMAGE:-elidune-server:local}
-    command: ["/app/elidune-server", "--config", "/app/config/default.toml"]
+  elidnune-server:
+    image: ${ELIDUNE_IMAGE:-elidune-server:latest}
+    pull_policy: always
+    restart: unless-stopped
+    networks:
+      - elidune-network
+    container_name: elidune-server
     ports:
       - "${API_PORT:-8080}:8080"
     environment:
-
       RUST_LOG: ${RUST_LOG:-elidune_server=info,tower_http=info}
-
       ELIDUNE_SERVER__HOST: ${ELIDUNE_SERVER__HOST:-0.0.0.0}
       ELIDUNE_SERVER__PORT: ${ELIDUNE_SERVER__PORT:-8080}
       ELIDUNE_SERVER__AUTH_RATE_PER_SECOND: ${ELIDUNE_SERVER__AUTH_RATE_PER_SECOND:-4}
@@ -65,7 +64,7 @@ services:
 
       ELIDUNE_MEILISEARCH__URL: ${ELIDUNE_MEILISEARCH__URL:-http://meilisearch:7700}
       # Defaults to MEILI_MASTER_KEY when ELIDUNE_MEILISEARCH__API_KEY is unset
-      ELIDUNE_MEILISEARCH__API_KEY: ${ELIDUNE_MEILISEARCH__API_KEY:-${MEILI_MASTER_KEY:-changeme}}
+      ELIDUNE_MEILISEARCH__API_KEY: ${ELIDUNE_MEILISEARCH__API_KEY:-changeme}
       ELIDUNE_MEILISEARCH__INDEX_NAME: ${ELIDUNE_MEILISEARCH__INDEX_NAME:-items}
 
     depends_on:
@@ -75,15 +74,16 @@ services:
         condition: service_started
       meilisearch:
         condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - elidune-network
+    
+
 
   redis:
     image: redis:7-alpine
     ports:
       - "${REDIS_PORT:-6379}:6379"
     restart: unless-stopped
+    volumes:
+      - redis_data:/data
     networks:
       - elidune-network
 
@@ -125,24 +125,15 @@ services:
     networks:
       - elidune-network
 
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@elidune.org
-      PGADMIN_DEFAULT_PASSWORD: admin
-    ports:
-      - "5050:80"
-    depends_on:
-      - db
-    restart: unless-stopped
-    networks:
-      - elidune-network
-    profiles:
-      - tools
+
 
 volumes:
   postgres_data:
+    name: elidune-postgres-data
+  redis_data:
+    name: elidune-redis-data
   meili_data:
+    name: elidune-meili-data
 
 networks:
   elidune-network:
