@@ -13,7 +13,7 @@ use crate::{
 /// Columns for [`Event`] mapping (excludes `attachment_data` BYTEA; exposes `attachment_size`).
 const EVENT_COLUMNS: &str = r#"
   id, name, event_type, event_date, start_time, end_time,
-  attendees_count, target_public, school_name, class_name, students_count,
+  attendees_count, public_type, school_name, class_name, students_count,
   partner_name, description, notes, created_at, update_at, announcement_sent_at,
   attachment_filename,
   attachment_mime_type,
@@ -46,9 +46,20 @@ pub trait EventsRepository: Send + Sync {
 }
 
 /// Combined repository trait used by [`crate::services::events::EventsService`].
-pub trait EventsServiceRepository: EventsRepository + crate::repository::UsersRepository + Send + Sync {}
+pub trait EventsServiceRepository:
+    EventsRepository + crate::repository::UsersRepository + crate::repository::PublicTypesRepository + Send + Sync
+{
+}
 
-impl<T: EventsRepository + crate::repository::UsersRepository + Send + Sync> EventsServiceRepository for T {}
+impl<
+        T: EventsRepository
+            + crate::repository::UsersRepository
+            + crate::repository::PublicTypesRepository
+            + Send
+            + Sync,
+    > EventsServiceRepository for T
+{
+}
 
 #[async_trait::async_trait]
 impl EventsRepository for super::Repository {
@@ -189,7 +200,7 @@ impl Repository {
             r#"
             INSERT INTO events (
                 name, event_type, event_date, start_time, end_time,
-                attendees_count, target_public,
+                attendees_count, public_type,
                 school_name, class_name, students_count,
                 partner_name, description, notes,
                 attachment_data, attachment_filename, attachment_mime_type
@@ -205,7 +216,7 @@ impl Repository {
         .bind(start_time)
         .bind(end_time)
         .bind(data.attendees_count)
-        .bind(data.target_public)
+        .bind(data.public_type.as_ref().map(|s| s.trim()))
         .bind(&data.school_name)
         .bind(&data.class_name)
         .bind(data.students_count)
@@ -239,7 +250,7 @@ impl Repository {
         add_f!(data.start_time, "start_time");
         add_f!(data.end_time, "end_time");
         add_f!(data.attendees_count, "attendees_count");
-        add_f!(data.target_public, "target_public");
+        add_f!(data.public_type, "public_type");
         add_f!(data.school_name, "school_name");
         add_f!(data.class_name, "class_name");
         add_f!(data.students_count, "students_count");
@@ -276,7 +287,9 @@ impl Repository {
         if data.start_time.is_some() { builder = builder.bind(start_time); }
         if data.end_time.is_some() { builder = builder.bind(end_time); }
         bind_f!(data.attendees_count);
-        bind_f!(data.target_public);
+        if data.public_type.is_some() {
+            builder = builder.bind(data.public_type.as_ref().map(|s| s.trim()));
+        }
         bind_f!(data.school_name);
         bind_f!(data.class_name);
         bind_f!(data.students_count);

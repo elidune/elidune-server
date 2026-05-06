@@ -38,8 +38,8 @@ pub struct Event {
     pub end_time: Option<NaiveTime>,
     /// Number of attendees
     pub attendees_count: Option<i32>,
-    /// Target audience (97=adult, 106=children, NULL=all)
-    pub target_public: Option<i16>,
+    /// Target audience: `public_types.name` (e.g. `child`, `adult`); `NULL` = all audiences.
+    pub public_type: Option<String>,
     /// School name (for school visits)
     pub school_name: Option<String>,
     /// Class name (for school visits)
@@ -80,8 +80,8 @@ pub struct CreateEvent {
     /// End time (HH:MM)
     pub end_time: Option<String>,
     pub attendees_count: Option<i32>,
-    /// Target audience (97=adult, 106=children)
-    pub target_public: Option<i16>,
+    /// Target audience: `public_types.name` from `GET /public-types` (e.g. `child`, `adult`).
+    pub public_type: Option<String>,
     pub school_name: Option<String>,
     pub class_name: Option<String>,
     pub students_count: Option<i32>,
@@ -102,7 +102,8 @@ pub struct UpdateEvent {
     pub start_time: Option<String>,
     pub end_time: Option<String>,
     pub attendees_count: Option<i32>,
-    pub target_public: Option<i16>,
+    /// Target audience: `public_types.name` from `GET /public-types`.
+    pub public_type: Option<String>,
     pub school_name: Option<String>,
     pub class_name: Option<String>,
     pub students_count: Option<i32>,

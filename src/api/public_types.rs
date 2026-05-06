@@ -42,9 +42,7 @@ pub struct UpsertLoanSettingRequest {
 )]
 pub async fn list_public_types(
     State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
 ) -> AppResult<Json<Vec<PublicType>>> {
-    claims.require_read_settings()?;
     let types = state.services.public_types.list().await?;
     Ok(Json(types))
 }
@@ -63,10 +61,8 @@ pub async fn list_public_types(
 )]
 pub async fn get_public_type(
     State(state): State<crate::AppState>,
-    AuthenticatedUser(claims): AuthenticatedUser,
     Path(id): Path<i64>,
 ) -> AppResult<Json<(PublicType, Vec<PublicTypeLoanSettings>)>> {
-    claims.require_read_settings()?;
     let public_type = state.services.public_types.get_by_id(id).await?;
     let loan_settings = state.services.public_types.get_loan_settings(id).await?;
     Ok(Json((public_type, loan_settings)))

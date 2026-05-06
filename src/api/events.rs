@@ -166,8 +166,8 @@ pub async fn delete_event(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Send an announcement email for an event to all users whose public_type matches
-/// the event's target_public (all users if target_public is NULL).
+/// Send an announcement email for an event to all users whose `users.public_type` id
+/// matches the event's `publicType` (stored as `public_types.name`), or all users with email if it is null.
 ///
 /// The default `event_announcement` template is used unless `subject`/`body_plain`
 /// (and optionally `body_html`) are supplied in the request body, in which case the

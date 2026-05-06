@@ -98,6 +98,7 @@ impl EventsService {
 
     #[tracing::instrument(skip(self), err)]
     pub async fn create(&self, data: &CreateEvent) -> AppResult<Event> {
+        Self::validate_public_type_name(&*self.repository, data.public_type.as_ref()).await?;
         let attachment = match &data.attachment {
             Some(a) => Some(decode_event_attachment_input(a)?),
             None => None,
@@ -108,6 +109,7 @@ impl EventsService {
 
     #[tracing::instrument(skip(self), err)]
     pub async fn update(&self, id: i64, data: &UpdateEvent) -> AppResult<Event> {
+        Self::validate_public_type_name(&*self.repository, data.public_type.as_ref()).await?;
         let remove = data.remove_attachment == Some(true);
         let new_attachment = if !remove {
             match &data.attachment {
@@ -153,8 +155,8 @@ impl EventsService {
         self.repository.events_annual_stats(year).await
     }
 
-    /// Send an announcement email for an event to all users whose public_type
-    /// matches the event's `target_public` (or everyone if `target_public` is NULL).
+    /// Send an announcement email for an event to all users whose `users.public_type`
+    /// matches the event's `public_type` (`public_types.name`), or everyone if it is NULL.
     ///
     /// If the request provides `subject`/`body_plain`/`body_html`, those are used
     /// directly instead of the template.
@@ -205,10 +207,24 @@ impl EventsService {
             .map(|d| format!("<p>{}</p>", d.replace('\n', "<br>")))
             .unwrap_or_default();
 
-        // Fetch target users
+        let audience_id = match event.public_type.as_deref() {
+            None => None,
+            Some(name) => Some(
+                self.repository
+                    .public_types_find_id_by_name(name.trim())
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Internal(format!(
+                            "event {} references missing public_type name {:?}",
+                            event_id, name
+                        ))
+                    })?,
+            ),
+        };
+
         let targets = self
             .repository
-            .users_get_emails_by_public_type(event.target_public.map(|v| v as i64))
+            .users_get_emails_by_public_type(audience_id)
             .await?;
 
         let mut emails_sent: u32 = 0;
@@ -311,6 +327,26 @@ impl EventsService {
         }
 
         Ok(AnnouncementReport { event_id, emails_sent, skipped, errors })
+    }
+
+    async fn validate_public_type_name(
+        repository: &dyn EventsServiceRepository,
+        public_type: Option<&String>,
+    ) -> AppResult<()> {
+        let Some(raw) = public_type else {
+            return Ok(());
+        };
+        let name = raw.trim();
+        if name.is_empty() {
+            return Err(AppError::Validation("public_type must not be blank".into()));
+        }
+        let exists = repository.public_types_find_id_by_name(name).await?;
+        if exists.is_none() {
+            return Err(AppError::Validation(format!(
+                "Unknown public_type name {name:?} (must match public_types.name)"
+            )));
+        }
+        Ok(())
     }
 }
 

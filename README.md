@@ -2,7 +2,7 @@
 
 Library management system — JSON REST API written in Rust (Axum, PostgreSQL, Redis, optional Meilisearch).
 
-**Live demo:** [elidune.b-612.fr](https://elidune.b-612.fr/)
+**Live demo:** [elidune.b-612.fr](https://elidune.b-612.fr/) (credentials : admin/admin)
 
 ## License
 

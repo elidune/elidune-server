@@ -39,6 +39,8 @@ pub trait PublicTypesRepository: Send + Sync {
         public_type_id: i64,
         media_type: &str,
     ) -> AppResult<()>;
+    /// Resolve a `public_types.name` to its id, if it exists.
+    async fn public_types_find_id_by_name(&self, name: &str) -> AppResult<Option<i64>>;
 }
 
 #[async_trait::async_trait]
@@ -66,6 +68,9 @@ impl PublicTypesRepository for super::Repository {
     }
     async fn public_types_delete_loan_setting(&self, public_type_id: i64, media_type: &str) -> crate::error::AppResult<()> {
         super::Repository::public_types_delete_loan_setting(self, public_type_id, media_type).await
+    }
+    async fn public_types_find_id_by_name(&self, name: &str) -> crate::error::AppResult<Option<i64>> {
+        super::Repository::public_types_find_id_by_name(self, name).await
     }
 }
 
@@ -255,6 +260,15 @@ impl Repository {
             .fetch_optional(&self.pool)
             .await
             .map_err(Into::into)
+    }
+
+    /// Lookup `public_types.id` by stable `name` (e.g. `child`, `adult`).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn public_types_find_id_by_name(&self, name: &str) -> AppResult<Option<i64>> {
+        Ok(sqlx::query_scalar::<_, i64>("SELECT id FROM public_types WHERE name = $1")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?)
     }
 }
 
