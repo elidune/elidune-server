@@ -1099,7 +1099,7 @@ impl Repository {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-
+println!("ids: {:?}", ids);
         let rows: Vec<BiblioShortRow> = sqlx::query_as(
             r#"
             SELECT b.id, b.media_type, b.isbn, b.title,

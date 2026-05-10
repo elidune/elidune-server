@@ -22,6 +22,17 @@ use crate::{
 
 use super::{AuthenticatedUser, ClientIp};
 
+/// Build the `/settings/email-templates*` routes (staff only).
+pub fn router() -> axum::Router<AppState> {
+    use axum::routing::get;
+    axum::Router::new()
+        .route("/settings/email-templates", get(list_email_templates))
+        .route(
+            "/settings/email-templates/:template_id/:language",
+            get(get_email_template).put(update_email_template),
+        )
+}
+
 /// Persisted email template (one (templateId, language) pair).
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -197,15 +208,4 @@ fn validate_identifiers(template_id: &str, language: &str) -> AppResult<()> {
         )));
     }
     Ok(())
-}
-
-/// Build the `/settings/email-templates*` routes (staff only).
-pub fn router() -> axum::Router<AppState> {
-    use axum::routing::get;
-    axum::Router::new()
-        .route("/settings/email-templates", get(list_email_templates))
-        .route(
-            "/settings/email-templates/:template_id/:language",
-            get(get_email_template).put(update_email_template),
-        )
 }
