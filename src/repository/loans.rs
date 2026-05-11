@@ -989,6 +989,7 @@ impl Repository {
             }
         };
 
+        
         let biblio_row = sqlx::query(&format!(
             r#"
             SELECT b.id as biblio_id, b.media_type, b.isbn, b.title, b.publication_date,
