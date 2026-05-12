@@ -171,7 +171,10 @@ impl LoansService {
 
         if let Some(loan_settings) = request.loan_settings {
             for setting in loan_settings {
-                let media_key = setting.media_type.as_ref().map(|m| m.as_db_str());
+                let media_key = setting
+                    .media_type
+                    .as_ref()
+                    .map(|m| m.as_db_str().to_string());
                 self.repository
                     .loans_settings_upsert_row(
                         media_key,
@@ -415,7 +418,7 @@ mod tests {
         async fn loans_update_reminder_sent(&self, _: &[i64]) -> AppResult<()> { Ok(()) }
         async fn loans_settings_upsert_row(
             &self,
-            _: Option<&str>,
+            _: Option<String>,
             _: i16,
             _: i16,
             _: i16,

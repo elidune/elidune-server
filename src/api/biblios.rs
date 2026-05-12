@@ -237,7 +237,7 @@ pub async fn create_biblio(
         biblio.id,
         ip,
         Some(&biblio),
-    );
+     audit::AuditLogMeta::success());
 
     Ok((StatusCode::CREATED, Json(CreateBiblioResponse { biblio, import_report })))
 }
@@ -345,13 +345,25 @@ pub async fn import_marc_batch(
                         Some(claims.user_id),
                         None,
                         None,
-                        ip,
+                        ip.clone(),
                         Some(&p),
+                        audit::AuditLogMeta::success(),
                     );
                     let result = serde_json::to_value(&report).unwrap_or_default();
                     handle.complete(result).await;
                 }
-                Err(e) => handle.fail(e.to_string()).await,
+                Err(e) => {
+                    audit.log(
+                        audit::event::IMPORT_MARC_BATCH,
+                        Some(claims.user_id),
+                        None,
+                        None,
+                        ip,
+                        Some(&p),
+                        audit::AuditLogMeta::from_app_error(&e),
+                    );
+                    handle.fail(e.to_string()).await;
+                }
             }
         },
     );
@@ -394,7 +406,7 @@ pub async fn update_biblio(
         Some(id),
         ip,
         Some((id, &updated)),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(updated))
 }
@@ -443,7 +455,7 @@ pub async fn delete_biblio(
         Some(id),
         ip,
         Some(serde_json::json!({ "id": id, "force": params.force.unwrap_or(false) })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -516,7 +528,7 @@ pub async fn create_item(
         created.id,
         ip,
         Some((biblio_id, &created)),
-    );
+     audit::AuditLogMeta::success());
 
     Ok((StatusCode::CREATED, Json(created)))
 }

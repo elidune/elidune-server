@@ -200,7 +200,7 @@ pub async fn update_loan_settings(
         None,
         ip,
         Some(serde_json::json!({ "scope": "loans", "loanSettings": rows })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(rows))
 }
@@ -357,7 +357,7 @@ pub async fn create_loan(
             force: request.force.unwrap_or(false),
             expiry_at,
         }),
-    );
+     audit::AuditLogMeta::success());
 
     Ok((
         StatusCode::CREATED,
@@ -398,7 +398,7 @@ pub async fn return_loan(
         Some(loan_id),
         ip,
         Some(&loan),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(ReturnResponse { status: "returned".to_string(), loan }))
 }
@@ -446,7 +446,7 @@ pub async fn renew_loan(
             new_expiry_at: new_expiry_date,
             renew_count,
         }),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(LoanResponse {
         id: loan_id,
@@ -485,7 +485,7 @@ pub async fn return_loan_by_item(
         Some(loan_id),
         ip,
         Some((item_id.as_str(), &loan)),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(ReturnResponse { status: "returned".to_string(), loan }))
 }
@@ -527,7 +527,7 @@ pub async fn renew_loan_by_item(
             new_expiry_at: new_expiry_date,
             renew_count,
         }),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(LoanResponse {
         id: loan_id,
@@ -608,7 +608,7 @@ pub async fn send_overdue_reminders(
                 loans_reminded: report.loans_reminded,
                 errors: report.errors.len(),
             }),
-        );
+         audit::AuditLogMeta::success());
     }
 
     Ok(Json(report))

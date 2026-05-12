@@ -11,11 +11,21 @@ use utoipa::ToSchema;
 pub struct AuditLogEntry {
     pub id: i64,
     pub event_type: String,
+    /// `"success"` or `"failure"` — whether the audited action completed successfully.
+    pub outcome: String,
     pub user_id: Option<i64>,
     pub entity_type: Option<String>,
     pub entity_id: Option<i64>,
     pub ip_address: Option<String>,
     pub payload: Option<Value>,
+    /// HTTP status that would have been returned for API-originated actions (if known).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<i16>,
+    /// Machine-readable code (same family as [`crate::error::error_code`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -29,6 +39,9 @@ pub struct AuditQueryParams {
     pub user_id: Option<i64>,
     pub from_date: Option<DateTime<Utc>>,
     pub to_date: Option<DateTime<Utc>>,
+    /// Filter: `success` or `failure`.
+    pub outcome: Option<String>,
+    pub error_code: Option<String>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
 }

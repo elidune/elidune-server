@@ -300,9 +300,23 @@ impl EventsService {
                             "email": email_addr,
                             "event_name": event.name,
                         })),
+                        audit::AuditLogMeta::success(),
                     );
                 }
                 Err(e) => {
+                    self.audit.log(
+                        audit::event::EVENT_ANNOUNCEMENT_SENT,
+                        triggered_by,
+                        Some("event"),
+                        Some(event_id),
+                        client_ip.clone(),
+                        Some(serde_json::json!({
+                            "user_id": user.id,
+                            "email": email_addr.clone(),
+                            "event_name": event.name,
+                        })),
+                        audit::AuditLogMeta::from_app_error(&e),
+                    );
                     errors.push(AnnouncementError {
                         user_id: user.id,
                         email: email_addr,

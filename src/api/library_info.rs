@@ -119,7 +119,7 @@ pub async fn update_library_info(
         None,
         ip,
         Some(&info),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(info))
 }

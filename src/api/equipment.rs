@@ -84,9 +84,32 @@ pub async fn create_equipment(
     Json(data): Json<CreateEquipment>,
 ) -> AppResult<(StatusCode, Json<Equipment>)> {
     claims.require_write_settings()?;
-    let equipment = state.services.equipment.create(&data).await?;
-    state.services.audit.log(audit::event::EQUIPMENT_CREATED, Some(claims.user_id), Some("equipment"), Some(equipment.id), ip, Some(&equipment));
-    Ok((StatusCode::CREATED, Json(equipment)))
+    match state.services.equipment.create(&data).await {
+        Ok(equipment) => {
+            state.services.audit.log(
+                audit::event::EQUIPMENT_CREATED,
+                Some(claims.user_id),
+                Some("equipment"),
+                Some(equipment.id),
+                ip,
+                Some(&equipment),
+                audit::AuditLogMeta::success(),
+            );
+            Ok((StatusCode::CREATED, Json(equipment)))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::EQUIPMENT_CREATED,
+                Some(claims.user_id),
+                Some("equipment"),
+                None,
+                ip.clone(),
+                None::<serde_json::Value>,
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Update equipment
@@ -113,9 +136,32 @@ pub async fn update_equipment(
     Json(data): Json<UpdateEquipment>,
 ) -> AppResult<Json<Equipment>> {
     claims.require_write_settings()?;
-    let equipment = state.services.equipment.update(id, &data).await?;
-    state.services.audit.log(audit::event::EQUIPMENT_UPDATED, Some(claims.user_id), Some("equipment"), Some(id), ip, Some(&equipment));
-    Ok(Json(equipment))
+    match state.services.equipment.update(id, &data).await {
+        Ok(equipment) => {
+            state.services.audit.log(
+                audit::event::EQUIPMENT_UPDATED,
+                Some(claims.user_id),
+                Some("equipment"),
+                Some(id),
+                ip,
+                Some(&equipment),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(equipment))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::EQUIPMENT_UPDATED,
+                Some(claims.user_id),
+                Some("equipment"),
+                Some(id),
+                ip.clone(),
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Delete equipment
@@ -140,9 +186,32 @@ pub async fn delete_equipment(
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     claims.require_write_settings()?;
-    state.services.equipment.delete(id).await?;
-    state.services.audit.log(audit::event::EQUIPMENT_DELETED, Some(claims.user_id), Some("equipment"), Some(id), ip, Some(serde_json::json!({ "id": id })));
-    Ok(StatusCode::NO_CONTENT)
+    match state.services.equipment.delete(id).await {
+        Ok(()) => {
+            state.services.audit.log(
+                audit::event::EQUIPMENT_DELETED,
+                Some(claims.user_id),
+                Some("equipment"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::EQUIPMENT_DELETED,
+                Some(claims.user_id),
+                Some("equipment"),
+                Some(id),
+                ip.clone(),
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Build the equipment routes for this domain.

@@ -94,6 +94,7 @@ pub async fn batch_return(
                     Some(loan.id),
                     ip.clone(),
                     Some(serde_json::json!({ "barcode": barcode, "batch": true })),
+                    audit::AuditLogMeta::success(),
                 );
                 returned += 1;
                 results.push(BatchReturnItemResult {
@@ -105,6 +106,15 @@ pub async fn batch_return(
             }
             Err(e) => {
                 errors += 1;
+                state.services.audit.log(
+                    audit::event::LOAN_RETURNED,
+                    Some(claims.user_id),
+                    Some("loan"),
+                    None,
+                    ip.clone(),
+                    Some(serde_json::json!({ "barcode": barcode, "batch": true })),
+                    audit::AuditLogMeta::from_app_error(&e),
+                );
                 results.push(BatchReturnItemResult {
                     barcode: barcode.clone(),
                     loan: None,
@@ -206,6 +216,7 @@ pub async fn batch_create_loans(
                     Some(loan_id),
                     ip.clone(),
                     Some(serde_json::json!({ "barcode": barcode, "userId": user_id.to_string(), "batch": true, "expiryAt": expiry_at })),
+                    audit::AuditLogMeta::success(),
                 );
                 created += 1;
                 results.push(BatchCreateLoanItemResult {
@@ -217,6 +228,15 @@ pub async fn batch_create_loans(
             }
             Err(e) => {
                 errors += 1;
+                state.services.audit.log(
+                    audit::event::LOAN_CREATED,
+                    Some(claims.user_id),
+                    Some("loan"),
+                    None,
+                    ip.clone(),
+                    Some(serde_json::json!({ "barcode": barcode, "userId": user_id.to_string(), "batch": true })),
+                    audit::AuditLogMeta::from_app_error(&e),
+                );
                 results.push(BatchCreateLoanItemResult {
                     barcode: barcode.clone(),
                     success: false,

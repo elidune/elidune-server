@@ -187,7 +187,7 @@ pub async fn update_email_template(
             "templateId": row.template_id,
             "language": row.language,
         })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(row.into()))
 }

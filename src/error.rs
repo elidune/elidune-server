@@ -199,6 +199,41 @@ impl IntoResponse for AppError {
     }
 }
 
+impl AppError {
+    /// HTTP status, stable [`error_code`] string, and client-safe message (aligned with [`ErrorResponse`]).
+    pub fn audit_http_fields(&self) -> (u16, &'static str, String) {
+        use error_code as ec;
+
+        match self {
+            AppError::Authentication(msg) => (401, ec::AUTHENTICATION, msg.clone()),
+            AppError::Authorization(msg) => (403, ec::AUTHORIZATION, msg.clone()),
+            AppError::NotFound(msg) => (404, ec::NOT_FOUND, msg.clone()),
+            AppError::Gone(msg) => (410, ec::GONE, msg.clone()),
+            AppError::Validation(msg) => (400, ec::VALIDATION, msg.clone()),
+            AppError::Database(_) => (
+                500,
+                ec::DATABASE,
+                "A database error occurred".to_string(),
+            ),
+            AppError::Conflict(msg) => (409, ec::CONFLICT, msg.clone()),
+            AppError::BadRequest(msg) => (400, ec::BAD_REQUEST, msg.clone()),
+            AppError::Internal(_) => (
+                500,
+                ec::INTERNAL,
+                "An unexpected error occurred".to_string(),
+            ),
+            AppError::Z3950(msg) => (502, ec::Z3950, msg.clone()),
+            AppError::BusinessRule(msg) => (422, ec::BUSINESS_RULE, msg.clone()),
+            AppError::DuplicateNeedsConfirmation { message, .. } => {
+                (409, ec::DUPLICATE_ISBN, message.clone())
+            }
+            AppError::DuplicateBarcodeNeedsConfirmation { message, .. } => {
+                (409, ec::DUPLICATE_BARCODE, message.clone())
+            }
+        }
+    }
+}
+
 /// Result type alias for application operations
 pub type AppResult<T> = Result<T, AppError>;
 

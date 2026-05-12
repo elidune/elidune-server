@@ -78,9 +78,32 @@ pub async fn create_public_type(
     Json(data): Json<CreatePublicType>,
 ) -> AppResult<(StatusCode, Json<PublicType>)> {
     claims.require_write_settings()?;
-    let public_type = state.services.public_types.create(&data).await?;
-    state.services.audit.log(audit::event::PUBLIC_TYPE_CREATED, Some(claims.user_id), Some("public_type"), Some(public_type.id), ip, Some((&data, &public_type)));
-    Ok((StatusCode::CREATED, Json(public_type)))
+    match state.services.public_types.create(&data).await {
+        Ok(public_type) => {
+            state.services.audit.log(
+                audit::event::PUBLIC_TYPE_CREATED,
+                Some(claims.user_id),
+                Some("public_type"),
+                Some(public_type.id),
+                ip,
+                Some((&data, &public_type)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok((StatusCode::CREATED, Json(public_type)))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::PUBLIC_TYPE_CREATED,
+                Some(claims.user_id),
+                Some("public_type"),
+                None,
+                ip.clone(),
+                Some(&data),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Update a public type
@@ -104,9 +127,32 @@ pub async fn update_public_type(
     Json(data): Json<UpdatePublicType>,
 ) -> AppResult<Json<PublicType>> {
     claims.require_write_settings()?;
-    let public_type = state.services.public_types.update(id, &data).await?;
-    state.services.audit.log(audit::event::PUBLIC_TYPE_UPDATED, Some(claims.user_id), Some("public_type"), Some(id), ip, Some((id, &data, &public_type)));
-    Ok(Json(public_type))
+    match state.services.public_types.update(id, &data).await {
+        Ok(public_type) => {
+            state.services.audit.log(
+                audit::event::PUBLIC_TYPE_UPDATED,
+                Some(claims.user_id),
+                Some("public_type"),
+                Some(id),
+                ip,
+                Some((id, &data, &public_type)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(public_type))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::PUBLIC_TYPE_UPDATED,
+                Some(claims.user_id),
+                Some("public_type"),
+                Some(id),
+                ip.clone(),
+                Some((id, &data)),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Delete a public type
@@ -129,9 +175,32 @@ pub async fn delete_public_type(
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     claims.require_write_settings()?;
-    state.services.public_types.delete(id).await?;
-    state.services.audit.log(audit::event::PUBLIC_TYPE_DELETED, Some(claims.user_id), Some("public_type"), Some(id), ip, Some(serde_json::json!({ "id": id })));
-    Ok(StatusCode::NO_CONTENT)
+    match state.services.public_types.delete(id).await {
+        Ok(()) => {
+            state.services.audit.log(
+                audit::event::PUBLIC_TYPE_DELETED,
+                Some(claims.user_id),
+                Some("public_type"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::PUBLIC_TYPE_DELETED,
+                Some(claims.user_id),
+                Some("public_type"),
+                Some(id),
+                ip.clone(),
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Replace all loan settings for a public type (full list). Rows are deleted and re-inserted; response is the new list (same order as GET).
@@ -156,16 +225,32 @@ pub async fn update_loan_settings(
     Json(data): Json<ReplacePublicTypeLoanSettingsRequest>,
 ) -> AppResult<Json<Vec<PublicTypeLoanSettings>>> {
     claims.require_write_settings()?;
-    let settings = state.services.public_types.update_loan_settings(id, &data).await?;
-    state.services.audit.log(
-        audit::event::PUBLIC_TYPE_LOAN_SETTINGS_UPDATED,
-        Some(claims.user_id),
-        Some("public_type"),
-        Some(id),
-        ip,
-        Some((id, &data, &settings)),
-    );
-    Ok(Json(settings))
+    match state.services.public_types.update_loan_settings(id, &data).await {
+        Ok(settings) => {
+            state.services.audit.log(
+                audit::event::PUBLIC_TYPE_LOAN_SETTINGS_UPDATED,
+                Some(claims.user_id),
+                Some("public_type"),
+                Some(id),
+                ip,
+                Some((id, &data, &settings)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(settings))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::PUBLIC_TYPE_LOAN_SETTINGS_UPDATED,
+                Some(claims.user_id),
+                Some("public_type"),
+                Some(id),
+                ip.clone(),
+                Some((id, &data)),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Build the public-types routes for this domain.

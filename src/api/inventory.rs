@@ -120,7 +120,7 @@ pub async fn create_session(
         Some(session.id),
         None,
         None::<()>,
-    );
+     audit::AuditLogMeta::success());
     Ok((StatusCode::CREATED, Json(session)))
 }
 
@@ -172,7 +172,7 @@ pub async fn close_session(
         Some(id),
         None,
         None::<()>,
-    );
+     audit::AuditLogMeta::success());
     Ok(Json(session))
 }
 

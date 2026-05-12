@@ -7,12 +7,80 @@ use std::net::SocketAddr;
 
 use axum::http::HeaderMap;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
-use sqlx::Row;
-use utoipa::ToSchema;
 
-use crate::{error::AppResult, repository::Repository};
+use crate::{
+    error::AppError,
+    error::AppResult,
+    repository::Repository,
+};
+
+const AUDIT_MESSAGE_MAX_BYTES: usize = 1000;
+
+/// Outcome stored on each audit row (`audit_log.outcome`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuditOutcome {
+    Success,
+    Failure,
+}
+
+impl AuditOutcome {
+    fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+        }
+    }
+}
+
+/// HTTP / API error context for an audit row (failure rows populate error fields).
+#[derive(Clone, Debug)]
+pub struct AuditLogMeta {
+    pub outcome: AuditOutcome,
+    pub http_status: Option<i16>,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+}
+
+impl AuditLogMeta {
+    pub fn success() -> Self {
+        Self {
+            outcome: AuditOutcome::Success,
+            http_status: None,
+            error_code: None,
+            error_message: None,
+        }
+    }
+
+    pub fn from_app_error(err: &AppError) -> Self {
+        let (st, code, msg) = err.audit_http_fields();
+        Self {
+            outcome: AuditOutcome::Failure,
+            http_status: Some(st as i16),
+            error_code: Some(code.to_string()),
+            error_message: Some(truncate_audit_message(msg)),
+        }
+    }
+
+    /// Non-HTTP failures (background jobs, email transport) with a stable code.
+    pub fn failure_background(error_code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            outcome: AuditOutcome::Failure,
+            http_status: None,
+            error_code: Some(error_code.into()),
+            error_message: Some(truncate_audit_message(message.into())),
+        }
+    }
+}
+
+fn truncate_audit_message(mut s: String) -> String {
+    if s.len() > AUDIT_MESSAGE_MAX_BYTES {
+        s.truncate(AUDIT_MESSAGE_MAX_BYTES);
+        s.push('…');
+    }
+    s
+}
 
 /// Known audit event type constants (use these instead of raw strings)
 pub mod event {
@@ -124,6 +192,8 @@ pub mod event {
 
     // Maintenance
     pub const MAINTENANCE_RUN: &str = "maintenance.run";
+    pub const MAINTENANCE_DATABASE_DUMP: &str = "maintenance.database_dump";
+    pub const MAINTENANCE_DATABASE_RESTORE: &str = "maintenance.database_restore";
 
     // System
     pub const SYSTEM_STARTUP: &str = "system.startup";
@@ -153,6 +223,7 @@ impl AuditService {
         entity_id: Option<i64>,
         ip_address: Option<String>,
         payload: Option<P>,
+        meta: AuditLogMeta,
     ) {
         let repository = self.repository.clone();
         let event_type = event_type.to_string();
@@ -169,6 +240,20 @@ impl AuditService {
             }
         });
 
+        let outcome_db = meta.outcome.as_db_str().to_string();
+        let http_st = meta.http_status;
+        let err_code = meta.error_code.clone();
+        let err_msg = meta.error_message.clone();
+
+        tracing::info!(
+            target: "audit",
+            event_type = %event_type,
+            outcome = %outcome_db,
+            http_status = http_st,
+            error_code = err_code.as_deref(),
+            "audit event"
+        );
+
         tokio::spawn(async move {
             let result = repository
                 .audit_insert(
@@ -178,6 +263,10 @@ impl AuditService {
                     entity_id,
                     ip_address.as_deref(),
                     payload,
+                    &outcome_db,
+                    http_st,
+                    err_code.as_deref(),
+                    err_msg.as_deref(),
                 )
                 .await;
 

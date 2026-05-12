@@ -70,7 +70,7 @@ pub async fn create_visitor_count(
 ) -> AppResult<(StatusCode, Json<VisitorCount>)> {
     claims.require_write_settings()?;
     let count = state.services.visitor_counts.create(&data).await?;
-    state.services.audit.log(audit::event::VISITOR_COUNT_CREATED, Some(claims.user_id), Some("visitor_count"), Some(count.id), ip, Some((&data, &count)));
+    state.services.audit.log(audit::event::VISITOR_COUNT_CREATED, Some(claims.user_id), Some("visitor_count"), Some(count.id), ip, Some((&data, &count)), audit::AuditLogMeta::success());
     Ok((StatusCode::CREATED, Json(count)))
 }
 
@@ -97,7 +97,7 @@ pub async fn delete_visitor_count(
 ) -> AppResult<StatusCode> {
     claims.require_write_settings()?;
     state.services.visitor_counts.delete(id).await?;
-    state.services.audit.log(audit::event::VISITOR_COUNT_DELETED, Some(claims.user_id), Some("visitor_count"), Some(id), ip, Some(json!({ "id": id })));
+    state.services.audit.log(audit::event::VISITOR_COUNT_DELETED, Some(claims.user_id), Some("visitor_count"), Some(id), ip, Some(json!({ "id": id })), audit::AuditLogMeta::success());
     Ok(StatusCode::NO_CONTENT)
 }
 

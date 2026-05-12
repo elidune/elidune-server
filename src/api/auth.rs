@@ -156,9 +156,10 @@ pub async fn login(
                 Some(LoginIdentifierAudit {
                     login: request.username.as_str(),
                 }),
+                audit::AuditLogMeta::success(),
             );
         }
-        Err(_) => {
+        Err(e) => {
             state.services.audit.log(
                 audit::event::AUTH_LOGIN_FAILED,
                 None,
@@ -168,6 +169,7 @@ pub async fn login(
                 Some(LoginIdentifierAudit {
                     login: request.username.as_str(),
                 }),
+                audit::AuditLogMeta::from_app_error(e),
             );
         }
     }
@@ -209,20 +211,36 @@ pub async fn login(
             state.services.redis.store_2fa_code(user.id, &code, 600).await?;
             
             // Send code via email
-            state
+            match state
                 .services
                 .email
                 .send_2fa_code(email, &code, user.language)
-                .await?;
-
-            state.services.audit.log(
-                audit::event::EMAIL_2FA_CODE_SENT,
-                Some(user.id),
-                Some("user"),
-                Some(user.id),
-                ip.clone(),
-                Some(serde_json::json!({ "to": email.as_str() })),
-            );
+                .await
+            {
+                Ok(()) => {
+                    state.services.audit.log(
+                        audit::event::EMAIL_2FA_CODE_SENT,
+                        Some(user.id),
+                        Some("user"),
+                        Some(user.id),
+                        ip.clone(),
+                        Some(serde_json::json!({ "to": email.as_str() })),
+                        audit::AuditLogMeta::success(),
+                    );
+                }
+                Err(e) => {
+                    state.services.audit.log(
+                        audit::event::EMAIL_2FA_CODE_SENT,
+                        Some(user.id),
+                        Some("user"),
+                        Some(user.id),
+                        ip.clone(),
+                        Some(serde_json::json!({ "to": email.as_str() })),
+                        audit::AuditLogMeta::from_app_error(&e),
+                    );
+                    return Err(e);
+                }
+            }
         }
     }
 
@@ -348,17 +366,21 @@ pub async fn verify_2fa(
             Some(request.user_id),
             Some("user"),
             Some(request.user_id),
-            ip,
+            ip.clone(),
             Some(verify_ctx),
+            audit::AuditLogMeta::success(),
         ),
-        Err(_) => state.services.audit.log(
-            audit::event::AUTH_2FA_FAILED,
-            Some(request.user_id),
-            Some("user"),
-            Some(request.user_id),
-            ip,
-            Some(verify_ctx),
-        ),
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::AUTH_2FA_FAILED,
+                Some(request.user_id),
+                Some("user"),
+                Some(request.user_id),
+                ip.clone(),
+                Some(verify_ctx),
+                audit::AuditLogMeta::from_app_error(e),
+            );
+        }
     }
 
     let token = result?;
@@ -485,12 +507,6 @@ pub async fn request_password_reset(
 
     let reset_url = url_template.replace("<token>", &token);
 
-    state
-        .services
-        .email
-        .send_password_reset(&email, &token, lang, Some(&reset_url))
-        .await?;
-
     state.services.audit.log(
         audit::event::AUTH_PASSWORD_RESET_REQUESTED,
         Some(user_id),
@@ -498,15 +514,39 @@ pub async fn request_password_reset(
         Some(user_id),
         ip.clone(),
         Some(serde_json::json!({ "identifier": request.identifier.as_str() })),
+        audit::AuditLogMeta::success(),
     );
-    state.services.audit.log(
-        audit::event::EMAIL_PASSWORD_RESET_SENT,
-        Some(user_id),
-        Some("user"),
-        Some(user_id),
-        ip,
-        Some(serde_json::json!({ "to": email.as_str() })),
-    );
+
+    match state
+        .services
+        .email
+        .send_password_reset(&email, &token, lang, Some(&reset_url))
+        .await
+    {
+        Ok(()) => {
+            state.services.audit.log(
+                audit::event::EMAIL_PASSWORD_RESET_SENT,
+                Some(user_id),
+                Some("user"),
+                Some(user_id),
+                ip,
+                Some(serde_json::json!({ "to": email.as_str() })),
+                audit::AuditLogMeta::success(),
+            );
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::EMAIL_PASSWORD_RESET_SENT,
+                Some(user_id),
+                Some("user"),
+                Some(user_id),
+                ip.clone(),
+                Some(serde_json::json!({ "to": email.as_str() })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            return Err(e);
+        }
+    }
 
     Ok(Json(RequestPasswordResetResponse {
         message: "Password reset email sent".to_string(),
@@ -552,7 +592,7 @@ pub async fn reset_password(
         Some(PasswordChangedViaResetAudit {
             source: "reset_token",
         }),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(ResetPasswordResponse {
         message: "Password has been reset".to_string(),
@@ -616,7 +656,7 @@ pub async fn setup_2fa(
         Some(claims.user_id),
         ip,
         Some(serde_json::json!({ "method": request.method.as_str() })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(Setup2FAResponse { provisioning_uri, recovery_codes }))
 }
@@ -648,7 +688,7 @@ pub async fn disable_2fa(
         Some(UserIdAudit {
             user_id: claims.user_id,
         }),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(serde_json::json!({"message": "2FA disabled successfully"})))
 }
@@ -699,7 +739,7 @@ pub async fn change_password(
         Some(PasswordChangedViaResetAudit {
             source: "first_login",
         }),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(Verify2FAResponse {
         token,

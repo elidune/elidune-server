@@ -156,7 +156,7 @@ pub async fn update_config_section(
             "old_value": old_value,
             "new_value": new_value_masked,
         })),
-    );
+     audit::AuditLogMeta::success());
 
     // Wake the reminder scheduler if the reminders config changed
     if section == "reminders" {
@@ -214,7 +214,7 @@ pub async fn reset_config_section(
         None,
         ip,
         Some(serde_json::json!({ "section": section })),
-    );
+     audit::AuditLogMeta::success());
 
     // Wake the reminder scheduler if the reminders config was reset
     if section == "reminders" {
@@ -262,7 +262,7 @@ pub async fn test_email(
         None,
         ip,
         Some(serde_json::json!({ "to": body.to })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(StatusCode::OK)
 }
@@ -299,7 +299,7 @@ pub async fn reindex_search(
         None,
         ip,
         Some(serde_json::json!({ "items_queued": count, "meilisearch_available": available })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(ReindexSearchResponse { items_queued: count, meilisearch_available: available }))
 }

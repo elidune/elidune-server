@@ -90,7 +90,7 @@ pub async fn pay_fine(
         Some(id),
         ip,
         Some(serde_json::json!({ "amount": req.amount })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(fine))
 }
@@ -126,7 +126,7 @@ pub async fn waive_fine(
         Some(id),
         ip,
         None::<()>,
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(fine))
 }

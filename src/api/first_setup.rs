@@ -222,7 +222,7 @@ pub async fn post_first_setup(
             "libraryName": library_info.name,
             "hasEmailOverride": has_email_override,
         })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok((
         StatusCode::CREATED,

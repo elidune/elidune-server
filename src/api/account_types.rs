@@ -98,7 +98,7 @@ pub async fn update_account_type(
             "before": before,
             "after": &updated,
         })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(updated))
 }

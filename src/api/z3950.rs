@@ -278,7 +278,7 @@ pub async fn update_z3950_servers(
         None,
         ip,
         Some(serde_json::json!({ "scope": "z3950", "z3950Servers": rows })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(rows))
 }

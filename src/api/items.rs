@@ -127,7 +127,7 @@ pub async fn update_item(
         Some(item_id),
         ip,
         Some((biblio_id, &item)),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(item))
 }
@@ -170,7 +170,7 @@ pub async fn delete_item(
             "item_id": item_id,
             "force": force,
         })),
-    );
+     audit::AuditLogMeta::success());
 
     Ok(StatusCode::NO_CONTENT)
 }

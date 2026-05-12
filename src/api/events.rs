@@ -105,9 +105,32 @@ pub async fn create_event(
     Json(data): Json<CreateEvent>,
 ) -> AppResult<(StatusCode, Json<Event>)> {
     claims.require_write_events()?;
-    let event = state.services.events.create(&data).await?;
-    state.services.audit.log(audit::event::EVENT_CREATED, Some(claims.user_id), Some("event"), Some(event.id), ip, Some((&data, &event)));
-    Ok((StatusCode::CREATED, Json(event)))
+    match state.services.events.create(&data).await {
+        Ok(event) => {
+            state.services.audit.log(
+                audit::event::EVENT_CREATED,
+                Some(claims.user_id),
+                Some("event"),
+                Some(event.id),
+                ip,
+                Some((&data, &event)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok((StatusCode::CREATED, Json(event)))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::EVENT_CREATED,
+                Some(claims.user_id),
+                Some("event"),
+                None,
+                ip.clone(),
+                Some(&data),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Update an event (optional `attachment` / `removeAttachment` same as create semantics)
@@ -134,9 +157,32 @@ pub async fn update_event(
     Json(data): Json<UpdateEvent>,
 ) -> AppResult<Json<Event>> {
     claims.require_write_events()?;
-    let event = state.services.events.update(id, &data).await?;
-    state.services.audit.log(audit::event::EVENT_UPDATED, Some(claims.user_id), Some("event"), Some(id), ip, Some((id, &data, &event)));
-    Ok(Json(event))
+    match state.services.events.update(id, &data).await {
+        Ok(event) => {
+            state.services.audit.log(
+                audit::event::EVENT_UPDATED,
+                Some(claims.user_id),
+                Some("event"),
+                Some(id),
+                ip,
+                Some((id, &data, &event)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(event))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::EVENT_UPDATED,
+                Some(claims.user_id),
+                Some("event"),
+                Some(id),
+                ip.clone(),
+                Some((id, &data)),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Delete an event
@@ -161,9 +207,32 @@ pub async fn delete_event(
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     claims.require_write_events()?;
-    state.services.events.delete(id).await?;
-    state.services.audit.log(audit::event::EVENT_DELETED, Some(claims.user_id), Some("event"), Some(id), ip, Some(serde_json::json!({ "id": id })));
-    Ok(StatusCode::NO_CONTENT)
+    match state.services.events.delete(id).await {
+        Ok(()) => {
+            state.services.audit.log(
+                audit::event::EVENT_DELETED,
+                Some(claims.user_id),
+                Some("event"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::EVENT_DELETED,
+                Some(claims.user_id),
+                Some("event"),
+                Some(id),
+                ip.clone(),
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Send an announcement email for an event to all users whose `users.public_type` id

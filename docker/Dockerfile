@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
     libssl3 \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/elidune-server /app/elidune-server

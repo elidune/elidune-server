@@ -22,6 +22,10 @@ pub trait AuditLogRepository: Send + Sync {
         entity_id: Option<i64>,
         ip_address: Option<&str>,
         payload: Option<Value>,
+        outcome: &str,
+        http_status: Option<i16>,
+        error_code: Option<&str>,
+        error_message: Option<&str>,
     ) -> Result<(), sqlx::Error>;
 
     async fn audit_query_page(&self, params: AuditQueryParams) -> AppResult<AuditLogPage>;
@@ -46,6 +50,10 @@ impl AuditLogRepository for Repository {
         entity_id: Option<i64>,
         ip_address: Option<&str>,
         payload: Option<Value>,
+        outcome: &str,
+        http_status: Option<i16>,
+        error_code: Option<&str>,
+        error_message: Option<&str>,
     ) -> Result<(), sqlx::Error> {
         Repository::audit_insert(
             self,
@@ -55,6 +63,10 @@ impl AuditLogRepository for Repository {
             entity_id,
             ip_address,
             payload,
+            outcome,
+            http_status,
+            error_code,
+            error_message,
         )
         .await
     }
@@ -87,11 +99,18 @@ impl Repository {
         entity_id: Option<i64>,
         ip_address: Option<&str>,
         payload: Option<Value>,
+        outcome: &str,
+        http_status: Option<i16>,
+        error_code: Option<&str>,
+        error_message: Option<&str>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"
-            INSERT INTO audit_log (event_type, user_id, entity_type, entity_id, ip_address, payload)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO audit_log (
+                event_type, user_id, entity_type, entity_id, ip_address, payload,
+                outcome, http_status, error_code, error_message
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             "#,
         )
         .bind(event_type)
@@ -100,6 +119,10 @@ impl Repository {
         .bind(entity_id)
         .bind(ip_address)
         .bind(payload)
+        .bind(outcome)
+        .bind(http_status)
+        .bind(error_code)
+        .bind(error_message)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -138,6 +161,14 @@ impl Repository {
             conditions.push(format!("created_at <= ${}", bind_idx));
             bind_idx += 1;
         }
+        if params.outcome.is_some() {
+            conditions.push(format!("outcome = ${}", bind_idx));
+            bind_idx += 1;
+        }
+        if params.error_code.is_some() {
+            conditions.push(format!("error_code = ${}", bind_idx));
+            bind_idx += 1;
+        }
 
         let where_clause = if conditions.is_empty() {
             String::new()
@@ -147,7 +178,8 @@ impl Repository {
 
         let count_sql = format!("SELECT COUNT(*) FROM audit_log {}", where_clause);
         let data_sql = format!(
-            "SELECT id, event_type, user_id, entity_type, entity_id, ip_address, payload, created_at \
+            "SELECT id, event_type, outcome, user_id, entity_type, entity_id, ip_address, payload, \
+             http_status, error_code, error_message, created_at \
              FROM audit_log {} ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
             where_clause, bind_idx, bind_idx + 1,
         );
@@ -172,6 +204,12 @@ impl Repository {
         if let Some(v) = params.to_date {
             cq = cq.bind(v);
         }
+        if let Some(ref v) = params.outcome {
+            cq = cq.bind(v.clone());
+        }
+        if let Some(ref v) = params.error_code {
+            cq = cq.bind(v.clone());
+        }
 
         let total: i64 = cq.fetch_one(pool).await?;
 
@@ -194,6 +232,12 @@ impl Repository {
         if let Some(v) = params.to_date {
             dq = dq.bind(v);
         }
+        if let Some(ref v) = params.outcome {
+            dq = dq.bind(v.clone());
+        }
+        if let Some(ref v) = params.error_code {
+            dq = dq.bind(v.clone());
+        }
         dq = dq.bind(per_page).bind(offset);
 
         let rows = dq.fetch_all(pool).await?;
@@ -203,11 +247,15 @@ impl Repository {
             .map(|row| AuditLogEntry {
                 id: row.get("id"),
                 event_type: row.get("event_type"),
+                outcome: row.get("outcome"),
                 user_id: row.get("user_id"),
                 entity_type: row.get("entity_type"),
                 entity_id: row.get("entity_id"),
                 ip_address: row.get("ip_address"),
                 payload: row.get("payload"),
+                http_status: row.get("http_status"),
+                error_code: row.get("error_code"),
+                error_message: row.get("error_message"),
                 created_at: row.get("created_at"),
             })
             .collect();
@@ -250,7 +298,8 @@ impl Repository {
         };
 
         let sql = format!(
-            "SELECT id, event_type, user_id, entity_type, entity_id, ip_address, payload, created_at \
+            "SELECT id, event_type, outcome, user_id, entity_type, entity_id, ip_address, payload, \
+             http_status, error_code, error_message, created_at \
              FROM audit_log {} ORDER BY created_at DESC LIMIT 50000",
             where_clause
         );
@@ -274,11 +323,15 @@ impl Repository {
             .map(|row| AuditLogEntry {
                 id: row.get("id"),
                 event_type: row.get("event_type"),
+                outcome: row.get("outcome"),
                 user_id: row.get("user_id"),
                 entity_type: row.get("entity_type"),
                 entity_id: row.get("entity_id"),
                 ip_address: row.get("ip_address"),
                 payload: row.get("payload"),
+                http_status: row.get("http_status"),
+                error_code: row.get("error_code"),
+                error_message: row.get("error_message"),
                 created_at: row.get("created_at"),
             })
             .collect())

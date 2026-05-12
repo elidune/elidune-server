@@ -281,6 +281,7 @@ impl RemindersService {
                                         "loan_ids": loan_ids,
                                         "loan_count": loans.len(),
                                     })),
+                                    audit::AuditLogMeta::success(),
                                 );
 
                                 details.push(ReminderDetail {
@@ -292,6 +293,18 @@ impl RemindersService {
                                 });
                             }
                             Err(e) => {
+                                self.audit.log(
+                                    audit::event::EMAIL_OVERDUE_REMINDER_SENT,
+                                    triggered_by,
+                                    Some("user"),
+                                    Some(*user_id),
+                                    client_ip.clone(),
+                                    Some(serde_json::json!({
+                                        "email": email_addr,
+                                        "loan_count": loans.len(),
+                                    })),
+                                    audit::AuditLogMeta::from_app_error(&e),
+                                );
                                 errors.push(ReminderError {
                                     user_id: *user_id,
                                     email: email_addr.clone(),

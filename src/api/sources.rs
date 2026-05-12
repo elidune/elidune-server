@@ -59,7 +59,7 @@ pub async fn create_source(
 ) -> AppResult<(StatusCode, Json<Source>)> {
     claims.require_write_items()?;
     let source = state.services.sources.create(&data).await?;
-    state.services.audit.log(audit::event::SOURCE_CREATED, Some(claims.user_id), Some("source"), Some(source.id), ip, Some((&data, &source)));
+    state.services.audit.log(audit::event::SOURCE_CREATED, Some(claims.user_id), Some("source"), Some(source.id), ip, Some((&data, &source)), audit::AuditLogMeta::success());
     Ok((StatusCode::CREATED, Json(source)))
 }
 
@@ -142,7 +142,7 @@ pub async fn update_source(
 ) -> AppResult<Json<Source>> {
     claims.require_write_items()?;
     let source = state.services.sources.update(id, &data).await?;
-    state.services.audit.log(audit::event::SOURCE_UPDATED, Some(claims.user_id), Some("source"), Some(id), ip, Some((id, &data, &source)));
+    state.services.audit.log(audit::event::SOURCE_UPDATED, Some(claims.user_id), Some("source"), Some(id), ip, Some((id, &data, &source)), audit::AuditLogMeta::success());
     Ok(Json(source))
 }
 
@@ -166,7 +166,7 @@ pub async fn archive_source(
 ) -> AppResult<Json<Source>> {
     claims.require_write_items()?;
     let source = state.services.sources.archive(id).await?;
-    state.services.audit.log(audit::event::SOURCE_ARCHIVED, Some(claims.user_id), Some("source"), Some(id), ip, Some(&source));
+    state.services.audit.log(audit::event::SOURCE_ARCHIVED, Some(claims.user_id), Some("source"), Some(id), ip, Some(&source), audit::AuditLogMeta::success());
     Ok(Json(source))
 }
 
@@ -193,6 +193,6 @@ pub async fn merge_sources(
 ) -> AppResult<(StatusCode, Json<Source>)> {
     claims.require_write_items()?;
     let source = state.services.sources.merge(&data).await?;
-    state.services.audit.log(audit::event::SOURCE_MERGED, Some(claims.user_id), Some("source"), Some(source.id), ip, Some((&data, &source)));
+    state.services.audit.log(audit::event::SOURCE_MERGED, Some(claims.user_id), Some("source"), Some(source.id), ip, Some((&data, &source)), audit::AuditLogMeta::success());
     Ok((StatusCode::CREATED, Json(source)))
 }

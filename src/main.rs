@@ -310,6 +310,7 @@ async fn main() -> anyhow::Result<()> {
         None,
         None,
         Some(serde_json::json!({ "version": env!("CARGO_PKG_VERSION") })),
+        audit::AuditLogMeta::success(),
     );
 
     // Start background scheduler (reminder sender + audit cleanup)

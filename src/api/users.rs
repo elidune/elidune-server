@@ -108,18 +108,33 @@ pub async fn create_user(
     ValidatedJson(user): ValidatedJson<UserPayload>,
 ) -> AppResult<(StatusCode, Json<User>)> {
     claims.require_write_users()?;
-    let created = state.services.users.create_user(user).await?;
-
-    state.services.audit.log(
-        audit::event::USER_CREATED,
-        Some(claims.user_id),
-        Some("user"),
-        Some(created.id),
-        ip,
-        Some(&created),
-    );
-
-    Ok((StatusCode::CREATED, Json(created)))
+    let for_audit = user.clone();
+    match state.services.users.create_user(user).await {
+        Ok(created) => {
+            state.services.audit.log(
+                audit::event::USER_CREATED,
+                Some(claims.user_id),
+                Some("user"),
+                Some(created.id),
+                ip,
+                Some(&created),
+                audit::AuditLogMeta::success(),
+            );
+            Ok((StatusCode::CREATED, Json(created)))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::USER_CREATED,
+                Some(claims.user_id),
+                Some("user"),
+                None,
+                ip.clone(),
+                Some(&for_audit),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Update an existing user
@@ -146,18 +161,32 @@ pub async fn update_user(
 ) -> AppResult<Json<User>> {
     claims.require_write_users()?;
     let audit_payload = user.clone();
-    let updated = state.services.users.update_user(id, user).await?;
-
-    state.services.audit.log(
-        audit::event::USER_UPDATED,
-        Some(claims.user_id),
-        Some("user"),
-        Some(id),
-        ip,
-        Some((id, audit_payload)),
-    );
-
-    Ok(Json(updated))
+    match state.services.users.update_user(id, user).await {
+        Ok(updated) => {
+            state.services.audit.log(
+                audit::event::USER_UPDATED,
+                Some(claims.user_id),
+                Some("user"),
+                Some(id),
+                ip,
+                Some((id, audit_payload)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(updated))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::USER_UPDATED,
+                Some(claims.user_id),
+                Some("user"),
+                Some(id),
+                ip.clone(),
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Delete a user
@@ -184,22 +213,33 @@ pub async fn delete_user(
     Query(params): Query<DeleteUserParams>,
 ) -> AppResult<StatusCode> {
     claims.require_write_users()?;
-    state
-        .services
-        .users
-        .delete_user(id, params.force.unwrap_or(false))
-        .await?;
-
-    state.services.audit.log(
-        audit::event::USER_DELETED,
-        Some(claims.user_id),
-        Some("user"),
-        Some(id),
-        ip,
-        Some(serde_json::json!({ "id": id, "force": params.force.unwrap_or(false) })),
-    );
-
-    Ok(StatusCode::NO_CONTENT)
+    let force = params.force.unwrap_or(false);
+    match state.services.users.delete_user(id, force).await {
+        Ok(()) => {
+            state.services.audit.log(
+                audit::event::USER_DELETED,
+                Some(claims.user_id),
+                Some("user"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "id": id, "force": force })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::USER_DELETED,
+                Some(claims.user_id),
+                Some("user"),
+                Some(id),
+                ip.clone(),
+                Some(serde_json::json!({ "id": id, "force": force })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -253,18 +293,37 @@ pub async fn update_account_type(
     Json(request): Json<UpdateAccountType>,
 ) -> AppResult<Json<User>> {
     claims.require_admin()?;
-    let updated = state.services.users.update_account_type(id, &request.account_type).await?;
-
-    state.services.audit.log(
-        audit::event::USER_ACCOUNT_TYPE_CHANGED,
-        Some(claims.user_id),
-        Some("user"),
-        Some(id),
-        ip,
-        Some(serde_json::json!({ "new_account_type": request.account_type })),
-    );
-
-    Ok(Json(updated))
+    match state
+        .services
+        .users
+        .update_account_type(id, &request.account_type)
+        .await
+    {
+        Ok(updated) => {
+            state.services.audit.log(
+                audit::event::USER_ACCOUNT_TYPE_CHANGED,
+                Some(claims.user_id),
+                Some("user"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "new_account_type": request.account_type })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(updated))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::USER_ACCOUNT_TYPE_CHANGED,
+                Some(claims.user_id),
+                Some("user"),
+                Some(id),
+                ip.clone(),
+                Some(serde_json::json!({ "new_account_type": request.account_type })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Force the user to change their password on next login (admin only).
@@ -289,17 +348,34 @@ pub async fn force_password_change(
 ) -> AppResult<Json<serde_json::Value>> {
     claims.require_admin()?;
 
-    state.services.users.set_must_change_password(id, true).await?;
-
-    state.services.audit.log(
-        audit::event::USER_UPDATED,
-        Some(claims.user_id),
-        Some("user"),
-        Some(id),
-        ip,
-        Some(serde_json::json!({ "must_change_password": true })),
-    );
-
-    Ok(Json(serde_json::json!({ "message": "User must change password on next login" })))
+    match state.services.users.set_must_change_password(id, true).await {
+        Ok(()) => {
+            state.services.audit.log(
+                audit::event::USER_UPDATED,
+                Some(claims.user_id),
+                Some("user"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "must_change_password": true })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(serde_json::json!({ "message": "User must change password on next login" })))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::USER_UPDATED,
+                Some(claims.user_id),
+                Some("user"),
+                Some(id),
+                ip.clone(),
+                Some(serde_json::json!({
+                    "must_change_password": true,
+                    "action": "force_password_change"
+                })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 

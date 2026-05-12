@@ -88,10 +88,20 @@ pub fn spawn(
                             "loans_reminded": report.loans_reminded,
                             "errors": report.errors.len(),
                         })),
+                        audit::AuditLogMeta::success(),
                     );
                 }
                 Err(e) => {
                     tracing::error!("Reminder batch failed: {}", e);
+                    audit_rem.log(
+                        audit::event::SYSTEM_REMINDERS_BATCH_COMPLETED,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(serde_json::json!({ "error": e.to_string() })),
+                        audit::AuditLogMeta::from_app_error(&e),
+                    );
                 }
             }
         }
@@ -145,10 +155,20 @@ pub fn spawn(
                             "deleted_count": deleted,
                             "retention_days": cfg.retention_days,
                         })),
+                        audit::AuditLogMeta::success(),
                     );
                 }
                 Err(e) => {
                     tracing::error!("Audit cleanup failed: {}", e);
+                    audit_cleanup.log(
+                        audit::event::SYSTEM_AUDIT_CLEANUP,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(serde_json::json!({ "retention_days": cfg.retention_days })),
+                        audit::AuditLogMeta::from_app_error(&e),
+                    );
                 }
             }
         }

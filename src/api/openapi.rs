@@ -170,6 +170,8 @@ use crate::api::{account_types, admin_config, audit, auth, biblios, collections,
         admin_config::test_email,
         // Maintenance
         maintenance::run_maintenance,
+        maintenance::dump_database,
+        maintenance::restore_database,
         // Background tasks
         tasks::list_tasks,
         tasks::get_task,

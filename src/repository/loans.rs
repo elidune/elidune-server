@@ -68,7 +68,7 @@ pub trait LoansRepository: Send + Sync {
     /// Upsert global loan rules (`loans_settings`). `media_type == None` updates the default row (`media_type` IS NULL).
     async fn loans_settings_upsert_row(
         &self,
-        media_type: Option<&str>,
+        media_type: Option<String>,
         nb_max: i16,
         nb_renews: i16,
         duration: i16,
@@ -168,7 +168,7 @@ impl LoansRepository for Repository {
     }
     async fn loans_settings_upsert_row(
         &self,
-        media_type: Option<&str>,
+        media_type: Option<String>,
         nb_max: i16,
         nb_renews: i16,
         duration: i16,
@@ -989,7 +989,7 @@ impl Repository {
             }
         };
 
-        
+
         let biblio_row = sqlx::query(&format!(
             r#"
             SELECT b.id as biblio_id, b.media_type, b.isbn, b.title, b.publication_date,
@@ -1163,13 +1163,13 @@ impl Repository {
     /// Upsert one row in `loans_settings`. `media_type == None` is the global default row (`media_type` IS NULL).
     pub async fn loans_settings_upsert_row(
         &self,
-        media_type: Option<&str>,
+        media_type: Option<String>,
         nb_max: i16,
         nb_renews: i16,
         duration: i16,
         renew_at: LoanSettingsRenewAt,
     ) -> AppResult<()> {
-        let rows_affected = if let Some(mt) = media_type {
+        let rows_affected = if let Some(ref mt) = media_type {
             sqlx::query(
                 r#"
                 UPDATE loans_settings
@@ -1177,7 +1177,7 @@ impl Repository {
                 WHERE media_type = $1
                 "#,
             )
-            .bind(mt)
+            .bind(mt.as_str())
             .bind(nb_max)
             .bind(nb_renews)
             .bind(duration)

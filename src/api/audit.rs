@@ -12,7 +12,6 @@ use utoipa::{IntoParams, ToSchema};
 use crate::{
     error::AppResult,
     models::audit::{AuditLogPage, AuditQueryParams},
-    services::audit,
     AppState,
 };
 
@@ -28,6 +27,9 @@ pub struct AuditQueryRequest {
     pub user_id: Option<i64>,
     pub from_date: Option<DateTime<Utc>>,
     pub to_date: Option<DateTime<Utc>>,
+    /// `success` or `failure`
+    pub outcome: Option<String>,
+    pub error_code: Option<String>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
 }
@@ -68,6 +70,8 @@ pub async fn get_audit_log(
         user_id: query.user_id,
         from_date: query.from_date,
         to_date: query.to_date,
+        outcome: query.outcome,
+        error_code: query.error_code,
         page: query.page,
         per_page: query.per_page,
     };
@@ -104,19 +108,32 @@ pub async fn export_audit_log(
     let format = query.format.as_deref().unwrap_or("json");
 
     if format == "csv" {
-        let mut csv = String::from("id,event_type,user_id,entity_type,entity_id,ip_address,payload,created_at\n");
+        let mut csv = String::from(
+            "id,event_type,outcome,user_id,entity_type,entity_id,ip_address,http_status,error_code,error_message,payload,created_at\n",
+        );
         for e in &entries {
-            let payload_str = e.payload.as_ref()
+            let payload_str = e
+                .payload
+                .as_ref()
                 .map(|v| v.to_string().replace('"', "\"\""))
                 .unwrap_or_default();
+            let esc_msg = e
+                .error_message
+                .as_deref()
+                .unwrap_or("")
+                .replace('"', "\"\"");
             csv.push_str(&format!(
-                "{},{},{},{},{},{},\"{}\",{}\n",
+                "{},{},{},{},{},{},{},{},{},\"{}\",\"{}\",{}\n",
                 e.id,
                 e.event_type,
+                e.outcome,
                 e.user_id.map(|v| v.to_string()).unwrap_or_default(),
                 e.entity_type.as_deref().unwrap_or(""),
                 e.entity_id.map(|v| v.to_string()).unwrap_or_default(),
                 e.ip_address.as_deref().unwrap_or(""),
+                e.http_status.map(|v| v.to_string()).unwrap_or_default(),
+                e.error_code.as_deref().unwrap_or(""),
+                esc_msg,
                 payload_str,
                 e.created_at.to_rfc3339(),
             ));

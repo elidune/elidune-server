@@ -129,7 +129,7 @@ pub async fn create_hold(
         Some(hold.id),
         ip,
         None::<()>,
-    );
+     audit::AuditLogMeta::success());
 
     Ok((StatusCode::CREATED, Json(hold)))
 }
@@ -213,7 +213,7 @@ pub async fn cancel_hold(
         Some(id),
         ip,
         None::<()>,
-    );
+     audit::AuditLogMeta::success());
 
     Ok(Json(hold))
 }
