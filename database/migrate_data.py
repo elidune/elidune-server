@@ -179,6 +179,7 @@ AUTHOR_FUNCTION_TO_DB = {
 }
 
 TABLES_DROP_ORDER = [
+    'ai_feedback', 'ai_recommendations', 'ai_messages', 'ai_sessions',
     'audit_log',
     'loans_archives', 'loans', 'loans_settings',
     'biblio_authors',
@@ -1261,6 +1262,7 @@ def reset_sequences(conn):
         'public_types', 'public_type_loan_settings',
         'visitor_counts', 'schedule_periods', 'schedule_slots', 'schedule_closures',
         'equipment', 'events', 'audit_log',
+        'ai_sessions', 'ai_messages', 'ai_recommendations', 'ai_feedback',
     ]
 
     for table in tables:

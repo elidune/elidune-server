@@ -8,9 +8,11 @@ pub mod events;
 pub mod fines;
 pub mod inventory;
 pub mod library_info;
+pub mod llm;
 pub mod loans;
 pub mod marc;
 pub mod public_types;
+pub mod reader_assistant;
 pub mod redis;
 pub mod reminders;
 pub mod holds;
@@ -33,7 +35,7 @@ use std::sync::Arc;
 use sqlx::{Pool, Postgres};
 
 use crate::{
-    config::{MeilisearchConfig, RedisConfig, UsersConfig},
+    config::{LlmConfig, MeilisearchConfig, RedisConfig, UsersConfig},
     dynamic_config::DynamicConfig,
     error::AppResult,
     repository::{
@@ -41,7 +43,7 @@ use crate::{
         FinesRepository, InventoryRepository, LoansRepository, LoansServiceRepository,
         AccountTypesCatalogRepository,
         PublicTypesRepository, Repository, HoldsRepository, SchedulesRepository,
-        SourcesRepository, UsersRepository, VisitorCountsRepository,
+        SourcesRepository, VisitorCountsRepository,
     },
 };
 
@@ -58,9 +60,11 @@ pub struct Services {
     pub fines: fines::FinesService,
     pub inventory: inventory::InventoryService,
     pub library_info: library_info::LibraryInfoService,
+    pub llm_router: Option<Arc<llm::LlmRouter>>,
     pub loans: loans::LoansService,
     pub marc: marc::MarcService,
     pub public_types: public_types::PublicTypesService,
+    pub reader_assistant: reader_assistant::ReaderAssistantService,
     pub redis: redis::RedisService,
     pub reminders: reminders::RemindersService,
     pub holds: holds::HoldsService,
@@ -96,6 +100,7 @@ impl Services {
         redis_config: RedisConfig,
         redis_service: redis::RedisService,
         meilisearch_config: Option<MeilisearchConfig>,
+        llm_config: Option<LlmConfig>,
         email_service: Arc<crate::email::EmailService>,
     ) -> AppResult<Self> {
         let pool = repository.pool.clone();
@@ -126,12 +131,27 @@ impl Services {
 
         let loans_repo: Arc<dyn LoansServiceRepository> = repo.clone();
         let loans_repo_only: Arc<dyn LoansRepository> = repo.clone();
+        let assistant_repo: Arc<dyn crate::repository::ReaderAssistantRepository> = repo.clone();
         let email = email_service.as_ref().clone();
         let reminders_service = reminders::RemindersService::new(
             loans_repo_only,
             email.clone(),
             audit_service.clone(),
             dynamic_config.clone(),
+        );
+
+        let llm_router = llm_config
+            .as_ref()
+            .and_then(llm::LlmRouter::from_config)
+            .map(Arc::new);
+        let loans_service = loans::LoansService::new(loans_repo);
+        let reader_assistant_service = reader_assistant::ReaderAssistantService::new(
+            assistant_repo,
+            catalog.clone(),
+            loans_service.clone(),
+            audit_service.clone(),
+            llm_router.clone(),
+            llm_config,
         );
 
         Ok(Self {
@@ -151,9 +171,11 @@ impl Services {
             fines: fines::FinesService::new(repo.clone() as Arc<dyn FinesRepository>),
             inventory: inventory::InventoryService::new(repo.clone() as Arc<dyn InventoryRepository>),
             library_info: library_info::LibraryInfoService::new(repository.clone()),
-            loans: loans::LoansService::new(loans_repo),
+            llm_router,
+            loans: loans_service,
             marc: marc_service,
             public_types: public_types::PublicTypesService::new(repo.clone() as Arc<dyn PublicTypesRepository>),
+            reader_assistant: reader_assistant_service,
             redis: redis_service.clone(),
             reminders: reminders_service,
             holds: holds::HoldsService::new(repo.clone() as Arc<dyn HoldsRepository>),

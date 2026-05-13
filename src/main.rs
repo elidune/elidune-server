@@ -269,6 +269,7 @@ async fn main() -> anyhow::Result<()> {
         config.redis.clone(),
         redis_service,
         config.meilisearch.clone(),
+        config.llm.clone(),
         email_service,
     )
     .await
@@ -468,6 +469,7 @@ fn create_router(state: AppState) -> Router {
         .merge(api::events::router())
         .merge(api::account_types::router())
         .merge(api::maintenance::router())
+        .merge(api::reader_assistant::router())
         .merge(api::tasks::router())
         .with_state(state.clone());
 

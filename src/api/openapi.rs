@@ -5,7 +5,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{account_types, admin_config, audit, auth, biblios, collections, email_templates, equipment, events, first_setup, health, holds, inventory, items, library_info, loans, maintenance, opac, public_types, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
+use crate::api::{account_types, admin_config, audit, auth, biblios, collections, email_templates, equipment, events, first_setup, health, holds, inventory, items, library_info, loans, maintenance, opac, public_types, reader_assistant, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -189,6 +189,13 @@ use crate::api::{account_types, admin_config, audit, auth, biblios, collections,
         opac::opac_search,
         opac::opac_get_biblio,
         opac::opac_availability,
+        // Reader assistant
+        reader_assistant::create_session,
+        reader_assistant::list_sessions,
+        reader_assistant::get_session,
+        reader_assistant::delete_session,
+        reader_assistant::post_message,
+        reader_assistant::ask_shortcut,
     ),
     components(
         schemas(
@@ -403,6 +410,18 @@ use crate::api::{account_types, admin_config, audit, auth, biblios, collections,
             first_setup::FirstSetupAdminBody,
             first_setup::FirstSetupEmailBody,
             first_setup::FirstSetupResponse,
+            // Reader assistant
+            crate::models::reader_assistant::AiSession,
+            crate::models::reader_assistant::SessionDetail,
+            crate::models::reader_assistant::SessionMessage,
+            crate::models::reader_assistant::RecommendationKind,
+            crate::models::reader_assistant::RecommendationRef,
+            crate::models::reader_assistant::RecommendationItem,
+            crate::models::reader_assistant::CreateAssistantSessionRequest,
+            crate::models::reader_assistant::SendAssistantMessageRequest,
+            crate::models::reader_assistant::AskRequest,
+            crate::models::reader_assistant::AssistantReply,
+            biblios::PaginatedResponse<crate::models::reader_assistant::AiSession>,
 
             // Errors
             crate::error::ErrorResponse,
@@ -433,7 +452,8 @@ use crate::api::{account_types, admin_config, audit, auth, biblios, collections,
         (name = "admin", description = "Admin runtime configuration"),
         (name = "audit", description = "Audit log"),
         (name = "maintenance", description = "Data-quality maintenance operations (admin only)"),
-        (name = "tasks", description = "Background task status polling")
+        (name = "tasks", description = "Background task status polling"),
+        (name = "reader_assistant", description = "Conversational reading advisory assistant")
     ),
     modifiers(&SecurityAddon)
 )]

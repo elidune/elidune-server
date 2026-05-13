@@ -195,6 +195,11 @@ pub mod event {
     pub const MAINTENANCE_DATABASE_DUMP: &str = "maintenance.database_dump";
     pub const MAINTENANCE_DATABASE_RESTORE: &str = "maintenance.database_restore";
 
+    // Reader assistant
+    pub const READER_ASSISTANT_SESSION_CREATED: &str = "reader_assistant.session_created";
+    pub const READER_ASSISTANT_MESSAGE: &str = "reader_assistant.message";
+    pub const READER_ASSISTANT_SESSION_DELETED: &str = "reader_assistant.session_deleted";
+
     // System
     pub const SYSTEM_STARTUP: &str = "system.startup";
     pub const SYSTEM_REMINDERS_BATCH_COMPLETED: &str = "system.reminders_batch_completed";

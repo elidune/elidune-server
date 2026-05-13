@@ -94,6 +94,26 @@ fn default_meili_index() -> String {
     "items".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_llm_timeout_ms() -> u64 {
+    15_000
+}
+
+fn default_llm_prompt_chars() -> usize {
+    4_000
+}
+
+fn default_llm_history_messages() -> usize {
+    12
+}
+
+fn default_llm_daily_quota() -> u32 {
+    50
+}
+
 fn default_reminders_enabled() -> bool {
     true
 }
@@ -200,6 +220,46 @@ pub struct MeilisearchConfig {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct LlmProviderConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub base_url: String,
+    pub model: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct LlmProvidersConfig {
+    #[serde(default)]
+    pub mistral: Option<LlmProviderConfig>,
+    #[serde(default)]
+    pub claude: Option<LlmProviderConfig>,
+    #[serde(default)]
+    pub gemini: Option<LlmProviderConfig>,
+    #[serde(default)]
+    pub ollama: Option<LlmProviderConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct LlmConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_llm_timeout_ms")]
+    pub request_timeout_ms: u64,
+    #[serde(default = "default_llm_prompt_chars")]
+    pub max_prompt_chars: usize,
+    #[serde(default = "default_llm_history_messages")]
+    pub max_history_messages: usize,
+    #[serde(default = "default_llm_daily_quota")]
+    pub daily_quota_per_user: u32,
+    #[serde(default)]
+    pub provider_priority: Vec<String>,
+    #[serde(default)]
+    pub providers: LlmProvidersConfig,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
@@ -216,6 +276,8 @@ pub struct AppConfig {
     pub holds: HoldsConfig,
     #[serde(default)]
     pub meilisearch: Option<MeilisearchConfig>,
+    #[serde(default)]
+    pub llm: Option<LlmConfig>,
 }
 
 impl AppConfig {

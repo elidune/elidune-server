@@ -14,6 +14,7 @@ pub mod inventory;
 pub mod item;
 pub mod loan;
 pub mod public_type;
+pub mod reader_assistant;
 pub mod hold;
 pub mod schedule;
 pub mod stats_builder;
