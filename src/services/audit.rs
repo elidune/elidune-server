@@ -189,6 +189,8 @@ pub mod event {
     // Inventory
     pub const INVENTORY_SESSION_CREATED: &str = "inventory.session_created";
     pub const INVENTORY_SESSION_CLOSED: &str = "inventory.session_closed";
+    pub const INVENTORY_SESSION_CONSOLIDATED: &str = "inventory.session_consolidated";
+    pub const EMAIL_INVENTORY_LOAN_CLOSED: &str = "email.inventory_loan_closed";
 
     // Maintenance
     pub const MAINTENANCE_RUN: &str = "maintenance.run";

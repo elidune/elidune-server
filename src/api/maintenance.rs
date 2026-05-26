@@ -541,7 +541,6 @@ async fn run_psql_sql_file(db_url: &str, sql_path: &Path) -> AppResult<()> {
 
     let db_url = db_url.to_string();
     let sql_path = sql_path.to_path_buf();
-    println!("command to start psql: psql --dbname {} -v -f {}", db_url, sql_path.as_os_str().to_string_lossy());
     let output = tokio::task::spawn_blocking(move || {
         std::process::Command::new("psql")
             .arg("--dbname")

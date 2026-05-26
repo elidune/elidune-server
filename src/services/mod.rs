@@ -149,7 +149,11 @@ impl Services {
                 audit_service.clone(),
             ),
             fines: fines::FinesService::new(repo.clone() as Arc<dyn FinesRepository>),
-            inventory: inventory::InventoryService::new(repo.clone() as Arc<dyn InventoryRepository>),
+            inventory: inventory::InventoryService::new(
+                repo.clone() as Arc<dyn InventoryRepository>,
+                catalog.clone(),
+                email.clone(),
+            ),
             library_info: library_info::LibraryInfoService::new(repository.clone()),
             loans: loans::LoansService::new(loans_repo),
             marc: marc_service,

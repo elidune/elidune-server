@@ -204,7 +204,7 @@ pub struct ImportMarcBatchQuery {
     security(("bearer_auth" = [])),
     params(
         ("allow_duplicate_isbn" = Option<bool>, Query, description = "Allow duplicate ISBN (default: false)"),
-        ("confirm_replace_existing_id" = Option<i64>, Query, description = "Confirm replacement of duplicate biblio")
+        ("replace_existing" = Option<bool>, Query, description = "Replace existing biblio")
     ),
     request_body = Biblio,
     responses(
@@ -223,7 +223,7 @@ pub async fn create_biblio(
     println!("claims: {:?}", claims);
     
     claims.require_write_items()?;
-
+println!("biblio: {:?}", biblio);
     let (biblio, import_report) = state
         .services
         .catalog

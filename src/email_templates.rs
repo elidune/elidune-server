@@ -28,6 +28,7 @@ pub const KNOWN_TEMPLATE_IDS: &[&str] = &[
     "recovery_code",
     "password_reset",
     "hold_ready",
+    "inventory_loan_closed",
     "overdue_reminder",
     "event_announcement",
 ];

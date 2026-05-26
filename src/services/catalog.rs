@@ -191,7 +191,8 @@ impl CatalogService {
     ///
     /// - No duplicate ISBN among active biblios → create OK.
     /// - Duplicate found + `allow_duplicate_isbn` → create a second biblio.
-    /// - Duplicate found + `confirm_replace_existing_id` matches → merge bibliographic data.
+    /// - Duplicate found + `force_replace_existing` → merge into the matched biblio (no ID required).
+    /// - Duplicate found + `replace_existing` matches the duplicate ID → merge bibliographic data.
     /// - Duplicate found + no flag → 409 with existing `BiblioShort`.
     ///
     /// Embedded items (physical copies) are created through the barcode policy.
@@ -200,12 +201,12 @@ impl CatalogService {
         &self,
         mut biblio: Biblio,
         allow_duplicate_isbn: bool,
-        confirm_replace_existing_id: Option<i64>,
+        replace_existing: Option<i64>,
     ) -> AppResult<(Biblio, ImportReport)> {
         if !allow_duplicate_isbn {
             if let Some(ref isbn) = biblio.isbn {
                 if let Some(existing_id) = self.repository.biblios_find_active_by_isbn(isbn.as_str(), None).await? {
-                    if confirm_replace_existing_id == Some(existing_id) {
+                    if replace_existing == Some(existing_id) {
                         tracing::info!("Catalog create: confirmed merge into biblio id={}", existing_id);
                         let pending = std::mem::take(&mut biblio.items);
                         self.repository.biblios_update(existing_id, &mut biblio).await?;
@@ -401,6 +402,16 @@ impl CatalogService {
         self.repository.items_delete(item_id, force).await?;
         self.sync_index(biblio_id).await;
         Ok(biblio_id)
+    }
+
+    /// Archive a bibliographic record when it has no active copies left.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn archive_biblio_if_orphan(&self, biblio_id: i64) -> AppResult<bool> {
+        let archived = self.repository.biblios_archive_if_orphan(biblio_id).await?;
+        if archived {
+            self.sync_delete(biblio_id).await;
+        }
+        Ok(archived)
     }
 
     /// List all biblios in a series (ordered by volume number)

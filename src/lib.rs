@@ -17,6 +17,7 @@ pub mod marc;
 pub mod models;
 pub mod repository;
 pub mod hold_email;
+pub mod inventory_email;
 pub mod services;
 
 pub use config::AppConfig;

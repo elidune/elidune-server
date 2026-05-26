@@ -13,8 +13,9 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         inventory::{
-            BatchScanBarcodes, CreateInventorySession, InventoryMissingRow, InventoryReport,
-            InventoryScan, InventorySession, InventoryStatus, ScanBarcode,
+            BatchScanBarcodes, ConsolidateInventorySession, CreateInventorySession,
+            InventoryConsolidationPreview, InventoryMissingRow, InventoryReport, InventoryScan,
+            InventorySession, InventoryStatus, ScanBarcode,
         },
         task::TaskKind,
     },
@@ -34,6 +35,8 @@ pub fn router() -> axum::Router<crate::AppState> {
         .route("/inventory/sessions/:id/scans", get(list_scans))
         .route("/inventory/sessions/:id/missing", get(list_missing))
         .route("/inventory/sessions/:id/report", get(get_report))
+        .route("/inventory/sessions/:id/consolidate/preview", get(consolidation_preview))
+        .route("/inventory/sessions/:id/consolidate", post(consolidate_session))
 }
 
 /// Query for `GET /inventory/sessions`.
@@ -363,4 +366,115 @@ pub async fn get_report(
     Path(id): Path<i64>,
 ) -> AppResult<Json<InventoryReport>> {
     Ok(Json(state.services.inventory.report(id).await?))
+}
+
+/// Preview consolidation impact: missing copies, active loans, orphan biblios.
+#[utoipa::path(
+    get,
+    path = "/inventory/sessions/{id}/consolidate/preview",
+    tag = "inventory",
+    security(("bearer_auth" = [])),
+    params(
+        ("id" = i64, Path, description = "Session ID"),
+        ListInventoryPageQuery
+    ),
+    responses(
+        (status = 200, description = "Consolidation preview", body = InventoryConsolidationPreview),
+        (status = 400, description = "Session is still open", body = crate::error::ErrorResponse),
+        (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse),
+        (status = 403, description = "Staff access required", body = crate::error::ErrorResponse),
+        (status = 404, description = "Session not found", body = crate::error::ErrorResponse),
+        (status = 409, description = "Session already consolidated", body = crate::error::ErrorResponse)
+    )
+)]
+pub async fn consolidation_preview(
+    State(state): State<crate::AppState>,
+    StaffUser(_staff): StaffUser,
+    Path(id): Path<i64>,
+    Query(query): Query<ListInventoryPageQuery>,
+) -> AppResult<Json<InventoryConsolidationPreview>> {
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(50).clamp(1, 200);
+    Ok(Json(
+        state
+            .services
+            .inventory
+            .consolidation_preview(id, page, per_page)
+            .await?,
+    ))
+}
+
+/// Consolidate a closed session: archive all missing copies from the catalog.
+///
+/// Returns `202 Accepted` with a `taskId`. Poll `GET /tasks/:id` until
+/// `status` is `completed` or `failed`. On success, `result` is `InventoryConsolidationResult`.
+///
+/// When `force` is false (default), copies currently on loan are skipped and the session
+/// stays unconsolidated so staff can review and retry with `force: true`.
+#[utoipa::path(
+    post,
+    path = "/inventory/sessions/{id}/consolidate",
+    tag = "inventory",
+    security(("bearer_auth" = [])),
+    params(("id" = i64, Path, description = "Session ID")),
+    request_body = ConsolidateInventorySession,
+    responses(
+        (status = 202, description = "Consolidation accepted; poll GET /tasks/:id", body = TaskAcceptedResponse),
+        (status = 400, description = "Session is still open", body = crate::error::ErrorResponse),
+        (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse),
+        (status = 403, description = "Staff access required", body = crate::error::ErrorResponse),
+        (status = 404, description = "Session not found", body = crate::error::ErrorResponse),
+        (status = 409, description = "Session already consolidated", body = crate::error::ErrorResponse)
+    )
+)]
+pub async fn consolidate_session(
+    State(state): State<crate::AppState>,
+    StaffUser(claims): StaffUser,
+    Path(id): Path<i64>,
+    Json(req): Json<ConsolidateInventorySession>,
+) -> AppResult<(StatusCode, Json<TaskAcceptedResponse>)> {
+    let session = state.services.inventory.get_session(id).await?;
+    if session.status != InventoryStatus::Closed {
+        return Err(AppError::BadRequest(
+            "Session must be closed before consolidation".to_string(),
+        ));
+    }
+    if session.consolidated_at.is_some() {
+        return Err(AppError::Conflict(
+            "Session has already been consolidated".to_string(),
+        ));
+    }
+
+    let inventory = state.services.inventory.clone();
+    let tasks = state.services.tasks.clone();
+    let audit = state.services.audit.clone();
+    let session_id = id;
+    let force = req.force;
+    let user_id = claims.user_id;
+
+    let task_id = tasks.spawn_task(TaskKind::InventoryConsolidation, user_id, move |handle| async move {
+        match inventory
+            .consolidate_session(session_id, Some(user_id), force)
+            .await
+        {
+            Ok(result) => {
+                audit.log(
+                    audit::event::INVENTORY_SESSION_CONSOLIDATED,
+                    Some(user_id),
+                    Some("inventory_session"),
+                    Some(session_id),
+                    None,
+                    Some(&result),
+                    audit::AuditLogMeta::success(),
+                );
+                let value = serde_json::to_value(&result).unwrap_or_default();
+                handle.complete(value).await;
+            }
+            Err(e) => {
+                handle.fail(e.to_string()).await;
+            }
+        }
+    });
+
+    Ok((StatusCode::ACCEPTED, Json(TaskAcceptedResponse { task_id })))
 }

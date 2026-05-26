@@ -12,6 +12,7 @@ pub enum TaskKind {
     MarcBatchImport,
     Maintenance,
     InventoryBatchScan,
+    InventoryConsolidation,
 }
 
 /// Lifecycle status of a background task.
@@ -66,6 +67,7 @@ pub struct BackgroundTask {
     /// - `marcBatchImport`      → `MarcBatchImportReport`
     /// - `maintenance`          → `MaintenanceResponse` (per-action `details` may include Z39.50 summaries)
     /// - `inventoryBatchScan`   → `InventoryScan[]` (same order as request barcodes)
+    /// - `inventoryConsolidation` → `InventoryConsolidationResult`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
 

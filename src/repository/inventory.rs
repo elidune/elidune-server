@@ -8,8 +8,9 @@ use super::Repository;
 use crate::{
     error::{AppError, AppResult},
     models::inventory::{
-        InventoryMissingRow, InventoryReport, InventoryScan, InventoryScanResult, InventorySession,
-        InventoryStatus,
+        InventoryConsolidationPreviewLoan, InventoryConsolidationPreviewRow,
+        InventoryConsolidationPreviewSummary, InventoryMissingRow, InventoryReport, InventoryScan,
+        InventoryScanResult, InventorySession, InventoryStatus,
     },
 };
 
@@ -50,6 +51,40 @@ pub trait InventoryRepository: Send + Sync {
         per_page: i64,
     ) -> AppResult<(Vec<InventoryMissingRow>, i64)>;
     async fn inventory_report(&self, session_id: i64) -> AppResult<InventoryReport>;
+    async fn inventory_list_missing_item_ids(&self, session_id: i64) -> AppResult<Vec<i64>>;
+    async fn inventory_mark_consolidated(
+        &self,
+        session_id: i64,
+        consolidated_by: Option<i64>,
+    ) -> AppResult<InventorySession>;
+    async fn inventory_consolidation_preview_summary(
+        &self,
+        session_id: i64,
+    ) -> AppResult<InventoryConsolidationPreviewSummary>;
+    async fn inventory_consolidation_preview_page(
+        &self,
+        session_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> AppResult<(Vec<InventoryConsolidationPreviewRow>, i64)>;
+    async fn inventory_list_loan_closures_for_missing(
+        &self,
+        session_id: i64,
+    ) -> AppResult<Vec<InventoryLoanClosureRow>>;
+}
+
+/// Active loan on a missing copy — used before forced consolidation emails.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct InventoryLoanClosureRow {
+    pub item_id: i64,
+    pub barcode: Option<String>,
+    pub biblio_title: Option<String>,
+    pub loan_id: i64,
+    pub user_id: i64,
+    pub user_email: Option<String>,
+    pub user_firstname: Option<String>,
+    pub user_lastname: Option<String>,
+    pub user_language: Option<String>,
 }
 
 #[async_trait]
@@ -106,6 +141,36 @@ impl InventoryRepository for Repository {
     async fn inventory_report(&self, session_id: i64) -> AppResult<InventoryReport> {
         Repository::inventory_report(self, session_id).await
     }
+    async fn inventory_list_missing_item_ids(&self, session_id: i64) -> AppResult<Vec<i64>> {
+        Repository::inventory_list_missing_item_ids(self, session_id).await
+    }
+    async fn inventory_mark_consolidated(
+        &self,
+        session_id: i64,
+        consolidated_by: Option<i64>,
+    ) -> AppResult<InventorySession> {
+        Repository::inventory_mark_consolidated(self, session_id, consolidated_by).await
+    }
+    async fn inventory_consolidation_preview_summary(
+        &self,
+        session_id: i64,
+    ) -> AppResult<InventoryConsolidationPreviewSummary> {
+        Repository::inventory_consolidation_preview_summary(self, session_id).await
+    }
+    async fn inventory_consolidation_preview_page(
+        &self,
+        session_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> AppResult<(Vec<InventoryConsolidationPreviewRow>, i64)> {
+        Repository::inventory_consolidation_preview_page(self, session_id, page, per_page).await
+    }
+    async fn inventory_list_loan_closures_for_missing(
+        &self,
+        session_id: i64,
+    ) -> AppResult<Vec<InventoryLoanClosureRow>> {
+        Repository::inventory_list_loan_closures_for_missing(self, session_id).await
+    }
 }
 
 static SNOWFLAKE: std::sync::LazyLock<std::sync::Mutex<Generator>> =
@@ -117,6 +182,20 @@ fn next_id() -> i64 {
         .unwrap_or_else(|e| e.into_inner())
         .generate::<i64>()
 }
+
+const MISSING_ITEMS_CTE: &str = r#"
+    WITH missing_items AS (
+        SELECT i.*
+        FROM items i
+        INNER JOIN inventory_sessions inv ON inv.id = $1
+        WHERE i.archived_at IS NULL
+          AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
+          AND NOT EXISTS (
+              SELECT 1 FROM inventory_scans sc
+              WHERE sc.session_id = $1 AND sc.item_id = i.id
+          )
+    )
+"#;
 
 impl Repository {
     /// List inventory sessions (paginated, newest first).
@@ -467,5 +546,224 @@ impl Repository {
             missing_scannable,
             missing_without_barcode,
         })
+    }
+
+    /// Active in-scope item ids never linked by any scan in the session.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn inventory_list_missing_item_ids(&self, session_id: i64) -> AppResult<Vec<i64>> {
+        let rows: Vec<(i64,)> = sqlx::query_as(
+            r#"
+            SELECT i.id
+            FROM items i
+            INNER JOIN inventory_sessions inv ON inv.id = $1
+            WHERE i.archived_at IS NULL
+              AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
+              AND NOT EXISTS (
+                  SELECT 1 FROM inventory_scans sc
+                  WHERE sc.session_id = $1 AND sc.item_id = i.id
+              )
+            ORDER BY i.id
+            "#,
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// Mark a closed session as consolidated (idempotent guard via `consolidated_at IS NULL`).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn inventory_mark_consolidated(
+        &self,
+        session_id: i64,
+        consolidated_by: Option<i64>,
+    ) -> AppResult<InventorySession> {
+        sqlx::query_as::<_, InventorySession>(
+            r#"
+            UPDATE inventory_sessions
+            SET consolidated_at = NOW(), consolidated_by = $2
+            WHERE id = $1
+              AND status = 'closed'
+              AND consolidated_at IS NULL
+            RETURNING *
+            "#,
+        )
+        .bind(session_id)
+        .bind(consolidated_by)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| {
+            AppError::Conflict(format!(
+                "Session {session_id} is not eligible for consolidation (open, unknown, or already consolidated)"
+            ))
+        })
+    }
+
+    /// Summary for consolidation preview.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn inventory_consolidation_preview_summary(
+        &self,
+        session_id: i64,
+    ) -> AppResult<InventoryConsolidationPreviewSummary> {
+        let row: (i64, i64, i64, i64) = sqlx::query_as(&format!(
+            r#"
+            {MISSING_ITEMS_CTE}
+            SELECT
+                COUNT(*)::bigint,
+                COUNT(*) FILTER (WHERE l.id IS NOT NULL)::bigint,
+                COUNT(DISTINCT l.user_id) FILTER (WHERE l.id IS NOT NULL)::bigint,
+                COUNT(DISTINCT mi.biblio_id) FILTER (
+                    WHERE (
+                        SELECT COUNT(*)::bigint FROM items i2
+                        WHERE i2.biblio_id = mi.biblio_id AND i2.archived_at IS NULL
+                    ) = 1
+                )::bigint
+            FROM missing_items mi
+            LEFT JOIN loans l ON l.item_id = mi.id AND l.returned_at IS NULL
+            "#
+        ))
+        .bind(session_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(InventoryConsolidationPreviewSummary {
+            total_missing: row.0,
+            on_loan_count: row.1,
+            deletable_without_force: row.0 - row.1,
+            affected_readers_count: row.2,
+            orphan_biblios_count: row.3,
+        })
+    }
+
+    /// Paginated consolidation preview rows (missing copies + loan / orphan hints).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn inventory_consolidation_preview_page(
+        &self,
+        session_id: i64,
+        page: i64,
+        per_page: i64,
+    ) -> AppResult<(Vec<InventoryConsolidationPreviewRow>, i64)> {
+        let offset = (page - 1).max(0) * per_page;
+
+        let total: i64 = sqlx::query_scalar(&format!(
+            "{MISSING_ITEMS_CTE} SELECT COUNT(*)::bigint FROM missing_items"
+        ))
+        .bind(session_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        #[derive(sqlx::FromRow)]
+        struct PreviewDbRow {
+            item_id: i64,
+            barcode: Option<String>,
+            call_number: Option<String>,
+            place: Option<i16>,
+            biblio_id: Option<i64>,
+            biblio_title: Option<String>,
+            loan_id: Option<i64>,
+            loan_user_id: Option<i64>,
+            loan_user_email: Option<String>,
+            loan_user_firstname: Option<String>,
+            loan_user_lastname: Option<String>,
+            loan_expiry_at: Option<chrono::DateTime<chrono::Utc>>,
+            biblio_active_item_count: i64,
+        }
+
+        let rows = sqlx::query_as::<_, PreviewDbRow>(&format!(
+            r#"
+            {MISSING_ITEMS_CTE}
+            SELECT
+                mi.id AS item_id,
+                mi.barcode,
+                mi.call_number,
+                mi.place,
+                mi.biblio_id,
+                b.title AS biblio_title,
+                l.id AS loan_id,
+                l.user_id AS loan_user_id,
+                u.email AS loan_user_email,
+                u.firstname AS loan_user_firstname,
+                u.lastname AS loan_user_lastname,
+                l.expiry_at AS loan_expiry_at,
+                (
+                    SELECT COUNT(*)::bigint FROM items i2
+                    WHERE i2.biblio_id = mi.biblio_id AND i2.archived_at IS NULL
+                ) AS biblio_active_item_count
+            FROM missing_items mi
+            LEFT JOIN biblios b ON b.id = mi.biblio_id
+            LEFT JOIN loans l ON l.item_id = mi.id AND l.returned_at IS NULL
+            LEFT JOIN users u ON u.id = l.user_id
+            ORDER BY mi.id
+            LIMIT $2 OFFSET $3
+            "#
+        ))
+        .bind(session_id)
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let items = rows
+            .into_iter()
+            .map(|r| {
+                let on_loan = r.loan_id.is_some();
+                let active_loan = r.loan_id.map(|loan_id| InventoryConsolidationPreviewLoan {
+                    loan_id,
+                    user_id: r.loan_user_id.unwrap_or(0),
+                    user_email: r.loan_user_email,
+                    user_firstname: r.loan_user_firstname,
+                    user_lastname: r.loan_user_lastname,
+                    expiry_at: r.loan_expiry_at,
+                });
+                InventoryConsolidationPreviewRow {
+                    item_id: r.item_id,
+                    barcode: r.barcode,
+                    call_number: r.call_number,
+                    place: r.place,
+                    biblio_id: r.biblio_id,
+                    biblio_title: r.biblio_title,
+                    on_loan,
+                    would_skip_without_force: on_loan,
+                    biblio_would_be_orphaned: r.biblio_active_item_count == 1,
+                    active_loan,
+                }
+            })
+            .collect();
+
+        Ok((items, total))
+    }
+
+    /// Active loans on missing copies — for pre-consolidation reader notifications.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn inventory_list_loan_closures_for_missing(
+        &self,
+        session_id: i64,
+    ) -> AppResult<Vec<InventoryLoanClosureRow>> {
+        let rows = sqlx::query_as::<_, InventoryLoanClosureRow>(&format!(
+            r#"
+            {MISSING_ITEMS_CTE}
+            SELECT
+                mi.id AS item_id,
+                mi.barcode,
+                b.title AS biblio_title,
+                l.id AS loan_id,
+                l.user_id,
+                u.email AS user_email,
+                u.firstname AS user_firstname,
+                u.lastname AS user_lastname,
+                u.language AS user_language
+            FROM missing_items mi
+            INNER JOIN loans l ON l.item_id = mi.id AND l.returned_at IS NULL
+            INNER JOIN users u ON u.id = l.user_id
+            LEFT JOIN biblios b ON b.id = mi.biblio_id
+            ORDER BY l.user_id, mi.id
+            "#
+        ))
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
     }
 }

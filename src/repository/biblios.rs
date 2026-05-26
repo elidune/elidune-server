@@ -44,6 +44,8 @@ pub trait BibliosRepository: Send + Sync {
     async fn biblios_create<'a>(&self, biblio: &'a mut Biblio) -> AppResult<&'a mut Biblio>;
     async fn biblios_update<'a>(&self, id: i64, biblio: &'a mut Biblio) -> AppResult<&'a mut Biblio>;
     async fn biblios_delete(&self, id: i64, force: bool) -> AppResult<()>;
+    /// Archive a biblio when it has no active copies left. Returns `true` if archived.
+    async fn biblios_archive_if_orphan(&self, biblio_id: i64) -> AppResult<bool>;
     async fn biblios_get_items(&self, biblio_id: i64) -> AppResult<Vec<Item>>;
     /// Active (non-archived) item by primary key.
     async fn items_get_active_by_id(&self, item_id: i64) -> AppResult<Item>;
@@ -139,6 +141,9 @@ impl BibliosRepository for Repository {
     }
     async fn biblios_delete(&self, id: i64, force: bool) -> crate::error::AppResult<()> {
         Repository::biblios_delete(self, id, force).await
+    }
+    async fn biblios_archive_if_orphan(&self, biblio_id: i64) -> crate::error::AppResult<bool> {
+        Repository::biblios_archive_if_orphan(self, biblio_id).await
     }
     async fn biblios_get_items(&self, biblio_id: i64) -> crate::error::AppResult<Vec<crate::models::item::Item>> {
         Repository::biblios_get_items(self, biblio_id).await
@@ -1522,12 +1527,11 @@ impl Repository {
             }
         }
 
-        // prefix barcode with ARCH_<timestamp>_<BARCODE>
+        // Include item id so archived barcodes stay unique (idx_items_barcode_unique applies to all rows).
         sqlx::query(
-            "UPDATE items SET archived_at = $1, updated_at = $1, barcode = CONCAT('ARCH_', $2, '_', barcode) WHERE biblio_id = $3 AND archived_at IS NULL"
+            "UPDATE items SET archived_at = $1, updated_at = $1, barcode = CONCAT('ARCH_', id::text, '_', COALESCE(barcode, '')) WHERE biblio_id = $2 AND archived_at IS NULL"
         )
         .bind(now)
-        .bind(now.format("%Y%m%d%H%M%S").to_string())
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -1541,6 +1545,28 @@ impl Repository {
         .await?;
 
         Ok(())
+    }
+
+    /// Archive a biblio when it has no active physical copies left.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn biblios_archive_if_orphan(&self, biblio_id: i64) -> AppResult<bool> {
+        let now = Utc::now();
+        let result = sqlx::query(
+            r#"
+            UPDATE biblios SET archived_at = $1, updated_at = $1
+            WHERE id = $2
+              AND archived_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM items WHERE biblio_id = $2 AND archived_at IS NULL
+              )
+            "#,
+        )
+        .bind(now)
+        .bind(biblio_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
     }
 
     // =========================================================================
@@ -1882,7 +1908,6 @@ impl Repository {
     pub async fn upsert_item<'a>(&self, item: &'a mut Item) -> AppResult<&'a mut Item> {
         let now = Utc::now();
         item.updated_at = Some(now);
-
         if let Some(id) = item.id {
             sqlx::query(
                 r#"
@@ -1896,8 +1921,9 @@ impl Repository {
                     notes = $7,
                     price = $8,
                     source_id = $9,
-                    updated_at = $10
-                WHERE id = $11
+                    updated_at = $10,
+                    archived_at = $11
+                WHERE id = $12
                 "#,
             )
             .bind(&item.biblio_id)
@@ -1910,6 +1936,7 @@ impl Repository {
             .bind(&item.price)
             .bind(&item.source_id)
             .bind(&item.updated_at)
+            .bind(&item.archived_at)
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -1937,8 +1964,9 @@ impl Repository {
                         notes = $7,
                         price = $8,
                         source_id = $9,
-                        updated_at = $10
-                    WHERE id = $11
+                        updated_at = $10,
+                        archived_at = $11
+                    WHERE id = $12
                     "#,
                 )
                 .bind(&item.biblio_id)
@@ -1951,6 +1979,7 @@ impl Repository {
                 .bind(&item.price)
                 .bind(&item.source_id)
                 .bind(&item.updated_at)
+                .bind(&item.archived_at)
                 .bind(id)
                 .execute(&self.pool)
                 .await?;
@@ -1959,9 +1988,9 @@ impl Repository {
                     r#"
                     INSERT INTO items (
                         biblio_id, barcode, call_number, volume_designation,
-                        place, borrowable, notes, price, source_id, created_at, updated_at
+                        place, borrowable, notes, price, source_id, created_at, updated_at, archived_at
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11)
                     RETURNING id
                     "#,
                 )
@@ -1975,6 +2004,7 @@ impl Repository {
                 .bind(&item.price)
                 .bind(&item.source_id)
                 .bind(&item.updated_at)
+                .bind(&item.archived_at)
                 .fetch_one(&self.pool)
                 .await?;
 
@@ -2001,8 +2031,9 @@ impl Repository {
                 notes = COALESCE($6, notes),
                 price = COALESCE($7, price),
                 source_id = COALESCE($8, source_id),
-                updated_at = $9
-            WHERE id = $10
+                updated_at = $9,
+                archived_at = $10
+            WHERE id = $11
             "#
         )
         .bind(&item.barcode)
@@ -2014,6 +2045,7 @@ impl Repository {
         .bind(&item.price)
         .bind(&item.source_id)
         .bind(&item.updated_at)
+        .bind(&item.archived_at)
         .bind(item.id.unwrap_or(0))
         .execute(&self.pool)
         .await?;
@@ -2043,10 +2075,9 @@ impl Repository {
         self.holds_cancel_active_for_item(id).await?;
 
         sqlx::query(
-            "UPDATE items SET archived_at = $1, updated_at = $1, barcode = CONCAT('ARCH_', $2, '_', barcode) WHERE id = $3 AND archived_at IS NULL"
+            "UPDATE items SET archived_at = $1, updated_at = $1, barcode = CONCAT('ARCH_', id::text, '_', COALESCE(barcode, '')) WHERE id = $2 AND archived_at IS NULL"
         )
         .bind(now)
-        .bind(now.format("%Y%m%d%H%M%S").to_string())
         .bind(id)
         .execute(&self.pool)
         .await?;
