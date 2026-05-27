@@ -10,22 +10,24 @@ use crate::{
     marc::{MarcRecord, marc_record_for_loan_export},
     models::{
         Loan, loan::{
-            CreateLoan, LOANS_MARC_EXPORT_MAX, LoanDetails, LoanMarcExportEncoding, LoanMarcExportFormat,
-            LoanSettingsRenewAt,
+            CreateLoan, LOANS_MARC_EXPORT_MAX, LoanCreateOutcome, LoanDetails, LoanMarcExportEncoding,
+            LoanMarcExportFormat, LoanReturnOutcome, LoanSettingsRenewAt,
         }, user::UserStatus
     },
     repository::LoansServiceRepository,
+    services::audit::{self, AuditLogMeta, AuditService},
 };
 use z3950_rs::marc_rs::{BinaryWriter, Encoding as MarcEncoding, MarcFormat, XmlWriter};
 
 #[derive(Clone)]
 pub struct LoansService {
     repository: Arc<dyn LoansServiceRepository>,
+    audit: AuditService,
 }
 
 impl LoansService {
-    pub fn new(repository: Arc<dyn LoansServiceRepository>) -> Self {
-        Self { repository }
+    pub fn new(repository: Arc<dyn LoansServiceRepository>, audit: AuditService) -> Self {
+        Self { repository, audit }
     }
 
     /// Get active loans for a user (paginated). `page` and `per_page` must be valid (≥1, capped by caller).
@@ -58,7 +60,12 @@ impl LoansService {
     ///
     /// The repository enforces the hold queue on the copy: only the patron whose turn it is
     /// (`ready`, else first `pending`) may borrow unless `force=true` (staff clears active holds on that copy).
-    pub async fn create_loan(&self, loan: CreateLoan) -> AppResult<(i64, DateTime<Utc>)> {
+    pub async fn create_loan(
+        &self,
+        loan: CreateLoan,
+        audit_actor: Option<i64>,
+        client_ip: Option<String>,
+    ) -> AppResult<LoanCreateOutcome> {
         let user = self.repository.users_get_by_id(loan.user_id).await?;
 
         let status = user.status.unwrap_or(UserStatus::Active);
@@ -83,20 +90,121 @@ impl LoansService {
             }
         }
 
-        self.repository.loans_create(&loan).await
+        let outcome = self.repository.loans_create(&loan).await?;
+        if let Some(hold_id) = outcome.fulfilled_hold_id {
+            self.audit.log(
+                audit::event::HOLD_FULFILLED,
+                audit_actor,
+                Some("hold"),
+                Some(hold_id),
+                client_ip.clone(),
+                Some(serde_json::json!({
+                    "loan_id": outcome.loan_id,
+                    "user_id": loan.user_id,
+                    "item_id": loan.item_id,
+                    "trigger": "checkout",
+                })),
+                AuditLogMeta::success(),
+            );
+        }
+        Ok(outcome)
     }
 
     /// Return a borrowed item
-    pub async fn return_loan(&self, loan_id: i64) -> AppResult<LoanDetails> {
+    pub async fn return_loan(
+        &self,
+        loan_id: i64,
+        audit_actor: Option<i64>,
+        client_ip: Option<String>,
+    ) -> AppResult<LoanDetails> {
         let outcome = self.repository.loans_return(loan_id).await?;
+        self.audit_return_side_effects(audit_actor, client_ip, &outcome);
         Ok(outcome.details)
     }
 
     /// Return a borrowed item by item identification (barcode or call number)
-    pub async fn return_loan_by_item(&self, item_identification: &str) -> AppResult<LoanDetails> {
+    pub async fn return_loan_by_item(
+        &self,
+        item_identification: &str,
+        audit_actor: Option<i64>,
+        client_ip: Option<String>,
+    ) -> AppResult<LoanDetails> {
         let loan = self.repository.loans_get_by_item_identification(item_identification).await?;
         let outcome = self.repository.loans_return(loan.id).await?;
+        self.audit_return_side_effects(audit_actor, client_ip, &outcome);
         Ok(outcome.details)
+    }
+
+    fn audit_return_side_effects(
+        &self,
+        audit_actor: Option<i64>,
+        client_ip: Option<String>,
+        outcome: &LoanReturnOutcome,
+    ) {
+        let Some(ref hold) = outcome.readied_hold else {
+            return;
+        };
+
+        self.audit.log(
+            audit::event::HOLD_READY,
+            audit_actor,
+            Some("hold"),
+            Some(hold.id),
+            client_ip.clone(),
+            Some(serde_json::json!({
+                "user_id": hold.user_id,
+                "item_id": hold.item_id,
+                "expires_at": hold.expires_at,
+                "trigger": "loan_return",
+            })),
+            AuditLogMeta::success(),
+        );
+
+        let Some(ref email_outcome) = outcome.hold_ready_email else {
+            return;
+        };
+
+        let biblio_id = outcome.details.biblio.id;
+        let title = outcome
+            .details
+            .biblio
+            .title
+            .as_deref()
+            .unwrap_or("(unknown title)");
+
+        if let Some(ref err) = email_outcome.send_error {
+            self.audit.log(
+                audit::event::EMAIL_HOLD_READY_SENT,
+                audit_actor,
+                Some("hold"),
+                Some(hold.id),
+                client_ip.clone(),
+                Some(serde_json::json!({
+                    "user_id": hold.user_id,
+                    "email": email_outcome.email,
+                    "biblio_id": biblio_id,
+                    "title": title,
+                    "trigger": "loan_return",
+                })),
+                AuditLogMeta::failure_background("email_delivery_failed", err.clone()),
+            );
+        } else if email_outcome.email.is_some() {
+            self.audit.log(
+                audit::event::EMAIL_HOLD_READY_SENT,
+                audit_actor,
+                Some("user"),
+                Some(hold.user_id),
+                client_ip,
+                Some(serde_json::json!({
+                    "hold_id": hold.id,
+                    "email": email_outcome.email,
+                    "biblio_id": biblio_id,
+                    "title": title,
+                    "trigger": "loan_return",
+                })),
+                AuditLogMeta::success(),
+            );
+        }
     }
 
     /// Get a loan by id
@@ -397,10 +505,14 @@ mod tests {
         ) -> AppResult<Vec<crate::models::loan::LoanMarcExportRow>> {
             Ok(vec![])
         }
-        async fn loans_create(&self, _: &CreateLoan) -> AppResult<(i64, chrono::DateTime<Utc>)> {
-            Ok((self.loan_id, Utc::now()))
+        async fn loans_create(&self, _: &CreateLoan) -> AppResult<LoanCreateOutcome> {
+            Ok(LoanCreateOutcome {
+                loan_id: self.loan_id,
+                expiry_at: Utc::now(),
+                fulfilled_hold_id: None,
+            })
         }
-        async fn loans_return(&self, _: i64) -> AppResult<crate::models::loan::LoanReturnOutcome> {
+        async fn loans_return(&self, _: i64) -> AppResult<LoanReturnOutcome> {
             unimplemented!()
         }
         async fn loans_renew(&self, _: i64) -> AppResult<(chrono::DateTime<Utc>, i16)> { unimplemented!() }
@@ -458,7 +570,12 @@ mod tests {
     // so FakeRepo already implements it — no explicit impl needed.
 
     fn make_service(user: Option<User>, loan_id: i64) -> LoansService {
-        LoansService::new(Arc::new(FakeRepo { user, loan_id }))
+        let audit = AuditService::new(crate::repository::Repository::new(
+            sqlx::Pool::connect_lazy("postgres://localhost/unused").unwrap(),
+            None,
+            None,
+        ));
+        LoansService::new(Arc::new(FakeRepo { user, loan_id }), audit)
     }
 
     fn make_loan(user_id: i64, force: bool) -> CreateLoan {
@@ -476,7 +593,7 @@ mod tests {
     async fn test_create_loan_active_user_succeeds() {
         let user = make_user(1, None, None);
         let svc = make_service(Some(user), 100);
-        assert!(svc.create_loan(make_loan(1, false)).await.is_ok());
+        assert!(svc.create_loan(make_loan(1, false), None, None).await.is_ok());
     }
 
     #[tokio::test]
@@ -484,7 +601,7 @@ mod tests {
         let user = make_user(2, Some(UserStatus::Blocked), None);
         let svc = make_service(Some(user), 0);
         assert!(matches!(
-            svc.create_loan(make_loan(2, false)).await,
+            svc.create_loan(make_loan(2, false), None, None).await,
             Err(AppError::BusinessRule(_))
         ));
     }
@@ -493,7 +610,7 @@ mod tests {
     async fn test_create_loan_blocked_user_with_force_succeeds() {
         let user = make_user(3, Some(UserStatus::Blocked), None);
         let svc = make_service(Some(user), 101);
-        assert!(svc.create_loan(make_loan(3, true)).await.is_ok());
+        assert!(svc.create_loan(make_loan(3, true), None, None).await.is_ok());
     }
 
     #[tokio::test]
@@ -502,7 +619,7 @@ mod tests {
         let svc = make_service(Some(user), 0);
         // force=true should NOT override a deleted account
         assert!(matches!(
-            svc.create_loan(make_loan(4, true)).await,
+            svc.create_loan(make_loan(4, true), None, None).await,
             Err(AppError::BusinessRule(_))
         ));
     }
@@ -513,7 +630,7 @@ mod tests {
         let user = make_user(5, None, Some(expired));
         let svc = make_service(Some(user), 0);
         assert!(matches!(
-            svc.create_loan(make_loan(5, false)).await,
+            svc.create_loan(make_loan(5, false), None, None).await,
             Err(AppError::BusinessRule(_))
         ));
     }
@@ -523,14 +640,14 @@ mod tests {
         let expired = Utc::now() - chrono::Duration::days(1);
         let user = make_user(6, None, Some(expired));
         let svc = make_service(Some(user), 102);
-        assert!(svc.create_loan(make_loan(6, true)).await.is_ok());
+        assert!(svc.create_loan(make_loan(6, true), None, None).await.is_ok());
     }
 
     #[tokio::test]
     async fn test_create_loan_user_not_found() {
         let svc = make_service(None, 0); // no user pre-loaded
         assert!(matches!(
-            svc.create_loan(make_loan(99, false)).await,
+            svc.create_loan(make_loan(99, false), None, None).await,
             Err(AppError::NotFound(_))
         ));
     }
@@ -540,6 +657,6 @@ mod tests {
         let future_date = Utc::now() + chrono::Duration::days(30);
         let user = make_user(7, None, Some(future_date)); // subscription valid
         let svc = make_service(Some(user), 103);
-        assert!(svc.create_loan(make_loan(7, false)).await.is_ok());
+        assert!(svc.create_loan(make_loan(7, false), None, None).await.is_ok());
     }
 }

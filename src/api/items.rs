@@ -114,22 +114,37 @@ pub async fn update_item(
     ValidatedJson(mut item): ValidatedJson<Item>,
 ) -> AppResult<Json<Item>> {
     claims.require_write_items()?;
-    let (biblio_id, _) = state
+    match state
         .services
         .catalog
         .update_item(item_id, &mut item)
-        .await?;
-
-    state.services.audit.log(
-        audit::event::ITEM_UPDATED,
-        Some(claims.user_id),
-        Some("item"),
-        Some(item_id),
-        ip,
-        Some((biblio_id, &item)),
-     audit::AuditLogMeta::success());
-
-    Ok(Json(item))
+        .await
+    {
+        Ok((biblio_id, _)) => {
+            state.services.audit.log(
+                audit::event::ITEM_UPDATED,
+                Some(claims.user_id),
+                Some("item"),
+                Some(item_id),
+                ip.clone(),
+                Some((biblio_id, &item)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(item))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::ITEM_UPDATED,
+                Some(claims.user_id),
+                Some("item"),
+                Some(item_id),
+                ip,
+                Some(&item),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Delete a physical item (soft delete unless `force` when borrowed).
@@ -157,22 +172,39 @@ pub async fn delete_item(
 ) -> AppResult<StatusCode> {
     claims.require_write_items()?;
     let force = params.force.unwrap_or(false);
-    let biblio_id = state.services.catalog.delete_item(item_id, force).await?;
-
-    state.services.audit.log(
-        audit::event::ITEM_DELETED,
-        Some(claims.user_id),
-        Some("item"),
-        Some(item_id),
-        ip,
-        Some(serde_json::json!({
-            "biblio_id": biblio_id,
-            "item_id": item_id,
-            "force": force,
-        })),
-     audit::AuditLogMeta::success());
-
-    Ok(StatusCode::NO_CONTENT)
+    match state.services.catalog.delete_item(item_id, force).await {
+        Ok(biblio_id) => {
+            state.services.audit.log(
+                audit::event::ITEM_DELETED,
+                Some(claims.user_id),
+                Some("item"),
+                Some(item_id),
+                ip.clone(),
+                Some(serde_json::json!({
+                    "biblio_id": biblio_id,
+                    "item_id": item_id,
+                    "force": force,
+                })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::ITEM_DELETED,
+                Some(claims.user_id),
+                Some("item"),
+                Some(item_id),
+                ip,
+                Some(serde_json::json!({
+                    "item_id": item_id,
+                    "force": force,
+                })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 #[derive(Deserialize)]

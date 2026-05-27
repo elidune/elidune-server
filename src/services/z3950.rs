@@ -336,17 +336,15 @@ impl Z3950Service {
             .create_biblio(biblio, false, confirm_replace_existing_id)
             .await?;
 
-        if report.action == ImportAction::Created {
-            if let (Some(items_list), Some(created_biblio_id)) = (items, biblio.id) {
-                for s in items_list {
-                    let item: Item = s.into();
-                    let _ = self.catalog.create_item(created_biblio_id, item).await?;
-                }
-                biblio = self
-                    .repository
-                    .biblios_get_by_id(created_biblio_id)
-                    .await?;
+        if let (Some(items_list), Some(created_biblio_id)) = (items, biblio.id) {
+            for s in items_list {
+                let item: Item = s.into();
+                let _ = self.catalog.create_item(created_biblio_id, item).await?;
             }
+            biblio = self
+                .repository
+                .biblios_get_by_id(created_biblio_id)
+                .await?;
         }
 
         Ok((biblio, report))

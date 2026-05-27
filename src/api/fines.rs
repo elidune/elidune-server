@@ -166,10 +166,11 @@ pub async fn list_fine_rules(
 )]
 pub async fn upsert_fine_rule(
     State(state): State<crate::AppState>,
-    StaffUser(_staff): StaffUser,
+    StaffUser(claims): StaffUser,
+    ClientIp(ip): ClientIp,
     Json(req): Json<UpsertFineRuleRequest>,
 ) -> AppResult<Json<FineRule>> {
-    let rule = state
+    match state
         .services
         .fines
         .upsert_rule(
@@ -178,8 +179,41 @@ pub async fn upsert_fine_rule(
             req.max_amount,
             req.grace_days,
         )
-        .await?;
-    Ok(Json(rule))
+        .await
+    {
+        Ok(rule) => {
+            state.services.audit.log(
+                audit::event::FINE_RULE_UPDATED,
+                Some(claims.user_id),
+                Some("fine_rule"),
+                Some(rule.id as i64),
+                ip.clone(),
+                Some(serde_json::json!({
+                    "media_type": req.media_type,
+                    "daily_rate": req.daily_rate,
+                    "grace_days": req.grace_days,
+                })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(rule))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::FINE_RULE_UPDATED,
+                Some(claims.user_id),
+                Some("fine_rule"),
+                None,
+                ip,
+                Some(serde_json::json!({
+                    "media_type": req.media_type,
+                    "daily_rate": req.daily_rate,
+                    "grace_days": req.grace_days,
+                })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 pub fn router() -> axum::Router<crate::AppState> {

@@ -82,7 +82,7 @@ impl HoldsService {
     }
 
     #[tracing::instrument(skip(self), err)]
-    pub async fn expire_overdue(&self) -> AppResult<u64> {
+    pub async fn expire_overdue(&self) -> AppResult<Vec<i64>> {
         self.repository.holds_expire_overdue().await
     }
 

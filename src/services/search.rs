@@ -143,20 +143,32 @@ impl MeilisearchService {
 
     /// Index (create or replace) a single document.
     #[tracing::instrument(skip(self))]
-    pub async fn index_document(&self, doc: &MeiliBiblioDocument) {
+    pub async fn index_document(&self, doc: &MeiliBiblioDocument) -> Result<(), String> {
         let index = self.client.index(&self.index_name);
-        if let Err(e) = index.add_or_replace(&[doc], Some("id")).await {
-            warn!("Meilisearch index_document failed for id={}: {}", doc.id, e);
-        }
+        index
+            .add_or_replace(&[doc], Some("id"))
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                let msg = format!("Meilisearch index_document failed for id={}: {}", doc.id, e);
+                warn!("{}", msg);
+                msg
+            })
     }
 
     /// Remove a document by item ID.
     #[tracing::instrument(skip(self))]
-    pub async fn delete_document(&self, id: i64) {
+    pub async fn delete_document(&self, id: i64) -> Result<(), String> {
         let index = self.client.index(&self.index_name);
-        if let Err(e) = index.delete_document(&id).await {
-            warn!("Meilisearch delete_document failed for id={}: {}", id, e);
-        }
+        index
+            .delete_document(&id)
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+            let msg = format!("Meilisearch delete_document failed for id={}: {}", id, e);
+            warn!("{}", msg);
+            msg
+        })
     }
 
     /// Delete all documents from the index (first step of a full reindex).

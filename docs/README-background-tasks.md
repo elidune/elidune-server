@@ -12,6 +12,8 @@ the server returns a task ID immediately and the client polls for progress.
 |--------|----------|--------|------|
 | Start MARC import | `/api/v1/biblios/import-marc-batch` | POST | Staff |
 | Start maintenance | `/api/v1/maintenance` | POST | Admin |
+| Inventory batch scan | `/api/v1/inventory/sessions/:id/scans/batch` | POST | Staff |
+| Inventory consolidation | `/api/v1/inventory/sessions/:id/consolidate` | POST | Staff |
 | List my tasks | `/api/v1/tasks` | GET | Any |
 | Poll a task | `/api/v1/tasks/:id` | GET | Any |
 
@@ -36,6 +38,38 @@ Response — `202 Accepted`:
 ```
 
 Store `taskId` and start polling.
+
+### Inventory batch scan
+
+```http
+POST /api/v1/inventory/sessions/{sessionId}/scans/batch
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "barcodes": ["978…", "…"] }
+```
+
+Response — `202 Accepted` → poll until `kind === "inventoryBatchScan"` completes; `result` is `InventoryScan[]`.
+
+### Inventory consolidation
+
+```http
+POST /api/v1/inventory/sessions/{sessionId}/consolidate
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "force": false }
+```
+
+Response — `202 Accepted`:
+
+```json
+{
+  "taskId": "927364819265437699"
+}
+```
+
+Poll until `kind === "inventoryConsolidation"`. While running, `progress.message.phase` is `"archiving"` then optionally `"notifying_readers"`. On success, `result` is `InventoryConsolidationResult`.
 
 ### Maintenance Run
 
@@ -122,13 +156,39 @@ Authorization: Bearer <token>
       "action": "cleanupSeries",
       "success": true,
       "details": { "deleted": 12, "quotesStripped": 8 }
-    },
-    {
-      "action": "mergeDuplicateSeries",
-      "success": true,
-      "details": { "merged": 3 }
     }
   ]
+}
+```
+
+#### `inventoryBatchScan`
+
+Array of `InventoryScan` in the same order as the request `barcodes`.
+
+#### `inventoryConsolidation`
+
+```json
+{
+  "sessionId": "927364819265437703",
+  "attempted": 42,
+  "deleted": 42,
+  "skipped": [],
+  "consolidated": true,
+  "archivedBiblios": 5,
+  "loanClosureEmailsSent": 0,
+  "loanClosureEmailErrors": []
+}
+```
+
+Progress `message` while running (inventory consolidation):
+
+```json
+{
+  "sessionId": "927364819265437703",
+  "phase": "archiving",
+  "deleted": 10,
+  "skipped": 2,
+  "archivedBiblios": 1
 }
 ```
 
@@ -256,7 +316,11 @@ async function restoreTaskState(token: string) {
 ## 5. TypeScript Types
 
 ```typescript
-export type TaskKind   = 'marcBatchImport' | 'maintenance';
+export type TaskKind =
+  | 'marcBatchImport'
+  | 'maintenance'
+  | 'inventoryBatchScan'
+  | 'inventoryConsolidation';
 export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 export interface TaskProgress {
@@ -287,12 +351,23 @@ export interface MaintenanceResponse {
   }>;
 }
 
+export interface InventoryConsolidationResult {
+  sessionId: string;
+  attempted: number;
+  deleted: number;
+  skipped: Array<{ itemId: string; reason: string }>;
+  consolidated: boolean;
+  archivedBiblios: number;
+  loanClosureEmailsSent: number;
+  loanClosureEmailErrors: Array<{ userId: string; email: string; errorMessage: string }>;
+}
+
 export interface BackgroundTask {
   id:           string;
   kind:         TaskKind;
   status:       TaskStatus;
   progress?:    TaskProgress;
-  result?:      MarcBatchImportReport | MaintenanceResponse | null;
+  result?:      MarcBatchImportReport | MaintenanceResponse | InventoryConsolidationResult | unknown[] | null;
   error?:       string | null;
   createdAt:    string;   // ISO 8601
   startedAt?:   string | null;

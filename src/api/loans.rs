@@ -342,7 +342,34 @@ pub async fn create_loan(
         force: request.force.unwrap_or(false),
     };
 
-    let (loan_id, expiry_at) = state.services.loans.create_loan(loan).await?;
+    let outcome = match state
+        .services
+        .loans
+        .create_loan(loan, Some(claims.user_id), ip.clone())
+        .await
+    {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::LOAN_CREATED,
+                Some(claims.user_id),
+                Some("loan"),
+                None,
+                ip.clone(),
+                Some(LoanCreatedAudit {
+                    user_id: request.user_id,
+                    item_id: request.item_id,
+                    item_identification: request.item_identification.clone(),
+                    force: request.force.unwrap_or(false),
+                    expiry_at: Utc::now(),
+                }),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            return Err(e);
+        }
+    };
+    let loan_id = outcome.loan_id;
+    let expiry_at = outcome.expiry_at;
 
     state.services.audit.log(
         audit::event::LOAN_CREATED,
@@ -389,7 +416,26 @@ pub async fn return_loan(
     Path(loan_id): Path<i64>,
 ) -> AppResult<Json<ReturnResponse>> {
     claims.require_write_loans()?;
-    let loan = state.services.loans.return_loan(loan_id).await?;
+    let loan = match state
+        .services
+        .loans
+        .return_loan(loan_id, Some(claims.user_id), ip.clone())
+        .await
+    {
+        Ok(loan) => loan,
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::LOAN_RETURNED,
+                Some(claims.user_id),
+                Some("loan"),
+                Some(loan_id),
+                ip.clone(),
+                None::<()>,
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            return Err(e);
+        }
+    };
 
     state.services.audit.log(
         audit::event::LOAN_RETURNED,
@@ -475,19 +521,38 @@ pub async fn return_loan_by_item(
     Path(item_id): Path<String>,
 ) -> AppResult<Json<ReturnResponse>> {
     claims.require_write_loans()?;
-    let loan = state.services.loans.return_loan_by_item(&item_id).await?;
-    let loan_id = loan.id;
-
-    state.services.audit.log(
-        audit::event::LOAN_RETURNED,
-        Some(claims.user_id),
-        Some("loan"),
-        Some(loan_id),
-        ip,
-        Some((item_id.as_str(), &loan)),
-     audit::AuditLogMeta::success());
-
-    Ok(Json(ReturnResponse { status: "returned".to_string(), loan }))
+    match state
+        .services
+        .loans
+        .return_loan_by_item(&item_id, Some(claims.user_id), ip.clone())
+        .await
+    {
+        Ok(loan) => {
+            let loan_id = loan.id;
+            state.services.audit.log(
+                audit::event::LOAN_RETURNED,
+                Some(claims.user_id),
+                Some("loan"),
+                Some(loan_id),
+                ip,
+                Some((item_id.as_str(), &loan)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(ReturnResponse { status: "returned".to_string(), loan }))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::LOAN_RETURNED,
+                Some(claims.user_id),
+                Some("loan"),
+                None,
+                ip,
+                Some(serde_json::json!({ "item_identification": item_id })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Renew a loan by item identification (barcode or call number)

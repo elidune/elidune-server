@@ -220,26 +220,38 @@ pub async fn create_biblio(
     Query(query): Query<CreateBiblioQuery>,
     Json(biblio): Json<Biblio>,
 ) -> AppResult<(StatusCode, Json<CreateBiblioResponse>)> {
-    println!("claims: {:?}", claims);
-    
     claims.require_write_items()?;
-println!("biblio: {:?}", biblio);
-    let (biblio, import_report) = state
+    match state
         .services
         .catalog
         .create_biblio(biblio, query.allow_duplicate_isbn, query.confirm_replace_existing_id)
-        .await?;
-
-    state.services.audit.log(
-        audit::event::BIBLIO_CREATED,
-        Some(claims.user_id),
-        Some("biblio"),
-        biblio.id,
-        ip,
-        Some(&biblio),
-     audit::AuditLogMeta::success());
-
-    Ok((StatusCode::CREATED, Json(CreateBiblioResponse { biblio, import_report })))
+        .await
+    {
+        Ok((biblio, import_report)) => {
+            state.services.audit.log(
+                audit::event::BIBLIO_CREATED,
+                Some(claims.user_id),
+                Some("biblio"),
+                biblio.id,
+                ip.clone(),
+                Some(&biblio),
+                audit::AuditLogMeta::success(),
+            );
+            Ok((StatusCode::CREATED, Json(CreateBiblioResponse { biblio, import_report })))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::BIBLIO_CREATED,
+                Some(claims.user_id),
+                Some("biblio"),
+                None,
+                ip,
+                None::<()>,
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Upload a UNIMARC file and return parsed biblios with linked items (995/952).
@@ -260,6 +272,7 @@ println!("biblio: {:?}", biblio);
 pub async fn load_marc(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     mut multipart: Multipart,
 ) -> AppResult<Json<EnqueueResult>> {
     claims.require_read_items()?;
@@ -286,6 +299,20 @@ pub async fn load_marc(
     }
 
     let enqueue_result = state.services.marc.enqueue_unimarc_batch(&data).await?;
+
+    state.services.audit.log(
+        audit::event::IMPORT_MARC_UPLOAD,
+        Some(claims.user_id),
+        None,
+        None,
+        ip,
+        Some(serde_json::json!({
+            "batch_id": enqueue_result.batch_id,
+            "record_count": enqueue_result.previews.len(),
+            "file_bytes": data.len(),
+        })),
+        audit::AuditLogMeta::success(),
+    );
 
     Ok(Json(enqueue_result))
 }
@@ -346,7 +373,23 @@ pub async fn import_marc_batch(
                         None,
                         None,
                         ip.clone(),
-                        Some(&p),
+                        Some(serde_json::json!({
+                            "params": &p,
+                            "report": &report,
+                        })),
+                        audit::AuditLogMeta::success(),
+                    );
+                    audit.log(
+                        audit::event::SYSTEM_TASK_COMPLETED,
+                        Some(claims.user_id),
+                        None,
+                        None,
+                        None,
+                        Some(serde_json::json!({
+                            "task_id": handle.id,
+                            "task_kind": "marc_batch_import",
+                            "batch_id": p.batch_id,
+                        })),
                         audit::AuditLogMeta::success(),
                     );
                     let result = serde_json::to_value(&report).unwrap_or_default();
@@ -358,9 +401,23 @@ pub async fn import_marc_batch(
                         Some(claims.user_id),
                         None,
                         None,
-                        ip,
+                        ip.clone(),
                         Some(&p),
                         audit::AuditLogMeta::from_app_error(&e),
+                    );
+                    audit.log(
+                        audit::event::SYSTEM_TASK_FAILED,
+                        Some(claims.user_id),
+                        None,
+                        None,
+                        None,
+                        Some(serde_json::json!({
+                            "task_id": handle.id,
+                            "task_kind": "marc_batch_import",
+                            "batch_id": p.batch_id,
+                            "error": e.to_string(),
+                        })),
+                        audit::AuditLogMeta::failure_background("task_failed", e.to_string()),
                     );
                     handle.fail(e.to_string()).await;
                 }
@@ -397,18 +454,37 @@ pub async fn update_biblio(
     Json(biblio): Json<Biblio>,
 ) -> AppResult<Json<Biblio>> {
     claims.require_write_items()?;
-    let updated = state.services.catalog.update_biblio(id, biblio, query.allow_duplicate_isbn).await?;
-
-    state.services.audit.log(
-        audit::event::BIBLIO_UPDATED,
-        Some(claims.user_id),
-        Some("biblio"),
-        Some(id),
-        ip,
-        Some((id, &updated)),
-     audit::AuditLogMeta::success());
-
-    Ok(Json(updated))
+    match state
+        .services
+        .catalog
+        .update_biblio(id, biblio, query.allow_duplicate_isbn)
+        .await
+    {
+        Ok(updated) => {
+            state.services.audit.log(
+                audit::event::BIBLIO_UPDATED,
+                Some(claims.user_id),
+                Some("biblio"),
+                Some(id),
+                ip.clone(),
+                Some((id, &updated)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(updated))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::BIBLIO_UPDATED,
+                Some(claims.user_id),
+                Some("biblio"),
+                Some(id),
+                ip,
+                None::<()>,
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default, ToSchema)]
@@ -442,22 +518,33 @@ pub async fn delete_biblio(
     Query(params): Query<DeleteBiblioParams>,
 ) -> AppResult<StatusCode> {
     claims.require_write_items()?;
-    state
-        .services
-        .catalog
-        .delete_biblio(id, params.force.unwrap_or(false))
-        .await?;
-
-    state.services.audit.log(
-        audit::event::BIBLIO_DELETED,
-        Some(claims.user_id),
-        Some("biblio"),
-        Some(id),
-        ip,
-        Some(serde_json::json!({ "id": id, "force": params.force.unwrap_or(false) })),
-     audit::AuditLogMeta::success());
-
-    Ok(StatusCode::NO_CONTENT)
+    let force = params.force.unwrap_or(false);
+    match state.services.catalog.delete_biblio(id, force).await {
+        Ok(()) => {
+            state.services.audit.log(
+                audit::event::BIBLIO_DELETED,
+                Some(claims.user_id),
+                Some("biblio"),
+                Some(id),
+                ip.clone(),
+                Some(serde_json::json!({ "id": id, "force": force })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::BIBLIO_DELETED,
+                Some(claims.user_id),
+                Some("biblio"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "id": id, "force": force })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 #[derive(Deserialize)]

@@ -290,18 +290,35 @@ pub async fn reindex_search(
 ) -> AppResult<Json<ReindexSearchResponse>> {
     claims.require_admin()?;
 
-    let (count, available) = state.services.catalog.reindex_search().await?;
-
-    state.services.audit.log(
-        "admin.reindex_search",
-        Some(claims.user_id),
-        None,
-        None,
-        ip,
-        Some(serde_json::json!({ "items_queued": count, "meilisearch_available": available })),
-     audit::AuditLogMeta::success());
-
-    Ok(Json(ReindexSearchResponse { items_queued: count, meilisearch_available: available }))
+    match state.services.catalog.reindex_search().await {
+        Ok((count, available)) => {
+            state.services.audit.log(
+                audit::event::ADMIN_REINDEX_SEARCH,
+                Some(claims.user_id),
+                None,
+                None,
+                ip.clone(),
+                Some(serde_json::json!({ "items_queued": count, "meilisearch_available": available })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(ReindexSearchResponse {
+                items_queued: count,
+                meilisearch_available: available,
+            }))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::ADMIN_REINDEX_SEARCH,
+                Some(claims.user_id),
+                None,
+                None,
+                ip,
+                None::<serde_json::Value>,
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]

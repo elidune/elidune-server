@@ -14,6 +14,7 @@ use crate::{
         item::Item,
     },
     repository::{BibliosRepository, CatalogEntitiesRepository},
+    services::audit::{self, AuditLogMeta, AuditService},
     services::search::{MeilisearchService, SearchFilters},
 };
 
@@ -22,19 +23,51 @@ pub struct CatalogService {
     repository: Arc<dyn BibliosRepository>,
     entities: Arc<dyn CatalogEntitiesRepository>,
     search: Option<Arc<MeilisearchService>>,
+    audit: AuditService,
 }
 
 impl CatalogService {
-    pub fn new(repository: Arc<dyn BibliosRepository>, entities: Arc<dyn CatalogEntitiesRepository>) -> Self {
-        Self { repository, entities, search: None }
+    pub fn new(
+        repository: Arc<dyn BibliosRepository>,
+        entities: Arc<dyn CatalogEntitiesRepository>,
+        audit: AuditService,
+    ) -> Self {
+        Self {
+            repository,
+            entities,
+            search: None,
+            audit,
+        }
     }
 
     pub fn with_search(
         repository: Arc<dyn BibliosRepository>,
         entities: Arc<dyn CatalogEntitiesRepository>,
         search: Arc<MeilisearchService>,
+        audit: AuditService,
     ) -> Self {
-        Self { repository, entities, search: Some(search) }
+        Self {
+            repository,
+            entities,
+            search: Some(search),
+            audit,
+        }
+    }
+
+    fn audit_index_sync_failed(&self, biblio_id: i64, operation: &str, error: &str) {
+        self.audit.log(
+            audit::event::SEARCH_INDEX_SYNC_FAILED,
+            None,
+            Some("biblio"),
+            Some(biblio_id),
+            None,
+            Some(serde_json::json!({
+                "operation": operation,
+                "error": error,
+                "trigger": "catalog_mutation",
+            })),
+            AuditLogMeta::failure_background("search_index_sync_failed", error),
+        );
     }
 
     // =========================================================================
@@ -88,9 +121,16 @@ impl CatalogService {
     async fn sync_index(&self, id: i64) {
         if let Some(ref svc) = self.search {
             match self.repository.biblios_get_meili_document(id).await {
-                Ok(Some(doc)) => svc.index_document(&doc).await,
+                Ok(Some(doc)) => {
+                    if let Err(e) = svc.index_document(&doc).await {
+                        self.audit_index_sync_failed(id, "upsert", &e);
+                    }
+                }
                 Ok(None) => {}
-                Err(e) => tracing::warn!("sync_index: failed to build doc for id={}: {}", id, e),
+                Err(e) => {
+                    tracing::warn!("sync_index: failed to build doc for id={}: {}", id, e);
+                    self.audit_index_sync_failed(id, "build_document", &e.to_string());
+                }
             }
         }
     }
@@ -98,7 +138,9 @@ impl CatalogService {
     /// Fire-and-forget: remove a document from the Meilisearch index.
     async fn sync_delete(&self, id: i64) {
         if let Some(ref svc) = self.search {
-            svc.delete_document(id).await;
+            if let Err(e) = svc.delete_document(id).await {
+                self.audit_index_sync_failed(id, "delete", &e);
+            }
         }
     }
 

@@ -120,18 +120,38 @@ pub async fn create_hold(
         item_id: req.item_id,
         notes: req.notes,
     };
-    let hold = state.services.holds.place_hold(data).await?;
-
-    state.services.audit.log(
-        audit::event::HOLD_CREATED,
-        Some(claims.user_id),
-        Some("hold"),
-        Some(hold.id),
-        ip,
-        None::<()>,
-     audit::AuditLogMeta::success());
-
-    Ok((StatusCode::CREATED, Json(hold)))
+    match state.services.holds.place_hold(data).await {
+        Ok(hold) => {
+            state.services.audit.log(
+                audit::event::HOLD_CREATED,
+                Some(claims.user_id),
+                Some("hold"),
+                Some(hold.id),
+                ip.clone(),
+                Some(serde_json::json!({
+                    "user_id": req.user_id,
+                    "item_id": req.item_id,
+                })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok((StatusCode::CREATED, Json(hold)))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::HOLD_CREATED,
+                Some(claims.user_id),
+                Some("hold"),
+                None,
+                ip,
+                Some(serde_json::json!({
+                    "user_id": req.user_id,
+                    "item_id": req.item_id,
+                })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 #[utoipa::path(
@@ -200,20 +220,35 @@ pub async fn cancel_hold(
 ) -> AppResult<Json<Hold>> {
     claims.require_cancel_hold()?;
     let can_manage_others = claims.rights.holds_rights.rank() >= Rights::Write.rank();
-    let hold = state
+    match state
         .services
         .holds
         .cancel(id, claims.user_id, can_manage_others)
-        .await?;
-
-    state.services.audit.log(
-        audit::event::HOLD_CANCELLED,
-        Some(claims.user_id),
-        Some("hold"),
-        Some(id),
-        ip,
-        None::<()>,
-     audit::AuditLogMeta::success());
-
-    Ok(Json(hold))
+        .await
+    {
+        Ok(hold) => {
+            state.services.audit.log(
+                audit::event::HOLD_CANCELLED,
+                Some(claims.user_id),
+                Some("hold"),
+                Some(id),
+                ip.clone(),
+                None::<()>,
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(hold))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::HOLD_CANCELLED,
+                Some(claims.user_id),
+                Some("hold"),
+                Some(id),
+                ip,
+                None::<()>,
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }

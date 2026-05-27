@@ -85,7 +85,12 @@ pub async fn batch_return(
     let mut errors = 0u32;
 
     for barcode in &req.barcodes {
-        match state.services.loans.return_loan_by_item(barcode).await {
+        match state
+            .services
+            .loans
+            .return_loan_by_item(barcode, Some(claims.user_id), ip.clone())
+            .await
+        {
             Ok(loan) => {
                 state.services.audit.log(
                     audit::event::LOAN_RETURNED,
@@ -207,8 +212,15 @@ pub async fn batch_create_loans(
             item_identification: Some(barcode.clone()),
             force: req.force,
         };
-        match state.services.loans.create_loan(loan_data).await {
-            Ok((loan_id, expiry_at)) => {
+        match state
+            .services
+            .loans
+            .create_loan(loan_data, Some(claims.user_id), ip.clone())
+            .await
+        {
+            Ok(outcome) => {
+                let loan_id = outcome.loan_id;
+                let expiry_at = outcome.expiry_at;
                 state.services.audit.log(
                     audit::event::LOAN_CREATED,
                     Some(claims.user_id),

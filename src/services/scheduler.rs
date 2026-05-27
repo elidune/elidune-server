@@ -109,6 +109,7 @@ pub fn spawn(
 
     // Expire `ready` holds past `expires_at` (runs daily at 02:00 local)
     let hold_exp = holds_service.clone();
+    let audit_hold = audit_service.clone();
     tokio::spawn(async move {
         tracing::info!("Hold expiry scheduler started");
         loop {
@@ -116,14 +117,37 @@ pub fn spawn(
             tokio::time::sleep(sleep_dur).await;
 
             match hold_exp.expire_overdue().await {
-                Ok(n) if n > 0 => {
-                    tracing::info!("Expired {} overdue ready hold(s)", n);
+                Ok(ids) if !ids.is_empty() => {
+                    tracing::info!("Expired {} overdue ready hold(s)", ids.len());
+                    let sample: Vec<i64> = ids.iter().copied().take(50).collect();
+                    audit_hold.log(
+                        audit::event::SYSTEM_HOLD_EXPIRY_BATCH_COMPLETED,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(serde_json::json!({
+                            "expired_count": ids.len(),
+                            "hold_ids": sample,
+                            "trigger": "scheduler",
+                        })),
+                        audit::AuditLogMeta::success(),
+                    );
                 }
                 Ok(_) => {
                     tracing::debug!("Hold expiry run: nothing to expire");
                 }
                 Err(e) => {
                     tracing::error!("Hold expiry batch failed: {}", e);
+                    audit_hold.log(
+                        audit::event::SYSTEM_HOLD_EXPIRY_BATCH_COMPLETED,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(serde_json::json!({ "trigger": "scheduler" })),
+                        audit::AuditLogMeta::from_app_error(&e),
+                    );
                 }
             }
         }

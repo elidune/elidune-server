@@ -29,8 +29,19 @@ pub trait InventoryRepository: Send + Sync {
         location_filter: Option<&str>,
         notes: Option<&str>,
         scope_place: Option<i16>,
+        scope_source_id: Option<i64>,
         created_by: Option<i64>,
     ) -> AppResult<InventorySession>;
+    async fn inventory_count_expected_in_scope(
+        &self,
+        scope_source_id: Option<i64>,
+        scope_place: Option<i16>,
+    ) -> AppResult<i64>;
+    async fn inventory_has_open_session_for_scope(
+        &self,
+        scope_source_id: Option<i64>,
+        scope_place: Option<i16>,
+    ) -> AppResult<bool>;
     async fn inventory_close_session(&self, id: i64) -> AppResult<InventorySession>;
     async fn inventory_scan_barcode(
         &self,
@@ -106,10 +117,33 @@ impl InventoryRepository for Repository {
         location_filter: Option<&str>,
         notes: Option<&str>,
         scope_place: Option<i16>,
+        scope_source_id: Option<i64>,
         created_by: Option<i64>,
     ) -> AppResult<InventorySession> {
-        Repository::inventory_create_session(self, name, location_filter, notes, scope_place, created_by)
-            .await
+        Repository::inventory_create_session(
+            self,
+            name,
+            location_filter,
+            notes,
+            scope_place,
+            scope_source_id,
+            created_by,
+        )
+        .await
+    }
+    async fn inventory_count_expected_in_scope(
+        &self,
+        scope_source_id: Option<i64>,
+        scope_place: Option<i16>,
+    ) -> AppResult<i64> {
+        Repository::inventory_count_expected_in_scope(self, scope_source_id, scope_place).await
+    }
+    async fn inventory_has_open_session_for_scope(
+        &self,
+        scope_source_id: Option<i64>,
+        scope_place: Option<i16>,
+    ) -> AppResult<bool> {
+        Repository::inventory_has_open_session_for_scope(self, scope_source_id, scope_place).await
     }
     async fn inventory_close_session(&self, id: i64) -> AppResult<InventorySession> {
         Repository::inventory_close_session(self, id).await
@@ -183,21 +217,63 @@ fn next_id() -> i64 {
         .generate::<i64>()
 }
 
+const INVENTORY_SESSION_FROM: &str = r#"
+    FROM inventory_sessions inv
+    LEFT JOIN sources so ON so.id = inv.scope_source_id
+"#;
+
+const INVENTORY_SCOPE_PREDICATE: &str = r#"
+    (inv.scope_source_id IS NULL OR i.source_id = inv.scope_source_id)
+    AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
+"#;
+
 const MISSING_ITEMS_CTE: &str = r#"
     WITH missing_items AS (
         SELECT i.*
         FROM items i
         INNER JOIN inventory_sessions inv ON inv.id = $1
         WHERE i.archived_at IS NULL
+          AND (inv.scope_source_id IS NULL OR i.source_id = inv.scope_source_id)
           AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
           AND NOT EXISTS (
               SELECT 1 FROM inventory_scans sc
-              WHERE sc.session_id = $1 AND sc.item_id = i.id
+              WHERE sc.session_id = $1
+                AND sc.item_id = i.id
+                AND sc.result = 'found'
           )
     )
 "#;
 
+fn item_matches_session_scope(
+    scope_source_id: Option<i64>,
+    scope_place: Option<i16>,
+    item_source_id: Option<i64>,
+    item_place: Option<i16>,
+) -> bool {
+    if let Some(source_id) = scope_source_id {
+        if item_source_id != Some(source_id) {
+            return false;
+        }
+    }
+    if let Some(place) = scope_place {
+        if item_place != Some(place) {
+            return false;
+        }
+    }
+    true
+}
+
 impl Repository {
+    async fn inventory_fetch_session(&self, id: i64) -> AppResult<InventorySession> {
+        let sql = format!(
+            "SELECT inv.*, so.name AS scope_source_name {INVENTORY_SESSION_FROM} WHERE inv.id = $1"
+        );
+        sqlx::query_as::<_, InventorySession>(&sql)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Inventory session {id} not found")))
+    }
     /// List inventory sessions (paginated, newest first).
     #[tracing::instrument(skip(self), err)]
     pub async fn inventory_list_sessions_page(
@@ -222,8 +298,11 @@ impl Repository {
 
         let rows = if let Some(st) = status {
             sqlx::query_as::<_, InventorySession>(
-                "SELECT * FROM inventory_sessions WHERE status = $1
-                 ORDER BY started_at DESC LIMIT $2 OFFSET $3",
+                &format!(
+                    "SELECT inv.*, so.name AS scope_source_name \
+                     {INVENTORY_SESSION_FROM} WHERE inv.status = $1 \
+                     ORDER BY inv.started_at DESC LIMIT $2 OFFSET $3"
+                ),
             )
             .bind(st.as_str())
             .bind(per_page)
@@ -232,7 +311,10 @@ impl Repository {
             .await?
         } else {
             sqlx::query_as::<_, InventorySession>(
-                "SELECT * FROM inventory_sessions ORDER BY started_at DESC LIMIT $1 OFFSET $2",
+                &format!(
+                    "SELECT inv.*, so.name AS scope_source_name \
+                     {INVENTORY_SESSION_FROM} ORDER BY inv.started_at DESC LIMIT $1 OFFSET $2"
+                ),
             )
             .bind(per_page)
             .bind(offset)
@@ -245,13 +327,53 @@ impl Repository {
     /// Get session by ID
     #[tracing::instrument(skip(self), err)]
     pub async fn inventory_get_session(&self, id: i64) -> AppResult<InventorySession> {
-        sqlx::query_as::<_, InventorySession>(
-            "SELECT * FROM inventory_sessions WHERE id = $1",
+        self.inventory_fetch_session(id).await
+    }
+
+    /// Count active items matching optional source and place scope (before session exists).
+    #[tracing::instrument(skip(self), err)]
+    pub async fn inventory_count_expected_in_scope(
+        &self,
+        scope_source_id: Option<i64>,
+        scope_place: Option<i16>,
+    ) -> AppResult<i64> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)::bigint FROM items i
+            WHERE i.archived_at IS NULL
+              AND ($1::bigint IS NULL OR i.source_id = $1)
+              AND ($2::smallint IS NULL OR i.place = $2)
+            "#,
         )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Inventory session {id} not found")))
+        .bind(scope_source_id)
+        .bind(scope_place)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count)
+    }
+
+    /// Whether an open session already exists for the same scope dimensions.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn inventory_has_open_session_for_scope(
+        &self,
+        scope_source_id: Option<i64>,
+        scope_place: Option<i16>,
+    ) -> AppResult<bool> {
+        let exists: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM inventory_sessions
+                WHERE status = 'open'
+                  AND scope_source_id IS NOT DISTINCT FROM $1
+                  AND scope_place IS NOT DISTINCT FROM $2
+            )
+            "#,
+        )
+        .bind(scope_source_id)
+        .bind(scope_place)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists)
     }
 
     /// Create a new inventory session
@@ -262,14 +384,16 @@ impl Repository {
         location_filter: Option<&str>,
         notes: Option<&str>,
         scope_place: Option<i16>,
+        scope_source_id: Option<i64>,
         created_by: Option<i64>,
     ) -> AppResult<InventorySession> {
         let id = next_id();
-        let row = sqlx::query_as::<_, InventorySession>(
+        sqlx::query(
             r#"
-            INSERT INTO inventory_sessions (id, name, location_filter, notes, scope_place, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING *
+            INSERT INTO inventory_sessions (
+                id, name, location_filter, notes, scope_place, scope_source_id, created_by
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             "#,
         )
         .bind(id)
@@ -277,23 +401,25 @@ impl Repository {
         .bind(location_filter)
         .bind(notes)
         .bind(scope_place)
+        .bind(scope_source_id)
         .bind(created_by)
-        .fetch_one(&self.pool)
+        .execute(&self.pool)
         .await?;
-        Ok(row)
+        self.inventory_fetch_session(id).await
     }
 
     /// Close an inventory session
     #[tracing::instrument(skip(self), err)]
     pub async fn inventory_close_session(&self, id: i64) -> AppResult<InventorySession> {
-        sqlx::query_as::<_, InventorySession>(
+        let updated: Option<i64> = sqlx::query_scalar(
             "UPDATE inventory_sessions SET status = 'closed', closed_at = NOW()
-             WHERE id = $1 AND status = 'open' RETURNING *",
+             WHERE id = $1 AND status = 'open' RETURNING id",
         )
         .bind(id)
         .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Open session {id} not found")))
+        .await?;
+        updated.ok_or_else(|| AppError::NotFound(format!("Open session {id} not found")))?;
+        self.inventory_fetch_session(id).await
     }
 
     /// Record a barcode scan in a session
@@ -304,8 +430,10 @@ impl Repository {
         barcode: &str,
         scanned_by: Option<i64>,
     ) -> AppResult<InventoryScan> {
-        let row: Option<(i64, Option<DateTime<Utc>>)> = sqlx::query_as(
-            "SELECT id, archived_at FROM items WHERE barcode = $1 LIMIT 1",
+        let session = self.inventory_fetch_session(session_id).await?;
+
+        let row: Option<(i64, Option<DateTime<Utc>>, Option<i64>, Option<i16>)> = sqlx::query_as(
+            "SELECT id, archived_at, source_id, place FROM items WHERE barcode = $1 LIMIT 1",
         )
         .bind(barcode)
         .fetch_optional(&self.pool)
@@ -313,11 +441,18 @@ impl Repository {
 
         let (item_id, result) = match row {
             None => (None, InventoryScanResult::UnknownBarcode),
-            Some((id, archived_at)) => {
+            Some((id, archived_at, source_id, place)) => {
                 if archived_at.is_some() {
                     (Some(id), InventoryScanResult::FoundArchived)
-                } else {
+                } else if item_matches_session_scope(
+                    session.scope_source_id,
+                    session.scope_place,
+                    source_id,
+                    place,
+                ) {
                     (Some(id), InventoryScanResult::Found)
+                } else {
+                    (Some(id), InventoryScanResult::FoundOutOfScope)
                 }
             }
         };
@@ -378,36 +513,52 @@ impl Repository {
         let offset = (page - 1).max(0) * per_page;
 
         let total: i64 = sqlx::query_scalar(
-            r#"
+            &format!(
+                r#"
             SELECT COUNT(*) FROM items i
             INNER JOIN inventory_sessions inv ON inv.id = $1
             WHERE i.archived_at IS NULL
-              AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
+              AND {INVENTORY_SCOPE_PREDICATE}
               AND NOT EXISTS (
                   SELECT 1 FROM inventory_scans sc
-                  WHERE sc.session_id = $1 AND sc.item_id = i.id
+                  WHERE sc.session_id = $1
+                    AND sc.item_id = i.id
+                    AND sc.result = 'found'
               )
-            "#,
+            "#
+            ),
         )
         .bind(session_id)
         .fetch_one(&self.pool)
         .await?;
 
         let rows = sqlx::query_as::<_, InventoryMissingRow>(
-            r#"
-            SELECT i.id AS item_id, i.barcode, i.call_number, i.place, b.title AS biblio_title
+            &format!(
+                r#"
+            SELECT
+                i.id AS item_id,
+                i.barcode,
+                i.call_number,
+                i.place,
+                b.title AS biblio_title,
+                i.source_id,
+                so.name AS source_name
             FROM items i
             INNER JOIN inventory_sessions inv ON inv.id = $1
             LEFT JOIN biblios b ON b.id = i.biblio_id
+            LEFT JOIN sources so ON so.id = i.source_id
             WHERE i.archived_at IS NULL
-              AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
+              AND {INVENTORY_SCOPE_PREDICATE}
               AND NOT EXISTS (
                   SELECT 1 FROM inventory_scans sc
-                  WHERE sc.session_id = $1 AND sc.item_id = i.id
+                  WHERE sc.session_id = $1
+                    AND sc.item_id = i.id
+                    AND sc.result = 'found'
               )
             ORDER BY i.id
             LIMIT $2 OFFSET $3
-            "#,
+            "#
+            ),
         )
         .bind(session_id)
         .bind(per_page)
@@ -418,67 +569,53 @@ impl Repository {
         Ok((rows, total))
     }
 
-    /// Enriched discrepancy report (respects session `scope_place`).
+    /// Enriched discrepancy report (respects session scope on source and place).
     #[tracing::instrument(skip(self), err)]
     pub async fn inventory_report(&self, session_id: i64) -> AppResult<InventoryReport> {
-        let expected_in_scope: i64 = sqlx::query_scalar(
+        let scope_sql = format!(
             r#"
-            SELECT COUNT(*)::bigint FROM items i
             INNER JOIN inventory_sessions inv ON inv.id = $1
             WHERE i.archived_at IS NULL
-              AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
-            "#,
-        )
+              AND {INVENTORY_SCOPE_PREDICATE}
+            "#
+        );
+
+        let expected_in_scope: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*)::bigint FROM items i {scope_sql}"
+        ))
         .bind(session_id)
         .fetch_one(&self.pool)
         .await?;
 
-        let missing_count: i64 = sqlx::query_scalar(
+        let missing_predicate = format!(
             r#"
-            SELECT COUNT(*)::bigint FROM items i
-            INNER JOIN inventory_sessions inv ON inv.id = $1
-            WHERE i.archived_at IS NULL
-              AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
+            {scope_sql}
               AND NOT EXISTS (
                   SELECT 1 FROM inventory_scans sc
-                  WHERE sc.session_id = $1 AND sc.item_id = i.id
+                  WHERE sc.session_id = $1
+                    AND sc.item_id = i.id
+                    AND sc.result = 'found'
               )
-            "#,
-        )
+            "#
+        );
+
+        let missing_count: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*)::bigint FROM items i {missing_predicate}"
+        ))
         .bind(session_id)
         .fetch_one(&self.pool)
         .await?;
 
-        let missing_scannable: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*)::bigint FROM items i
-            INNER JOIN inventory_sessions inv ON inv.id = $1
-            WHERE i.archived_at IS NULL
-              AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
-              AND i.barcode IS NOT NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM inventory_scans sc
-                  WHERE sc.session_id = $1 AND sc.item_id = i.id
-              )
-            "#,
-        )
+        let missing_scannable: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*)::bigint FROM items i {missing_predicate} AND i.barcode IS NOT NULL"
+        ))
         .bind(session_id)
         .fetch_one(&self.pool)
         .await?;
 
-        let missing_without_barcode: i64 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*)::bigint FROM items i
-            INNER JOIN inventory_sessions inv ON inv.id = $1
-            WHERE i.archived_at IS NULL
-              AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
-              AND i.barcode IS NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM inventory_scans sc
-                  WHERE sc.session_id = $1 AND sc.item_id = i.id
-              )
-            "#,
-        )
+        let missing_without_barcode: i64 = sqlx::query_scalar(&format!(
+            "SELECT COUNT(*)::bigint FROM items i {missing_predicate} AND i.barcode IS NULL"
+        ))
         .bind(session_id)
         .fetch_one(&self.pool)
         .await?;
@@ -504,6 +641,13 @@ impl Repository {
         .fetch_one(&self.pool)
         .await?;
 
+        let total_found_out_of_scope: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM inventory_scans WHERE session_id = $1 AND result = 'found_out_of_scope'",
+        )
+        .bind(session_id)
+        .fetch_one(&self.pool)
+        .await?;
+
         let total_unknown: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)::bigint FROM inventory_scans WHERE session_id = $1 AND result = 'unknown_barcode'",
         )
@@ -514,7 +658,7 @@ impl Repository {
         let distinct_items_scanned: i64 = sqlx::query_scalar(
             r#"
             SELECT COUNT(DISTINCT item_id)::bigint FROM inventory_scans
-            WHERE session_id = $1 AND item_id IS NOT NULL
+            WHERE session_id = $1 AND result = 'found' AND item_id IS NOT NULL
             "#,
         )
         .bind(session_id)
@@ -524,7 +668,7 @@ impl Repository {
         let scans_with_item: i64 = sqlx::query_scalar(
             r#"
             SELECT COUNT(*)::bigint FROM inventory_scans
-            WHERE session_id = $1 AND item_id IS NOT NULL
+            WHERE session_id = $1 AND result = 'found' AND item_id IS NOT NULL
             "#,
         )
         .bind(session_id)
@@ -539,6 +683,7 @@ impl Repository {
             total_scanned,
             total_found,
             total_found_archived,
+            total_found_out_of_scope,
             total_unknown,
             distinct_items_scanned,
             duplicate_scan_count,
@@ -552,18 +697,22 @@ impl Repository {
     #[tracing::instrument(skip(self), err)]
     pub async fn inventory_list_missing_item_ids(&self, session_id: i64) -> AppResult<Vec<i64>> {
         let rows: Vec<(i64,)> = sqlx::query_as(
-            r#"
+            &format!(
+                r#"
             SELECT i.id
             FROM items i
             INNER JOIN inventory_sessions inv ON inv.id = $1
             WHERE i.archived_at IS NULL
-              AND (inv.scope_place IS NULL OR i.place = inv.scope_place)
+              AND {INVENTORY_SCOPE_PREDICATE}
               AND NOT EXISTS (
                   SELECT 1 FROM inventory_scans sc
-                  WHERE sc.session_id = $1 AND sc.item_id = i.id
+                  WHERE sc.session_id = $1
+                    AND sc.item_id = i.id
+                    AND sc.result = 'found'
               )
             ORDER BY i.id
-            "#,
+            "#
+            ),
         )
         .bind(session_id)
         .fetch_all(&self.pool)
@@ -579,25 +728,26 @@ impl Repository {
         session_id: i64,
         consolidated_by: Option<i64>,
     ) -> AppResult<InventorySession> {
-        sqlx::query_as::<_, InventorySession>(
+        let updated: Option<i64> = sqlx::query_scalar(
             r#"
             UPDATE inventory_sessions
             SET consolidated_at = NOW(), consolidated_by = $2
             WHERE id = $1
               AND status = 'closed'
               AND consolidated_at IS NULL
-            RETURNING *
+            RETURNING id
             "#,
         )
         .bind(session_id)
         .bind(consolidated_by)
         .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| {
+        .await?;
+        updated.ok_or_else(|| {
             AppError::Conflict(format!(
                 "Session {session_id} is not eligible for consolidation (open, unknown, or already consolidated)"
             ))
-        })
+        })?;
+        self.inventory_fetch_session(session_id).await
     }
 
     /// Summary for consolidation preview.
@@ -659,6 +809,8 @@ impl Repository {
             barcode: Option<String>,
             call_number: Option<String>,
             place: Option<i16>,
+            source_id: Option<i64>,
+            source_name: Option<String>,
             biblio_id: Option<i64>,
             biblio_title: Option<String>,
             loan_id: Option<i64>,
@@ -678,6 +830,8 @@ impl Repository {
                 mi.barcode,
                 mi.call_number,
                 mi.place,
+                mi.source_id,
+                so.name AS source_name,
                 mi.biblio_id,
                 b.title AS biblio_title,
                 l.id AS loan_id,
@@ -692,6 +846,7 @@ impl Repository {
                 ) AS biblio_active_item_count
             FROM missing_items mi
             LEFT JOIN biblios b ON b.id = mi.biblio_id
+            LEFT JOIN sources so ON so.id = mi.source_id
             LEFT JOIN loans l ON l.item_id = mi.id AND l.returned_at IS NULL
             LEFT JOIN users u ON u.id = l.user_id
             ORDER BY mi.id
@@ -721,6 +876,8 @@ impl Repository {
                     barcode: r.barcode,
                     call_number: r.call_number,
                     place: r.place,
+                    source_id: r.source_id,
+                    source_name: r.source_name,
                     biblio_id: r.biblio_id,
                     biblio_title: r.biblio_title,
                     on_loan,

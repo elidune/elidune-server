@@ -21,6 +21,21 @@ use crate::{
 
 use super::{AuthenticatedUser, ClientIp};
 
+
+
+/// Build the Z39.50 routes for this domain.
+pub fn router() -> axum::Router<crate::AppState> {
+    use axum::routing::{get, post, put};
+    axum::Router::new()
+        .route("/z3950/search", get(search))
+        .route("/z3950/import", post(import_record))
+        .route(
+            "/z3950/servers",
+            get(get_z3950_servers).put(update_z3950_servers),
+        )
+}
+
+
 fn default_z3950_encoding() -> String {
     "utf-8".to_string()
 }
@@ -204,12 +219,12 @@ pub async fn search(
 pub async fn import_record(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(request): Json<Z3950ImportRequest>,
 ) -> AppResult<(StatusCode, Json<Z3950ImportResponse>)> {
     claims.require_write_items()?;
 
-    
-    let (biblio, import_report) = state
+    match state
         .services
         .z3950
         .import_record(
@@ -217,9 +232,42 @@ pub async fn import_record(
             request.items,
             request.confirm_replace_existing_id,
         )
-        .await?;
-
-    Ok((StatusCode::CREATED, Json(Z3950ImportResponse { biblio, import_report })))
+        .await
+    {
+        Ok((biblio, import_report)) => {
+            state.services.audit.log(
+                audit::event::IMPORT_Z3950_RECORD,
+                Some(claims.user_id),
+                Some("biblio"),
+                biblio.id,
+                ip.clone(),
+                Some(serde_json::json!({
+                    "cache_biblio_id": request.biblio_id,
+                    "import_report": &import_report,
+                    "biblio_id": biblio.id,
+                })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok((
+                StatusCode::CREATED,
+                Json(Z3950ImportResponse { biblio, import_report }),
+            ))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::IMPORT_Z3950_RECORD,
+                Some(claims.user_id),
+                Some("biblio"),
+                Some(request.biblio_id),
+                ip,
+                Some(serde_json::json!({
+                    "cache_biblio_id": request.biblio_id,
+                })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// List Z39.50 server definitions (staff).
@@ -283,14 +331,3 @@ pub async fn update_z3950_servers(
     Ok(Json(rows))
 }
 
-/// Build the Z39.50 routes for this domain.
-pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{get, post, put};
-    axum::Router::new()
-        .route("/z3950/search", get(search))
-        .route("/z3950/import", post(import_record))
-        .route(
-            "/z3950/servers",
-            get(get_z3950_servers).put(update_z3950_servers),
-        )
-}

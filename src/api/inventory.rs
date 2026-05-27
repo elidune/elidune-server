@@ -14,8 +14,8 @@ use crate::{
     models::{
         inventory::{
             BatchScanBarcodes, ConsolidateInventorySession, CreateInventorySession,
-            InventoryConsolidationPreview, InventoryMissingRow, InventoryReport, InventoryScan,
-            InventorySession, InventoryStatus, ScanBarcode,
+            CreateInventorySessionResponse, InventoryConsolidationPreview, InventoryMissingRow,
+            InventoryReport, InventoryScan, InventorySession, InventoryStatus, ScanBarcode,
         },
         task::TaskKind,
     },
@@ -95,36 +95,64 @@ pub async fn list_sessions(
     security(("bearer_auth" = [])),
     request_body = CreateInventorySession,
     responses(
-        (status = 201, description = "Session created", body = InventorySession),
+        (status = 201, description = "Session created", body = CreateInventorySessionResponse),
         (status = 401, description = "Not authenticated", body = crate::error::ErrorResponse),
-        (status = 403, description = "Staff access required", body = crate::error::ErrorResponse)
+        (status = 403, description = "Staff access required", body = crate::error::ErrorResponse),
+        (status = 409, description = "Open session already exists for this scope", body = crate::error::ErrorResponse)
     )
 )]
 pub async fn create_session(
     State(state): State<crate::AppState>,
     StaffUser(claims): StaffUser,
     Json(req): Json<CreateInventorySession>,
-) -> AppResult<(StatusCode, Json<InventorySession>)> {
-    let session = state
-        .services
-        .inventory
-        .create_session(
+) -> AppResult<(StatusCode, Json<CreateInventorySessionResponse>)> {
+    match state.services.inventory.create_session(
             &req.name,
             req.location_filter.as_deref(),
             req.notes.as_deref(),
             req.scope_place,
+            req.scope_source_id,
             Some(claims.user_id),
         )
-        .await?;
-    state.services.audit.log(
-        audit::event::INVENTORY_SESSION_CREATED,
-        Some(claims.user_id),
-        Some("inventory_session"),
-        Some(session.id),
-        None,
-        None::<()>,
-     audit::AuditLogMeta::success());
-    Ok((StatusCode::CREATED, Json(session)))
+        .await
+    {
+        Ok(response) => {
+            state.services.audit.log(
+                audit::event::INVENTORY_SESSION_CREATED,
+                Some(claims.user_id),
+                Some("inventory_session"),
+                Some(response.session.id),
+                None,
+                Some(serde_json::json!({
+                    "name": req.name,
+                    "location_filter": req.location_filter,
+                    "scope_place": req.scope_place,
+                    "scope_source_id": req.scope_source_id,
+                    "expected_in_scope": response.expected_in_scope,
+                    "warnings": response.warnings,
+                })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok((StatusCode::CREATED, Json(response)))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::INVENTORY_SESSION_CREATED,
+                Some(claims.user_id),
+                Some("inventory_session"),
+                None,
+                None,
+                Some(serde_json::json!({
+                    "name": req.name,
+                    "location_filter": req.location_filter,
+                    "scope_place": req.scope_place,
+                    "scope_source_id": req.scope_source_id,
+                })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Get session details
@@ -167,16 +195,32 @@ pub async fn close_session(
     StaffUser(claims): StaffUser,
     Path(id): Path<i64>,
 ) -> AppResult<Json<InventorySession>> {
-    let session = state.services.inventory.close_session(id).await?;
-    state.services.audit.log(
-        audit::event::INVENTORY_SESSION_CLOSED,
-        Some(claims.user_id),
-        Some("inventory_session"),
-        Some(id),
-        None,
-        None::<()>,
-     audit::AuditLogMeta::success());
-    Ok(Json(session))
+    match state.services.inventory.close_session(id).await {
+        Ok(session) => {
+            state.services.audit.log(
+                audit::event::INVENTORY_SESSION_CLOSED,
+                Some(claims.user_id),
+                Some("inventory_session"),
+                Some(id),
+                None,
+                None::<()>,
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(session))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::INVENTORY_SESSION_CLOSED,
+                Some(claims.user_id),
+                Some("inventory_session"),
+                Some(id),
+                None,
+                None::<()>,
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Scan a barcode in an open session
@@ -253,6 +297,7 @@ pub async fn batch_scan(
 
     let inventory = state.services.inventory.clone();
     let tasks = state.services.tasks.clone();
+    let audit = state.services.audit.clone();
     let session_id = id;
     let barcodes = req.barcodes;
     let scanned_by = Some(claims.user_id);
@@ -271,11 +316,41 @@ pub async fn batch_scan(
                     handle.set_progress(i + 1, total, None).await;
                 }
                 Err(e) => {
+                    audit.log(
+                        audit::event::SYSTEM_TASK_FAILED,
+                        Some(user_id),
+                        None,
+                        None,
+                        None,
+                        Some(serde_json::json!({
+                            "task_id": handle.id,
+                            "task_kind": "inventory_batch_scan",
+                            "session_id": session_id,
+                            "barcode": b,
+                            "error": e.to_string(),
+                        })),
+                        audit::AuditLogMeta::failure_background("task_failed", e.to_string()),
+                    );
                     handle.fail(e.to_string()).await;
                     return;
                 }
             }
         }
+        audit.log(
+            audit::event::SYSTEM_TASK_COMPLETED,
+            Some(user_id),
+            None,
+            None,
+            None,
+            Some(serde_json::json!({
+                "task_id": handle.id,
+                "task_kind": "inventory_batch_scan",
+                "session_id": session_id,
+                "barcode_count": total,
+                "scanned_count": scans.len(),
+            })),
+            audit::AuditLogMeta::success(),
+        );
         let result = serde_json::to_value(&scans).unwrap_or_default();
         handle.complete(result).await;
     });
@@ -454,7 +529,7 @@ pub async fn consolidate_session(
 
     let task_id = tasks.spawn_task(TaskKind::InventoryConsolidation, user_id, move |handle| async move {
         match inventory
-            .consolidate_session(session_id, Some(user_id), force)
+            .consolidate_session(session_id, Some(user_id), force, Some(handle.clone()))
             .await
         {
             Ok(result) => {
@@ -467,10 +542,49 @@ pub async fn consolidate_session(
                     Some(&result),
                     audit::AuditLogMeta::success(),
                 );
+                audit.log(
+                    audit::event::SYSTEM_TASK_COMPLETED,
+                    Some(user_id),
+                    None,
+                    None,
+                    None,
+                    Some(serde_json::json!({
+                        "task_id": handle.id,
+                        "task_kind": "inventory_consolidation",
+                        "session_id": session_id,
+                    })),
+                    audit::AuditLogMeta::success(),
+                );
                 let value = serde_json::to_value(&result).unwrap_or_default();
                 handle.complete(value).await;
             }
             Err(e) => {
+                audit.log(
+                    audit::event::INVENTORY_SESSION_CONSOLIDATED,
+                    Some(user_id),
+                    Some("inventory_session"),
+                    Some(session_id),
+                    None,
+                    Some(serde_json::json!({
+                        "force": force,
+                        "error": e.to_string(),
+                    })),
+                    audit::AuditLogMeta::from_app_error(&e),
+                );
+                audit.log(
+                    audit::event::SYSTEM_TASK_FAILED,
+                    Some(user_id),
+                    None,
+                    None,
+                    None,
+                    Some(serde_json::json!({
+                        "task_id": handle.id,
+                        "task_kind": "inventory_consolidation",
+                        "session_id": session_id,
+                        "error": e.to_string(),
+                    })),
+                    audit::AuditLogMeta::failure_background("task_failed", e.to_string()),
+                );
                 handle.fail(e.to_string()).await;
             }
         }

@@ -337,7 +337,6 @@ impl MarcService {
             };
 
             let mut biblio: Biblio = record.into();
-            println!("biblio: {:?}", biblio.items);
             for item in &mut biblio.items {
                 item.source_id = Some(source_id);
             }

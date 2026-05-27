@@ -1873,6 +1873,8 @@ impl Repository {
             Some(id)
         } else if let Some(ref name) = item.source_name {
             Some(self.sources_find_or_create_by_name(name).await?)
+        } else if let Some(default) = self.sources_get_default().await? {
+            Some(default.id)
         } else {
             None
         };
@@ -2132,6 +2134,8 @@ impl Repository {
             Some(id)
         } else if let Some(ref name) = item.source_name {
             Some(self.sources_find_or_create_by_name(name).await?)
+        } else if let Some(default) = self.sources_get_default().await? {
+            Some(default.id)
         } else {
             None
         };

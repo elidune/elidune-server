@@ -115,14 +115,19 @@ impl Services {
 
         let biblios_repo: Arc<dyn BibliosRepository> = repo.clone();
         let entities_repo: Arc<dyn CatalogEntitiesRepository> = repo.clone();
+        let audit_service = audit::AuditService::new(repository.clone());
         let catalog = if let Some(ref svc) = search_service {
-            catalog::CatalogService::with_search(biblios_repo.clone(), entities_repo, Arc::clone(svc))
+            catalog::CatalogService::with_search(
+                biblios_repo.clone(),
+                entities_repo,
+                Arc::clone(svc),
+                audit_service.clone(),
+            )
         } else {
-            catalog::CatalogService::new(biblios_repo, entities_repo)
+            catalog::CatalogService::new(biblios_repo, entities_repo, audit_service.clone())
         };
 
         let marc_service = marc::MarcService::new(catalog.clone(), redis_service.clone());
-        let audit_service = audit::AuditService::new(repository.clone());
 
         let loans_repo: Arc<dyn LoansServiceRepository> = repo.clone();
         let loans_repo_only: Arc<dyn LoansRepository> = repo.clone();
@@ -151,11 +156,13 @@ impl Services {
             fines: fines::FinesService::new(repo.clone() as Arc<dyn FinesRepository>),
             inventory: inventory::InventoryService::new(
                 repo.clone() as Arc<dyn InventoryRepository>,
+                repo.clone() as Arc<dyn SourcesRepository>,
                 catalog.clone(),
                 email.clone(),
+                audit_service.clone(),
             ),
             library_info: library_info::LibraryInfoService::new(repository.clone()),
-            loans: loans::LoansService::new(loans_repo),
+            loans: loans::LoansService::new(loans_repo, audit_service.clone()),
             marc: marc_service,
             public_types: public_types::PublicTypesService::new(repo.clone() as Arc<dyn PublicTypesRepository>),
             redis: redis_service.clone(),

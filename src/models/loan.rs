@@ -58,6 +58,24 @@ pub struct LoanDetails {
 pub struct LoanReturnOutcome {
     pub details: LoanDetails,
     pub readied_hold: Option<crate::models::hold::Hold>,
+    /// Outcome of the hold-ready email attempt (when a hold was advanced to `ready`).
+    pub hold_ready_email: Option<HoldReadyEmailOutcome>,
+}
+
+/// Hold-ready notification email attempt after a loan return.
+#[derive(Debug, Clone)]
+pub struct HoldReadyEmailOutcome {
+    pub email: Option<String>,
+    pub send_error: Option<String>,
+}
+
+/// Result of [`crate::repository::Repository::loans_create`].
+#[derive(Debug, Clone)]
+pub struct LoanCreateOutcome {
+    pub loan_id: i64,
+    pub expiry_at: DateTime<Utc>,
+    /// Active hold fulfilled when the patron checked out (not when `force` clears holds).
+    pub fulfilled_hold_id: Option<i64>,
 }
 
 /// How the new due date is computed when a loan is renewed (`loans_settings.renew_at`).

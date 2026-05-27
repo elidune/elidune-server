@@ -37,7 +37,7 @@ pub trait HoldsRepository: Send + Sync {
     async fn holds_create(&self, data: &CreateHold) -> AppResult<Hold>;
     async fn holds_mark_ready(&self, id: i64, expiry_days: i32) -> AppResult<Hold>;
     async fn holds_cancel(&self, id: i64) -> AppResult<Hold>;
-    async fn holds_expire_overdue(&self) -> AppResult<u64>;
+    async fn holds_expire_overdue(&self) -> AppResult<Vec<i64>>;
     async fn holds_count_for_item(&self, item_id: i64) -> AppResult<i64>;
     async fn holds_count_active_for_biblio(&self, biblio_id: i64) -> AppResult<i64>;
     async fn holds_has_active_for_user_item(&self, user_id: i64, item_id: i64) -> AppResult<bool>;
@@ -79,7 +79,7 @@ impl HoldsRepository for Repository {
     async fn holds_cancel(&self, id: i64) -> AppResult<Hold> {
         Repository::holds_cancel(self, id).await
     }
-    async fn holds_expire_overdue(&self) -> AppResult<u64> {
+    async fn holds_expire_overdue(&self) -> AppResult<Vec<i64>> {
         Repository::holds_expire_overdue(self).await
     }
     async fn holds_count_for_item(&self, item_id: i64) -> AppResult<i64> {
@@ -420,14 +420,15 @@ impl Repository {
     }
 
     #[tracing::instrument(skip(self), err)]
-    pub async fn holds_expire_overdue(&self) -> AppResult<u64> {
-        let result = sqlx::query(
+    pub async fn holds_expire_overdue(&self) -> AppResult<Vec<i64>> {
+        let ids = sqlx::query_scalar::<_, i64>(
             "UPDATE holds SET status = 'expired'
-             WHERE status = 'ready' AND expires_at < NOW()",
+             WHERE status = 'ready' AND expires_at < NOW()
+             RETURNING id",
         )
-        .execute(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
-        Ok(result.rows_affected())
+        Ok(ids)
     }
 
     #[tracing::instrument(skip(self), err)]
@@ -492,15 +493,15 @@ impl Repository {
         tx: &mut sqlx::Transaction<'_, Postgres>,
         user_id: i64,
         item_id: i64,
-    ) -> AppResult<u64> {
-        let r = sqlx::query(
-            "UPDATE holds SET status = 'fulfilled' WHERE user_id = $1 AND item_id = $2 AND status IN ('pending','ready')",
+    ) -> AppResult<Option<i64>> {
+        let hold_id: Option<i64> = sqlx::query_scalar(
+            "UPDATE holds SET status = 'fulfilled' WHERE user_id = $1 AND item_id = $2 AND status IN ('pending','ready') RETURNING id",
         )
         .bind(user_id)
         .bind(item_id)
-        .execute(&mut **tx)
+        .fetch_optional(&mut **tx)
         .await?;
-        Ok(r.rows_affected())
+        Ok(hold_id)
     }
 
     /// Cancel every active hold on this copy (used when staff checks out with `force` or removes the item).

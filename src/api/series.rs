@@ -13,9 +13,10 @@ use utoipa::ToSchema;
 use crate::{
     error::AppResult,
     models::biblio::{BiblioShort, CreateSerie, Serie, SerieQuery, UpdateSerie},
+    services::audit,
 };
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
 
 /// Paginated list of series.
 #[derive(Serialize, ToSchema)]
@@ -122,11 +123,36 @@ pub async fn get_serie_biblios(
 pub async fn create_serie(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(data): Json<CreateSerie>,
 ) -> AppResult<impl IntoResponse> {
     claims.require_write_items()?;
-    let serie = state.services.catalog.create_serie(&data).await?;
-    Ok((StatusCode::CREATED, Json(serie)))
+    match state.services.catalog.create_serie(&data).await {
+        Ok(serie) => {
+            state.services.audit.log(
+                audit::event::SERIES_CREATED,
+                Some(claims.user_id),
+                Some("series"),
+                serie.id,
+                ip,
+                Some(&data),
+                audit::AuditLogMeta::success(),
+            );
+            Ok((StatusCode::CREATED, Json(serie)))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::SERIES_CREATED,
+                Some(claims.user_id),
+                Some("series"),
+                None,
+                ip,
+                Some(&data),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Update a series.
@@ -147,12 +173,37 @@ pub async fn create_serie(
 pub async fn update_serie(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Json(data): Json<UpdateSerie>,
 ) -> AppResult<Json<Serie>> {
     claims.require_write_items()?;
-    let serie = state.services.catalog.update_serie(id, &data).await?;
-    Ok(Json(serie))
+    match state.services.catalog.update_serie(id, &data).await {
+        Ok(serie) => {
+            state.services.audit.log(
+                audit::event::SERIES_UPDATED,
+                Some(claims.user_id),
+                Some("series"),
+                Some(id),
+                ip,
+                Some((id, &data, &serie)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(serie))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::SERIES_UPDATED,
+                Some(claims.user_id),
+                Some("series"),
+                Some(id),
+                ip,
+                Some((id, &data)),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Delete a series (only if no biblios are linked).
@@ -172,11 +223,36 @@ pub async fn update_serie(
 pub async fn delete_serie(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     claims.require_write_items()?;
-    state.services.catalog.delete_serie(id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    match state.services.catalog.delete_serie(id).await {
+        Ok(()) => {
+            state.services.audit.log(
+                audit::event::SERIES_DELETED,
+                Some(claims.user_id),
+                Some("series"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::SERIES_DELETED,
+                Some(claims.user_id),
+                Some("series"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 pub fn router() -> Router<crate::AppState> {

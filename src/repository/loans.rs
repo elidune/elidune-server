@@ -13,8 +13,8 @@ use crate::{
         biblio::{Biblio, BiblioShort, Collection, Edition, Isbn, Serie},
         item::{Item, ItemShort},
         loan::{
-            CreateLoan, Loan, LoanDetails, LoanMarcExportRow, LoanReturnOutcome, LoanSettings,
-            LoanSettingsRenewAt,
+            CreateLoan, Loan, LoanDetails, LoanCreateOutcome, LoanMarcExportRow, LoanReturnOutcome,
+            LoanSettings, LoanSettingsRenewAt,
         },
         user::{UserShort, UserShortRow},
     },
@@ -43,7 +43,7 @@ pub trait LoansRepository: Send + Sync {
         user_id: i64,
         archived: bool,
     ) -> AppResult<Vec<LoanMarcExportRow>>;
-    async fn loans_create(&self, loan: &CreateLoan) -> AppResult<(i64, DateTime<Utc>)>;
+    async fn loans_create(&self, loan: &CreateLoan) -> AppResult<LoanCreateOutcome>;
     async fn loans_return(&self, loan_id: i64) -> AppResult<LoanReturnOutcome>;
     async fn loans_renew(&self, loan_id: i64) -> AppResult<(DateTime<Utc>, i16)>;
     async fn loans_get_settings(&self) -> AppResult<Vec<LoanSettings>>;
@@ -121,7 +121,7 @@ impl LoansRepository for Repository {
     ) -> crate::error::AppResult<Vec<LoanMarcExportRow>> {
         Repository::loans_get_for_marc_export(self, user_id, archived).await
     }
-    async fn loans_create(&self, loan: &CreateLoan) -> crate::error::AppResult<(i64, chrono::DateTime<chrono::Utc>)> {
+    async fn loans_create(&self, loan: &CreateLoan) -> crate::error::AppResult<LoanCreateOutcome> {
         Repository::loans_create(self, loan).await
     }
     async fn loans_return(&self, loan_id: i64) -> crate::error::AppResult<LoanReturnOutcome> {
@@ -759,7 +759,7 @@ impl Repository {
     }
 
     /// Create a new loan
-    pub async fn loans_create(&self, loan: &CreateLoan) -> AppResult<(i64, DateTime<Utc>)> {
+    pub async fn loans_create(&self, loan: &CreateLoan) -> AppResult<LoanCreateOutcome> {
         let now = Utc::now();
 
         // Get item (physical copy) ID
@@ -901,16 +901,21 @@ impl Repository {
         .fetch_one(&mut *tx)
         .await?;
 
-        if loan.force {
+        let fulfilled_hold_id = if loan.force {
             self.holds_cancel_active_for_item_tx(&mut tx, item_id).await?;
+            None
         } else {
             self.holds_fulfill_active_for_user_item_tx(&mut tx, loan.user_id, item_id)
-                .await?;
-        }
+                .await?
+        };
 
         tx.commit().await?;
 
-        Ok((loan_id, expiry_at))
+        Ok(LoanCreateOutcome {
+            loan_id,
+            expiry_at,
+            fulfilled_hold_id,
+        })
     }
 
     /// Return a loan (moves it to loans_archives).
@@ -1066,21 +1071,49 @@ impl Repository {
                 .await
                 .ok()
                 .flatten();
-            if let Err(e) =
-                crate::hold_email::send_hold_ready(email_svc, contact, h, &details).await
-            {
-                tracing::warn!(
-                    target: "loans",
-                    error = %e,
-                    hold_id = h.id,
-                    "Failed to send hold ready email"
-                );
-            }
+            let hold_ready_email = match contact.as_ref().and_then(|c| c.email.as_deref().map(str::trim)) {
+                Some(to) if !to.is_empty() => {
+                    match crate::hold_email::send_hold_ready(
+                        email_svc,
+                        contact.clone(),
+                        h,
+                        &details,
+                    )
+                    .await {
+                        Ok(()) => Some(crate::models::loan::HoldReadyEmailOutcome {
+                            email: Some(to.to_string()),
+                            send_error: None,
+                        }),
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "loans",
+                                error = %e,
+                                hold_id = h.id,
+                                "Failed to send hold ready email"
+                            );
+                            Some(crate::models::loan::HoldReadyEmailOutcome {
+                                email: Some(to.to_string()),
+                                send_error: Some(e.to_string()),
+                            })
+                        }
+                    }
+                }
+                _ => Some(crate::models::loan::HoldReadyEmailOutcome {
+                    email: None,
+                    send_error: None,
+                }),
+            };
+            return Ok(LoanReturnOutcome {
+                details,
+                readied_hold,
+                hold_ready_email,
+            });
         }
 
         Ok(LoanReturnOutcome {
             details,
             readied_hold,
+            hold_ready_email: None,
         })
     }
 

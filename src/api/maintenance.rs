@@ -425,6 +425,7 @@ async fn pg_dump_plain_to_read_file(db_url: &str) -> AppResult<(tokio::fs::File,
             "--no-owner",
             "--no-acl",
             "--clean",
+            "--if-exists",
             "-f",
             path_str,
         ])
@@ -545,7 +546,7 @@ async fn run_psql_sql_file(db_url: &str, sql_path: &Path) -> AppResult<()> {
         std::process::Command::new("psql")
             .arg("--dbname")
             .arg(db_url)
-            .args(["-f"])
+            .args(["--variable", "ON_ERROR_STOP=1", "-f"])
             .arg(sql_path.as_os_str())
             .stdin(Stdio::null())
             .output()
@@ -564,6 +565,7 @@ async fn run_psql_sql_file(db_url: &str, sql_path: &Path) -> AppResult<()> {
     })?;
 
     if !output.status.success() {
+        
         let err = String::from_utf8_lossy(&output.stderr);
         let out = String::from_utf8_lossy(&output.stdout);
         return Err(AppError::Internal(format!(

@@ -157,6 +157,8 @@ pub mod event {
     pub const EMAIL_PASSWORD_RESET_SENT: &str = "email.password_reset_sent";
     pub const EMAIL_TEST_SENT: &str = "email.test_sent";
     pub const EMAIL_TEMPLATE_UPDATED: &str = "email_template.updated";
+    pub const EMAIL_HOLD_READY_SENT: &str = "email.hold_ready_sent";
+    pub const EMAIL_INVENTORY_LOAN_CLOSED: &str = "email.inventory_loan_closed";
 
     // Auth
     pub const AUTH_LOGIN_SUCCESS: &str = "auth.login_success";
@@ -174,23 +176,40 @@ pub mod event {
 
     // Import
     pub const IMPORT_MARC_BATCH: &str = "import.marc_batch";
+    pub const IMPORT_MARC_UPLOAD: &str = "import.marc_upload";
     pub const IMPORT_Z3950_RECORD: &str = "import.z3950_record";
 
     // Holds
     pub const HOLD_CREATED: &str = "hold.created";
     pub const HOLD_CANCELLED: &str = "hold.cancelled";
     pub const HOLD_FULFILLED: &str = "hold.fulfilled";
+    pub const HOLD_READY: &str = "hold.ready";
+    pub const HOLD_EXPIRED: &str = "hold.expired";
 
     // Fines
     pub const FINE_CREATED: &str = "fine.created";
     pub const FINE_PAID: &str = "fine.paid";
     pub const FINE_WAIVED: &str = "fine.waived";
+    pub const FINE_RULE_UPDATED: &str = "fine_rule.updated";
+
+    // Collections
+    pub const COLLECTION_CREATED: &str = "collection.created";
+    pub const COLLECTION_UPDATED: &str = "collection.updated";
+    pub const COLLECTION_DELETED: &str = "collection.deleted";
+
+    // Series
+    pub const SERIES_CREATED: &str = "series.created";
+    pub const SERIES_UPDATED: &str = "series.updated";
+    pub const SERIES_DELETED: &str = "series.deleted";
+
+    // Search
+    pub const ADMIN_REINDEX_SEARCH: &str = "admin.reindex_search";
+    pub const SEARCH_INDEX_SYNC_FAILED: &str = "search.index_sync_failed";
 
     // Inventory
     pub const INVENTORY_SESSION_CREATED: &str = "inventory.session_created";
     pub const INVENTORY_SESSION_CLOSED: &str = "inventory.session_closed";
     pub const INVENTORY_SESSION_CONSOLIDATED: &str = "inventory.session_consolidated";
-    pub const EMAIL_INVENTORY_LOAN_CLOSED: &str = "email.inventory_loan_closed";
 
     // Maintenance
     pub const MAINTENANCE_RUN: &str = "maintenance.run";
@@ -200,7 +219,10 @@ pub mod event {
     // System
     pub const SYSTEM_STARTUP: &str = "system.startup";
     pub const SYSTEM_REMINDERS_BATCH_COMPLETED: &str = "system.reminders_batch_completed";
+    pub const SYSTEM_HOLD_EXPIRY_BATCH_COMPLETED: &str = "system.hold_expiry_batch_completed";
     pub const SYSTEM_AUDIT_CLEANUP: &str = "system.audit_cleanup";
+    pub const SYSTEM_TASK_COMPLETED: &str = "system.task_completed";
+    pub const SYSTEM_TASK_FAILED: &str = "system.task_failed";
 }
 
 pub use crate::models::audit::{AuditLogEntry, AuditLogPage, AuditQueryParams};
@@ -364,4 +386,22 @@ pub fn extract_client_ip(headers: &HeaderMap) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::event;
+
+    #[test]
+    fn internal_audit_event_constants_have_expected_values() {
+        assert_eq!(event::EMAIL_HOLD_READY_SENT, "email.hold_ready_sent");
+        assert_eq!(event::HOLD_READY, "hold.ready");
+        assert_eq!(event::SYSTEM_HOLD_EXPIRY_BATCH_COMPLETED, "system.hold_expiry_batch_completed");
+        assert_eq!(event::IMPORT_MARC_UPLOAD, "import.marc_upload");
+        assert_eq!(event::ADMIN_REINDEX_SEARCH, "admin.reindex_search");
+        assert_eq!(event::SEARCH_INDEX_SYNC_FAILED, "search.index_sync_failed");
+        assert_eq!(event::SYSTEM_TASK_COMPLETED, "system.task_completed");
+        assert_eq!(event::COLLECTION_CREATED, "collection.created");
+        assert_eq!(event::FINE_RULE_UPDATED, "fine_rule.updated");
+    }
 }

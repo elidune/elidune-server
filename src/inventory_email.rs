@@ -7,11 +7,14 @@ use crate::{
     email_templates,
     models::Language,
     repository::inventory::InventoryLoanClosureRow,
+    services::audit::{self, AuditLogMeta, AuditService},
 };
 
 /// Send one email per reader listing all loans closed during consolidation.
 pub async fn send_loan_closure_notifications(
     email_svc: &EmailService,
+    audit: &AuditService,
+    session_id: i64,
     session_name: &str,
     rows: &[InventoryLoanClosureRow],
 ) -> (u64, Vec<(i64, String, String)>) {
@@ -68,11 +71,65 @@ pub async fn send_loan_closure_notifications(
                     .send_email_with_html(to, &subject, &body_plain, &body_html)
                     .await
                 {
-                    Ok(()) => sent += 1,
-                    Err(e) => errors.push((user_id, to.to_string(), e.to_string())),
+                    Ok(()) => {
+                        sent += 1;
+                        let loan_ids: Vec<i64> = user_rows.iter().map(|r| r.loan_id).collect();
+                        let item_ids: Vec<i64> = user_rows.iter().map(|r| r.item_id).collect();
+                        audit.log(
+                            audit::event::EMAIL_INVENTORY_LOAN_CLOSED,
+                            None,
+                            Some("inventory_session"),
+                            Some(session_id),
+                            None,
+                            Some(serde_json::json!({
+                                "session_name": session_name,
+                                "user_id": user_id,
+                                "email": to,
+                                "loan_count": user_rows.len(),
+                                "loan_ids": loan_ids,
+                                "item_ids": item_ids,
+                                "trigger": "inventory_consolidation",
+                            })),
+                            AuditLogMeta::success(),
+                        );
+                    }
+                    Err(e) => {
+                        errors.push((user_id, to.to_string(), e.to_string()));
+                        audit.log(
+                            audit::event::EMAIL_INVENTORY_LOAN_CLOSED,
+                            None,
+                            Some("user"),
+                            Some(user_id),
+                            None,
+                            Some(serde_json::json!({
+                                "session_id": session_id,
+                                "session_name": session_name,
+                                "email": to,
+                                "loan_count": user_rows.len(),
+                                "trigger": "inventory_consolidation",
+                            })),
+                            AuditLogMeta::failure_background("email_delivery_failed", e.to_string()),
+                        );
+                    }
                 }
             }
-            Err(e) => errors.push((user_id, to.to_string(), e.to_string())),
+            Err(e) => {
+                errors.push((user_id, to.to_string(), e.to_string()));
+                audit.log(
+                    audit::event::EMAIL_INVENTORY_LOAN_CLOSED,
+                    None,
+                    Some("user"),
+                    Some(user_id),
+                    None,
+                    Some(serde_json::json!({
+                        "session_id": session_id,
+                        "session_name": session_name,
+                        "email": to,
+                        "trigger": "inventory_consolidation",
+                    })),
+                    AuditLogMeta::failure_background("email_delivery_failed", e.to_string()),
+                );
+            }
         }
     }
 

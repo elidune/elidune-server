@@ -13,6 +13,8 @@ pub enum InventoryScanResult {
     Found,
     UnknownBarcode,
     FoundArchived,
+    /// Copy exists in catalog but does not match session scope (source and/or place).
+    FoundOutOfScope,
 }
 
 impl InventoryScanResult {
@@ -21,6 +23,7 @@ impl InventoryScanResult {
             Self::Found => "found",
             Self::UnknownBarcode => "unknown_barcode",
             Self::FoundArchived => "found_archived",
+            Self::FoundOutOfScope => "found_out_of_scope",
         }
     }
 }
@@ -30,6 +33,7 @@ impl From<String> for InventoryScanResult {
         match s.as_str() {
             "unknown_barcode" => Self::UnknownBarcode,
             "found_archived" => Self::FoundArchived,
+            "found_out_of_scope" => Self::FoundOutOfScope,
             _ => Self::Found,
         }
     }
@@ -144,6 +148,14 @@ pub struct InventorySession {
     pub notes: Option<String>,
     /// When set, report and missing list only include active items with this `items.place`.
     pub scope_place: Option<i16>,
+    /// When set, scope is limited to active items with this `items.source_id`.
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    pub scope_source_id: Option<i64>,
+    /// Resolved from `sources.name` when `scope_source_id` is set (not stored).
+    #[serde(default)]
+    #[sqlx(default)]
+    pub scope_source_name: Option<String>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub created_by: Option<i64>,
@@ -155,6 +167,7 @@ pub struct InventorySession {
 }
 
 /// Create inventory session request
+#[serde_as]
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateInventorySession {
@@ -162,6 +175,23 @@ pub struct CreateInventorySession {
     pub location_filter: Option<String>,
     pub notes: Option<String>,
     pub scope_place: Option<i16>,
+    /// When set, only active items with this `items.source_id` are in scope.
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    pub scope_source_id: Option<i64>,
+}
+
+/// Response for `POST /inventory/sessions` (includes optional warnings).
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateInventorySessionResponse {
+    pub session: InventorySession,
+    /// Non-blocking warnings (e.g. zero expected copies in scope).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// Active copy count matching session scope at creation time.
+    pub expected_in_scope: i64,
 }
 
 /// Individual scan within a session
@@ -208,17 +238,23 @@ pub struct InventoryMissingRow {
     pub call_number: Option<String>,
     pub place: Option<i16>,
     pub biblio_title: Option<String>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    pub source_id: Option<i64>,
+    pub source_name: Option<String>,
 }
 
 /// Discrepancy report for a session (enriched).
 ///
 /// Count formulas (session `S`):
-/// - `expectedInScope`: active items where `(S.scope_place IS NULL OR item.place = S.scope_place)`.
-/// - `missingCount`: in-scope active items with no scan row having `item_id = item.id`.
+/// - `expectedInScope`: active items where scope predicates on `items.source_id` and `items.place` match.
+/// - `missingCount`: in-scope active items with no scan row having `item_id = item.id` and `result = found`.
 /// - `missingScannable`: subset of `missingCount` with non-null barcode.
 /// - `missingWithoutBarcode`: in-scope active with `barcode IS NULL` (cannot be captured by barcode scan).
-/// - `distinctItemsScanned`: `COUNT(DISTINCT item_id)` over scans for S where `item_id IS NOT NULL`.
-/// - `duplicateScanCount`: scans with non-null `item_id` minus `distinctItemsScanned`.
+/// - `totalFound`: scans with `result = found` (in-scope confirmations only).
+/// - `totalFoundOutOfScope`: scans with `result = found_out_of_scope`.
+/// - `distinctItemsScanned`: `COUNT(DISTINCT item_id)` over scans for S where `result = found`.
+/// - `duplicateScanCount`: in-scope found scans minus `distinctItemsScanned`.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -230,6 +266,7 @@ pub struct InventoryReport {
     pub total_scanned: i64,
     pub total_found: i64,
     pub total_found_archived: i64,
+    pub total_found_out_of_scope: i64,
     pub total_unknown: i64,
     pub distinct_items_scanned: i64,
     pub duplicate_scan_count: i64,
@@ -336,6 +373,10 @@ pub struct InventoryConsolidationPreviewRow {
     pub barcode: Option<String>,
     pub call_number: Option<String>,
     pub place: Option<i16>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    pub source_id: Option<i64>,
+    pub source_name: Option<String>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub biblio_id: Option<i64>,

@@ -13,9 +13,10 @@ use utoipa::ToSchema;
 use crate::{
     error::AppResult,
     models::biblio::{BiblioShort, Collection, CollectionQuery, CreateCollection, UpdateCollection},
+    services::audit,
 };
 
-use super::AuthenticatedUser;
+use super::{AuthenticatedUser, ClientIp};
 
 /// Paginated list of collections.
 #[derive(Serialize, ToSchema)]
@@ -122,11 +123,36 @@ pub async fn get_collection_biblios(
 pub async fn create_collection(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Json(data): Json<CreateCollection>,
 ) -> AppResult<impl IntoResponse> {
     claims.require_write_items()?;
-    let collection = state.services.catalog.create_collection(&data).await?;
-    Ok((StatusCode::CREATED, Json(collection)))
+    match state.services.catalog.create_collection(&data).await {
+        Ok(collection) => {
+            state.services.audit.log(
+                audit::event::COLLECTION_CREATED,
+                Some(claims.user_id),
+                Some("collection"),
+                collection.id,
+                ip,
+                Some(&data),
+                audit::AuditLogMeta::success(),
+            );
+            Ok((StatusCode::CREATED, Json(collection)))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::COLLECTION_CREATED,
+                Some(claims.user_id),
+                Some("collection"),
+                None,
+                ip,
+                Some(&data),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Update a collection.
@@ -147,12 +173,37 @@ pub async fn create_collection(
 pub async fn update_collection(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
     Json(data): Json<UpdateCollection>,
 ) -> AppResult<Json<Collection>> {
     claims.require_write_items()?;
-    let collection = state.services.catalog.update_collection(id, &data).await?;
-    Ok(Json(collection))
+    match state.services.catalog.update_collection(id, &data).await {
+        Ok(collection) => {
+            state.services.audit.log(
+                audit::event::COLLECTION_UPDATED,
+                Some(claims.user_id),
+                Some("collection"),
+                Some(id),
+                ip,
+                Some((id, &data, &collection)),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(Json(collection))
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::COLLECTION_UPDATED,
+                Some(claims.user_id),
+                Some("collection"),
+                Some(id),
+                ip,
+                Some((id, &data)),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Delete a collection (only if no biblios are linked).
@@ -172,11 +223,36 @@ pub async fn update_collection(
 pub async fn delete_collection(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
+    ClientIp(ip): ClientIp,
     Path(id): Path<i64>,
 ) -> AppResult<StatusCode> {
     claims.require_write_items()?;
-    state.services.catalog.delete_collection(id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    match state.services.catalog.delete_collection(id).await {
+        Ok(()) => {
+            state.services.audit.log(
+                audit::event::COLLECTION_DELETED,
+                Some(claims.user_id),
+                Some("collection"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::success(),
+            );
+            Ok(StatusCode::NO_CONTENT)
+        }
+        Err(e) => {
+            state.services.audit.log(
+                audit::event::COLLECTION_DELETED,
+                Some(claims.user_id),
+                Some("collection"),
+                Some(id),
+                ip,
+                Some(serde_json::json!({ "id": id })),
+                audit::AuditLogMeta::from_app_error(&e),
+            );
+            Err(e)
+        }
+    }
 }
 
 pub fn router() -> Router<crate::AppState> {
