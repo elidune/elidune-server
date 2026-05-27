@@ -68,6 +68,7 @@ impl MeilisearchService {
                 "collection_name",
                 "barcodes",
                 "call_numbers",
+                "dewey",
                 "abstract_text",
                 "notes",
                 "table_of_contents",
@@ -93,6 +94,7 @@ impl MeilisearchService {
             "media_type",
             "lang",
             "audience_type",
+            "dewey",
             "is_archived",
             "has_active_items",
         ];

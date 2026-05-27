@@ -679,7 +679,7 @@ def migrate_items(src, dst):
         is_archive, archived_timestamp, is_valid, created_at, update_at
 
     Target columns (new schema):
-        id, media_type (camelCase), isbn, title, subject, audience_type (camelCase),
+        id, media_type (camelCase), isbn, title, subject, dewey, audience_type (camelCase),
         lang (camelCase), lang_orig (camelCase), publication_date,
         collection_id, collection_sequence_number,
         collection_volume_number, source_id, edition_id, page_extent, format,
@@ -707,7 +707,7 @@ def migrate_items(src, dst):
 
     while offset < total:
         src_cur.execute(f"""
-            SELECT id, media_type, identification, publication_date,
+            SELECT id, media_type, identification, dewey, publication_date,
                    lang, lang_orig, title1, title2, title3, title4,
                    author1_ids, author1_functions,
                    author2_ids, author2_functions,
@@ -722,7 +722,7 @@ def migrate_items(src, dst):
         """)
 
         for row in src_cur.fetchall():
-            (iid, media_type_raw, identification, publication_date,
+            (iid, media_type_raw, identification, dewey, publication_date,
              lang_raw, lang_orig_raw, title1, title2, title3, title4,
              author1_ids, author1_functions,
              author2_ids, author2_functions,
@@ -775,14 +775,14 @@ def migrate_items(src, dst):
 
             dst_cur.execute("""
                 INSERT INTO biblios (
-                    id, media_type, isbn, title, subject, audience_type,
+                    id, media_type, isbn, title, subject, dewey, audience_type,
                     lang, lang_orig, publication_date,
                     source_id, edition_id, page_extent, format,
                     table_of_contents, accompanying_material, abstract, notes,
                     keywords, is_valid,
                     created_at, updated_at, archived_at
                 ) VALUES (
-                    %s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s,
                     %s,%s,%s,
                     %s,%s,%s,%s,
                     %s,%s,%s,%s,
@@ -790,7 +790,7 @@ def migrate_items(src, dst):
                     %s,%s,%s
                 ) ON CONFLICT (id) DO NOTHING
             """, (
-                iid, media_type, isbn_norm, title_for_biblio, subject, audience_type,
+                iid, media_type, isbn_norm, title_for_biblio, subject, dewey, audience_type,
                 lang, lang_orig, publication_date,
                 source_id, edition_id, nb_pages, fmt,
                 content, addon, abstract_, notes,

@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
 
 use z3950_rs::marc_rs::record::{
-    Agent, BibliographicLevel, Description, Indexing, Isbn as MarcIsbn, Item as MarcItem,
-    LinkType, LinkedRecord, Local, Note, NoteType, Person, Publication, Record as MarcRecord,
-    RecordStatus, RecordType, Relator, Responsibility, SeriesStatement, Subject, SubjectType,
-    TargetAudience, Title,
+    Agent, BibliographicLevel, Classification, ClassificationScheme, Description, Indexing,
+    Isbn as MarcIsbn, Item as MarcItem, LinkType, LinkedRecord, Local, Note, NoteType, Person,
+    Publication, Record as MarcRecord, RecordStatus, RecordType, Relator, Responsibility,
+    SeriesStatement, Subject, SubjectType, TargetAudience, Title,
 };
 
 use crate::{marc::MarcImportPreview, models::{
@@ -34,6 +34,15 @@ impl From<z3950_rs::marc_rs::record::Relator> for Function {
 }
 
 // ── Helpers (local) ──────────────────────────────────────────────────────────
+
+fn dewey_from_classifications(classifications: &[Classification]) -> Option<String> {
+    classifications
+        .iter()
+        .find(|c| matches!(c.scheme, ClassificationScheme::Dewey))
+        .map(|c| c.number.trim())
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
+}
 
 /// Parse "vol. 5", "tome 12", "no. 3", or bare "5" → Some(5). Returns None if no digit found.
 fn extract_volume_number(s: &str) -> Option<i16> {
@@ -302,8 +311,9 @@ impl From<MarcRecord> for Biblio {
                 })
             .collect();
 
-        // --- Subject / keywords ---
+        // --- Subject / keywords / Dewey ---
         let subject = record.subject_main().map(|s| s.to_string());
+        let dewey = dewey_from_classifications(&record.indexing.classifications);
         let kws = record.keywords();
         let keywords = if kws.is_empty() { None } else { Some(kws.to_vec()) };
 
@@ -423,6 +433,7 @@ impl From<MarcRecord> for Biblio {
             isbn,
             title,
             subject,
+            dewey,
             audience_type,
             lang,
             lang_orig,
@@ -659,6 +670,15 @@ impl From<&Biblio> for MarcRecord {
                 }
             }
         }
+        if let Some(ref dewey) = item.dewey {
+            let number = dewey.trim();
+            if !number.is_empty() {
+                record.indexing.classifications.push(Classification {
+                    scheme: ClassificationScheme::Dewey,
+                    number: number.to_string(),
+                });
+            }
+        }
 
         // Languages
         if let Some(ref lang) = item.lang {
@@ -749,6 +769,7 @@ pub fn marc_record_for_loan_export(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use z3950_rs::marc_rs::record::{Classification, ClassificationScheme, Indexing};
 
     #[test]
     fn test_extract_volume_number() {
@@ -758,5 +779,64 @@ mod tests {
         assert_eq!(extract_volume_number("no. 3"), Some(3));
         assert_eq!(extract_volume_number("abc"), None);
         assert_eq!(extract_volume_number(""), None);
+    }
+
+    #[test]
+    fn test_dewey_from_marc_record() {
+        let mut record = MarcRecord::default();
+        record.indexing = Indexing {
+            classifications: vec![Classification {
+                scheme: ClassificationScheme::Dewey,
+                number: "843.914".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let biblio = Biblio::from(record);
+        assert_eq!(biblio.dewey.as_deref(), Some("843.914"));
+    }
+
+    #[test]
+    fn test_dewey_round_trip_to_marc_record() {
+        let biblio = Biblio {
+            id: None,
+            media_type: MediaType::PrintedText,
+            isbn: None,
+            title: None,
+            subject: None,
+            dewey: Some("843.914".to_string()),
+            audience_type: None,
+            lang: None,
+            lang_orig: None,
+            publication_date: None,
+            page_extent: None,
+            format: None,
+            table_of_contents: None,
+            accompanying_material: None,
+            abstract_: None,
+            notes: None,
+            keywords: None,
+            is_valid: None,
+            series_ids: vec![],
+            series_volume_numbers: vec![],
+            edition_id: None,
+            collection_ids: vec![],
+            collection_volume_numbers: vec![],
+            created_at: None,
+            updated_at: None,
+            archived_at: None,
+            authors: vec![],
+            series: vec![],
+            collections: vec![],
+            edition: None,
+            items: vec![],
+            marc_record: None,
+        };
+
+        let record = MarcRecord::from(&biblio);
+        assert_eq!(
+            dewey_from_classifications(&record.indexing.classifications).as_deref(),
+            Some("843.914")
+        );
     }
 }
