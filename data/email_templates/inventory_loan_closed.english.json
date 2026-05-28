@@ -1,0 +1,6 @@
+{
+  "name": "Inventory — loan closed",
+  "subject": "Loan closed — library inventory",
+  "body_plain": "Hello {{firstname}} {{lastname}},\n\nFollowing the inventory \"{{session_name}}\", the following loans were closed because the corresponding copies were not found in the library:\n\n{{items_list}}\n\nIf you still have these items, please contact the library.\n\nBest regards,\nThe library team",
+  "body_html": "<html><body style=\"font-family: Arial, sans-serif; color: #333;\">\n<p>Hello <strong>{{firstname}} {{lastname}}</strong>,</p>\n<p>Following the inventory <strong>{{session_name}}</strong>, the following loans were <strong>closed</strong> because the corresponding copies were not found in the library:</p>\n{{items_list_html}}\n<p>If you still have these items, please contact the library.</p>\n<p>Best regards,<br><em>The library team</em></p>\n</body></html>"
+}

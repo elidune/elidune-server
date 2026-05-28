@@ -1,0 +1,6 @@
+{
+  "name": "Inventaire — prêt clôturé",
+  "subject": "Prêt clôturé — inventaire de la bibliothèque",
+  "body_plain": "Bonjour {{firstname}} {{lastname}},\n\nSuite à l'inventaire « {{session_name}} », les prêts suivants ont été clôturés car les exemplaires correspondants n'ont pas été retrouvés en bibliothèque :\n\n{{items_list}}\n\nSi vous avez toujours ces documents, merci de contacter la bibliothèque.\n\nCordialement,\nL'équipe de la bibliothèque",
+  "body_html": "<html><body style=\"font-family: Arial, sans-serif; color: #333;\">\n<p>Bonjour <strong>{{firstname}} {{lastname}}</strong>,</p>\n<p>Suite à l'inventaire <strong>{{session_name}}</strong>, les prêts suivants ont été <strong>clôturés</strong> car les exemplaires correspondants n'ont pas été retrouvés en bibliothèque :</p>\n{{items_list_html}}\n<p>Si vous avez toujours ces documents, merci de contacter la bibliothèque.</p>\n<p>Cordialement,<br><em>L'équipe de la bibliothèque</em></p>\n</body></html>"
+}

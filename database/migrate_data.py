@@ -193,6 +193,7 @@ TABLES_DROP_ORDER = [
     'visitor_counts',
     'schedule_slots', 'schedule_closures', 'schedule_periods',
     'equipment', 'events',
+    # Seeded at server startup from data/email_templates/*.json (includes localized `name` column).
     'email_templates',
     'settings', 'library_info',
 ]

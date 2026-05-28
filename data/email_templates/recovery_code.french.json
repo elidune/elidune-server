@@ -1,5 +1,6 @@
 {
+  "name": "Code de récupération de compte",
   "subject": "Votre code de récupération Elidune",
-  "body_plain": "Votre code de récupération de compte est : {{code}}\n\nUtilisez ce code pour récupérer l'accès à votre compte si vous avez perdu l'accès à votre appareil 2FA.\n\nCe code ne peut être utilisé qu'une seule fois. Si vous n'avez pas demandé ce code, contactez le support immédiatement.",
-  "body_html": "<html><body><p>Votre code de récupération de compte est : <strong>{{code}}</strong></p><p>Utilisez ce code pour récupérer l'accès à votre compte si vous avez perdu l'accès à votre appareil 2FA.</p><p>Ce code ne peut être utilisé qu'une seule fois. Si vous n'avez pas demandé ce code, contactez le support immédiatement.</p></body></html>"
+  "body_plain": "Votre code de récupération de compte est : {{code}}\n\nUtilisez ce code pour retrouver l'accès à votre compte si vous avez perdu votre appareil 2FA.\n\nCe code ne peut être utilisé qu'une seule fois. Si vous n'avez pas demandé ce code, contactez immédiatement le support.",
+  "body_html": "<html><body><p>Votre code de récupération de compte est : <strong>{{code}}</strong></p><p>Utilisez ce code pour retrouver l'accès à votre compte si vous avez perdu votre appareil 2FA.</p><p>Ce code ne peut être utilisé qu'une seule fois. Si vous n'avez pas demandé ce code, contactez immédiatement le support.</p></body></html>"
 }

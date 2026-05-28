@@ -1,4 +1,5 @@
 {
+  "name": "Account recovery code",
   "subject": "Your Elidune Account Recovery Code",
   "body_plain": "Your account recovery code is: {{code}}\n\nUse this code to recover access to your account if you've lost access to your 2FA device.\n\nThis code can only be used once. If you didn't request this code, please contact support immediately.",
   "body_html": "<html><body><p>Your account recovery code is: <strong>{{code}}</strong></p><p>Use this code to recover access to your account if you've lost access to your 2FA device.</p><p>This code can only be used once. If you didn't request this code, please contact support immediately.</p></body></html>"

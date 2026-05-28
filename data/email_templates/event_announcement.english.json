@@ -1,4 +1,5 @@
 {
+  "name": "Event announcement",
   "subject": "Invitation: {{event_name}} — {{event_date}}",
   "body_plain": "Hello {{firstname}},\n\nWe are pleased to invite you to the following event:\n\n{{event_name}}\nDate: {{event_date}}{{start_time_line}}\nType: {{event_type}}\n{{description_line}}\nWe hope to see you there!\n\nThe Elidune Team",
   "body_html": "<html><body style=\"font-family:sans-serif;color:#333;max-width:600px;margin:0 auto\">\n  <h2 style=\"color:#2c5282\">{{event_name}}</h2>\n  <table style=\"border-collapse:collapse;width:100%;margin-bottom:16px\">\n    <tr><td style=\"padding:6px 12px;font-weight:bold;background:#f7f7f7;border:1px solid #e2e8f0\">Date</td><td style=\"padding:6px 12px;border:1px solid #e2e8f0\">{{event_date}}</td></tr>\n    {{start_time_row}}\n    <tr><td style=\"padding:6px 12px;font-weight:bold;background:#f7f7f7;border:1px solid #e2e8f0\">Type</td><td style=\"padding:6px 12px;border:1px solid #e2e8f0\">{{event_type}}</td></tr>\n  </table>\n  {{description_block}}\n  <p>We hope to see you there!</p>\n  <p style=\"color:#718096;font-size:0.9em\">The Elidune Team</p>\n</body></html>"

@@ -1,0 +1,6 @@
+{
+  "name": "Réservation prête au retrait",
+  "subject": "Votre mise en attente est prête au retrait",
+  "body_plain": "Bonjour {{firstname}} {{lastname}},\n\nLe document suivant que vous aviez mis en attente est disponible :\n\n{{title}}\n{{barcode_line}}\n\nMerci de le retirer avant le {{expires_at}}.\n\nCordialement,\nL'équipe de la bibliothèque",
+  "body_html": "<html><body style=\"font-family: Arial, sans-serif; color: #333;\">\n<p>Bonjour <strong>{{firstname}} {{lastname}}</strong>,</p>\n<p>Le document suivant en <strong>mise en attente</strong> est disponible au retrait :</p>\n<p><strong>{{title}}</strong><br>{{barcode_line_html}}</p>\n<p>Merci de le retirer avant le <strong>{{expires_at}}</strong>.</p>\n<p>Cordialement,<br><em>L'équipe de la bibliothèque</em></p>\n</body></html>"
+}

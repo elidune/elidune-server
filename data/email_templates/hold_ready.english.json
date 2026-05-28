@@ -1,0 +1,6 @@
+{
+  "name": "Hold ready for pickup",
+  "subject": "Your library hold is ready for pickup",
+  "body_plain": "Dear {{firstname}} {{lastname}},\n\nThe following item you placed on hold is now available:\n\n{{title}}\n{{barcode_line}}\n\nPlease pick it up by {{expires_at}}.\n\nKind regards,\nThe library team",
+  "body_html": "<html><body style=\"font-family: Arial, sans-serif; color: #333;\">\n<p>Dear <strong>{{firstname}} {{lastname}}</strong>,</p>\n<p>The following item on <strong>hold</strong> is now available for pickup:</p>\n<p><strong>{{title}}</strong><br>{{barcode_line_html}}</p>\n<p>Please pick it up by <strong>{{expires_at}}</strong>.</p>\n<p>Kind regards,<br><em>The library team</em></p>\n</body></html>"
+}

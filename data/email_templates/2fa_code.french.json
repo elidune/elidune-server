@@ -1,4 +1,5 @@
 {
+  "name": "Code d'authentification à deux facteurs",
   "subject": "Votre code 2FA Elidune",
   "body_plain": "Votre code d'authentification à deux facteurs : {{code}}\n\nCe code expire dans 10 minutes.\n\nSi vous n'avez pas demandé ce code, ignorez cet email.",
   "body_html": "<html><body><p>Votre code d'authentification à deux facteurs : <strong>{{code}}</strong></p><p>Ce code expire dans 10 minutes.</p><p>Si vous n'avez pas demandé ce code, ignorez cet email.</p></body></html>"

@@ -36,6 +36,15 @@ pub const KNOWN_TEMPLATE_IDS: &[&str] = &[
 /// Languages bootstrapped / accepted by the API.
 pub const SUPPORTED_LANGUAGES: &[&str] = &["english", "french"];
 
+#[derive(serde::Deserialize)]
+struct RawTemplate {
+    name: String,
+    subject: String,
+    body_plain: String,
+    #[serde(default)]
+    body_html: Option<String>,
+}
+
 /// Build the language fallback chain for resolution: requested → french → english.
 fn language_chain(lang: Option<Language>) -> Vec<&'static str> {
     match lang {
@@ -65,8 +74,8 @@ pub async fn load_template_async(
     }
 
     for lang_key in &candidates {
-        if let Some(tpl) = load_from_file(templates_dir, template_id, lang_key)? {
-            return Ok(tpl);
+        if let Some(raw) = load_from_file(templates_dir, template_id, lang_key)? {
+            return Ok(raw_to_email_template(&raw));
         }
     }
 
@@ -87,8 +96,8 @@ pub fn load_template(
     let candidates = language_chain(lang);
 
     for lang_key in &candidates {
-        if let Some(tpl) = load_from_file(templates_dir, template_id, lang_key)? {
-            return Ok(tpl);
+        if let Some(raw) = load_from_file(templates_dir, template_id, lang_key)? {
+            return Ok(raw_to_email_template(&raw));
         }
     }
 
@@ -117,7 +126,7 @@ fn load_from_file(
     templates_dir: &Path,
     template_id: &str,
     language: &str,
-) -> AppResult<Option<EmailTemplate>> {
+) -> AppResult<Option<RawTemplate>> {
     let path: PathBuf = templates_dir.join(format!("{}.{}.json", template_id, language));
     if !path.exists() {
         return Ok(None);
@@ -126,11 +135,15 @@ fn load_from_file(
         .map_err(|e| AppError::Internal(format!("Failed to read template {:?}: {}", path, e)))?;
     let raw: RawTemplate = serde_json::from_str(&content)
         .map_err(|e| AppError::Internal(format!("Invalid template {:?}: {}", path, e)))?;
-    Ok(Some(EmailTemplate {
-        subject: raw.subject,
-        body_plain: raw.body_plain,
-        body_html: raw.body_html,
-    }))
+    Ok(Some(raw))
+}
+
+fn raw_to_email_template(raw: &RawTemplate) -> EmailTemplate {
+    EmailTemplate {
+        subject: raw.subject.clone(),
+        body_plain: raw.body_plain.clone(),
+        body_html: raw.body_html.clone(),
+    }
 }
 
 /// Substitute {{var}} placeholders in subject and body.
@@ -166,21 +179,27 @@ pub async fn bootstrap_from_files(
 ) -> AppResult<usize> {
     let repo = Repository::new(pool.clone(), None, None);
 
-    if repo.email_templates_count().await? > 0 {
-        return Ok(0);
-    }
 
     let mut inserted = 0usize;
+
+    // insert templates that do not exist in the database
     for template_id in KNOWN_TEMPLATE_IDS {
         for language in SUPPORTED_LANGUAGES {
+
+            // check if the template already exists in the database, if so, skip it
+            if repo.email_templates_get(template_id, language).await?.is_some() {
+                continue;
+            }
+
             match load_from_file(templates_dir, template_id, language)? {
-                Some(tpl) => {
+                Some(raw) => {
                     repo.email_templates_upsert(
                         template_id,
                         language,
-                        &tpl.subject,
-                        &tpl.body_plain,
-                        tpl.body_html.as_deref(),
+                        raw.name.trim(),
+                        &raw.subject,
+                        &raw.body_plain,
+                        raw.body_html.as_deref(),
                     )
                     .await?;
                     inserted += 1;
@@ -210,12 +229,4 @@ pub async fn bootstrap_from_files(
     }
 
     Ok(inserted)
-}
-
-#[derive(serde::Deserialize)]
-struct RawTemplate {
-    subject: String,
-    body_plain: String,
-    #[serde(default)]
-    body_html: Option<String>,
 }

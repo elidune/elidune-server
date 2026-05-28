@@ -39,6 +39,8 @@ pub fn router() -> axum::Router<AppState> {
 pub struct EmailTemplate {
     pub template_id: String,
     pub language: String,
+    /// Human-readable label for the Settings UI (localized per language row).
+    pub name: String,
     pub subject: String,
     pub body_plain: String,
     pub body_html: Option<String>,
@@ -50,6 +52,7 @@ impl From<EmailTemplateRow> for EmailTemplate {
         Self {
             template_id: r.template_id,
             language: r.language,
+            name: r.name,
             subject: r.subject,
             body_plain: r.body_plain,
             body_html: r.body_html,
@@ -174,7 +177,7 @@ pub async fn update_email_template(
     let row = state
         .services
         .minimal_repository()
-        .email_templates_upsert(&template_id, &language, subject, &body.body_plain, body_html)
+        .email_templates_update_content(&template_id, &language, subject, &body.body_plain, body_html)
         .await?;
 
     state.services.audit.log(
