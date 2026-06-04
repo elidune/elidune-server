@@ -23,6 +23,31 @@ use crate::{
 };
 use async_trait::async_trait;
 
+/// Deduplicate N:M junction rows by entity id (series or collection).
+///
+/// Keeps first-occurrence order. When a duplicate carries a volume number and the first
+/// occurrence had none, the volume is merged in (common when MARC repeats the same 490).
+fn dedupe_junction_links(ids: &[i64], volumes: &[Option<i16>]) -> (Vec<i64>, Vec<Option<i16>>) {
+    let mut deduped_ids = Vec::with_capacity(ids.len());
+    let mut deduped_vols: Vec<Option<i16>> = Vec::with_capacity(ids.len());
+    let mut index_by_id: HashMap<i64, usize> = HashMap::new();
+
+    for (pos, &id) in ids.iter().enumerate() {
+        let vol = volumes.get(pos).copied().flatten();
+        if let Some(&idx) = index_by_id.get(&id) {
+            if deduped_vols[idx].is_none() {
+                deduped_vols[idx] = vol;
+            }
+        } else {
+            index_by_id.insert(id, deduped_ids.len());
+            deduped_ids.push(id);
+            deduped_vols.push(vol);
+        }
+    }
+
+    (deduped_ids, deduped_vols)
+}
+
 /// Contract for [`Repository`] biblio/item persistence. Implemented below; services may use
 /// `Arc<dyn BibliosRepository>` for substitution in tests.
 #[async_trait]
@@ -521,6 +546,7 @@ impl Repository {
             .execute(&mut **tx)
             .await?;
 
+        let (collection_ids, volumes) = dedupe_junction_links(collection_ids, volumes);
         for (pos, &cid) in collection_ids.iter().enumerate() {
             let vol = volumes.get(pos).copied().flatten();
             sqlx::query(
@@ -552,6 +578,7 @@ impl Repository {
             .execute(&mut **tx)
             .await?;
 
+        let (series_ids, volumes) = dedupe_junction_links(series_ids, volumes);
         for (pos, &sid) in series_ids.iter().enumerate() {
             let vol = volumes.get(pos).copied().flatten();
             sqlx::query(
@@ -2360,6 +2387,37 @@ impl Repository {
             AppError::Internal(format!("Invalid marc_record JSON for biblio {}: {}", biblio_id, e))
         })
         .map(Some)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dedupe_junction_links;
+
+    #[test]
+    fn dedupe_junction_links_removes_duplicate_series_ids() {
+        let ids = [10_i64, 20, 20, 30];
+        let vols = [None, None, None, Some(5)];
+        let (deduped_ids, deduped_vols) = dedupe_junction_links(&ids, &vols);
+        assert_eq!(deduped_ids, vec![10, 20, 30]);
+        assert_eq!(deduped_vols, vec![None, None, Some(5)]);
+    }
+
+    #[test]
+    fn dedupe_junction_links_merges_volume_from_later_duplicate() {
+        let ids = [10_i64, 20, 20];
+        let vols = [None, None, Some(3)];
+        let (deduped_ids, deduped_vols) = dedupe_junction_links(&ids, &vols);
+        assert_eq!(deduped_ids, vec![10, 20]);
+        assert_eq!(deduped_vols, vec![None, Some(3)]);
+    }
+
+    #[test]
+    fn dedupe_junction_links_keeps_first_volume_when_both_set() {
+        let ids = [10_i64, 10];
+        let vols = [Some(1), Some(2)];
+        let (_, deduped_vols) = dedupe_junction_links(&ids, &vols);
+        assert_eq!(deduped_vols, vec![Some(1)]);
     }
 }
 
