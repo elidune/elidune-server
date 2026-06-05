@@ -87,8 +87,6 @@ Special variants for UI confirmation flows:
 - **Forbidden:** `Mutex<()>` / `Arc<Mutex<()>>` — mutex must guard actual state.
 - Use `anyhow::Result` for app errors, `thiserror` for library errors. Propagate with `?`.
 - **Never `.unwrap()`/`.expect()` in production.** Workspace lints deny these. Use `?`, `ok_or_else`, `unwrap_or_default`, `unwrap_or_else(|e| e.into_inner())` for locks.
-- Use `time` crate (workspace dep) for date/time — no manual epoch math or magic constants like `86400`.
-- Prefer `chrono` only if already imported in the crate; default to `time` for new code.
 - Prefer crates over subprocesses (`std::process::Command`). Use subprocesses only when no mature crate exists.
 - Prefer guard clauses (early returns) over nested `if` blocks.
 - Prefer iterators/combinators over manual loops. Use `Cow<'_, str>` when allocation is conditional.
