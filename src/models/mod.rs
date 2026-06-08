@@ -1,6 +1,7 @@
 //! Data models for Elidune
 
 pub mod account_type;
+pub mod dto;
 pub mod audit;
 pub mod author;
 pub mod biblio;

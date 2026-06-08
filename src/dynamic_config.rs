@@ -4,20 +4,112 @@
 //! by admins via the API. Changes are persisted to the `settings` DB table and applied
 //! immediately in memory via this struct.
 
+use std::path::Path;
 use std::sync::{Arc, RwLock};
+
 use regex::Regex;
 use serde_json::Value;
+use sqlx::{Pool, Postgres};
 
 use crate::{
+    bootstrap::logging::{self, TracingGuard},
     config::{AppConfig, AuditConfig, EmailConfig, HoldsConfig, LoggingConfig, RemindersConfig},
     error::{AppError, AppResult},
+    repository::Repository,
 };
 
-/// Callback type for hot-reloading the tracing log level at runtime.
-/// Takes the new level string (e.g. "debug") and returns an error message on failure.
-type LogLevelReloadFn = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+/// Overridable config section keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Email,
+    Logging,
+    Reminders,
+    Audit,
+    Holds,
+}
 
-/// Inner mutable state of the dynamic configuration
+impl Section {
+    const ALL: [Self; 5] = [
+        Self::Email,
+        Self::Logging,
+        Self::Reminders,
+        Self::Audit,
+        Self::Holds,
+    ];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Email => "email",
+            Self::Logging => "logging",
+            Self::Reminders => "reminders",
+            Self::Audit => "audit",
+            Self::Holds => "holds",
+        }
+    }
+
+    fn try_from_key(key: &str) -> Option<Self> {
+        match key {
+            "email" => Some(Self::Email),
+            "logging" => Some(Self::Logging),
+            "reminders" => Some(Self::Reminders),
+            "audit" => Some(Self::Audit),
+            "holds" => Some(Self::Holds),
+            _ => None,
+        }
+    }
+
+    fn overridable(self, config: &AppConfig) -> bool {
+        match self {
+            Self::Email => config.email.overridable,
+            Self::Logging => config.logging.overridable,
+            Self::Reminders => config.reminders.overridable,
+            Self::Audit => config.audit.overridable,
+            Self::Holds => config.holds.overridable,
+        }
+    }
+
+    fn apply_override(self, config: &mut AppConfig, value: Value) -> bool {
+        match self {
+            Self::Email => serde_json::from_value(value)
+                .ok()
+                .map(|v| {
+                    config.email = v;
+                    true
+                })
+                .unwrap_or(false),
+            Self::Logging => serde_json::from_value(value)
+                .ok()
+                .map(|v| {
+                    config.logging = v;
+                    true
+                })
+                .unwrap_or(false),
+            Self::Reminders => serde_json::from_value(value)
+                .ok()
+                .map(|v| {
+                    config.reminders = v;
+                    true
+                })
+                .unwrap_or(false),
+            Self::Audit => serde_json::from_value(value)
+                .ok()
+                .map(|v| {
+                    config.audit = v;
+                    true
+                })
+                .unwrap_or(false),
+            Self::Holds => serde_json::from_value(value)
+                .ok()
+                .map(|v| {
+                    config.holds = v;
+                    true
+                })
+                .unwrap_or(false),
+        }
+    }
+}
+
+/// Inner mutable state of the dynamic configuration.
 #[derive(Clone)]
 struct DynamicConfigInner {
     pub email: EmailConfig,
@@ -27,17 +119,24 @@ struct DynamicConfigInner {
     pub holds: HoldsConfig,
 }
 
+/// Guard returned by [`DynamicConfig::apply`]; must be kept alive for the process lifetime.
+pub struct ApplyGuard {
+    _tracing: TracingGuard,
+}
+
 /// Thread-safe, runtime-mutable configuration.
 /// Wraps the overridable sections. The original file-based config is kept for reset operations.
 pub struct DynamicConfig {
     inner: RwLock<DynamicConfigInner>,
-    /// Original file config, used to reset sections to their defaults
+    /// Original file config, used to reset sections to their defaults.
     pub file_config: AppConfig,
-    /// Optional callback to hot-reload the tracing log level without restart
-    log_level_reload: RwLock<Option<LogLevelReloadFn>>,
+    /// DB-overridden section keys loaded at startup (for logging after `apply`).
+    db_overrides: Vec<String>,
+    logging_reload: RwLock<Option<Arc<logging::LoggingReload>>>,
 }
 
 impl DynamicConfig {
+    /// Build from an already-merged effective config (file + optional DB overrides).
     pub fn new(config: AppConfig) -> Arc<Self> {
         Arc::new(Self {
             inner: RwLock::new(DynamicConfigInner {
@@ -48,24 +147,110 @@ impl DynamicConfig {
                 holds: config.holds.clone(),
             }),
             file_config: config,
-            log_level_reload: RwLock::new(None),
+            db_overrides: Vec::new(),
+            logging_reload: RwLock::new(None),
         })
     }
 
-    /// Register a callback to hot-reload the tracing log level.
-    /// Called once at startup after the tracing subscriber is initialized.
-    pub fn set_log_level_reload(&self, f: LogLevelReloadFn) {
-        *self.log_level_reload.write().unwrap() = Some(f);
+    /// Load DB settings overrides and merge into the effective runtime config.
+    /// The original file config is preserved for [`reset_section`].
+    pub async fn load_with_db_overrides(file_config: AppConfig, pool: &Pool<Postgres>) -> Arc<Self> {
+        let original_file = file_config.clone();
+        let mut effective = file_config;
+        let mut db_overrides = Vec::new();
+
+        let db_settings = Repository::new(pool.clone(), None)
+            .settings_load_overrides()
+            .await
+            .unwrap_or_default();
+
+        for (key, value) in db_settings {
+            let Some(section) = Section::try_from_key(&key) else {
+                continue;
+            };
+            if !section.overridable(&effective) {
+                continue;
+            }
+            if section.apply_override(&mut effective, value) {
+                db_overrides.push(key);
+            }
+        }
+
+        Arc::new(Self {
+            inner: RwLock::new(DynamicConfigInner {
+                email: effective.email.clone(),
+                logging: effective.logging.clone(),
+                reminders: effective.reminders.clone(),
+                audit: effective.audit.clone(),
+                holds: effective.holds.clone(),
+            }),
+            file_config: original_file,
+            db_overrides,
+            logging_reload: RwLock::new(None),
+        })
     }
 
-    /// Invoke the log level reload callback with the given level string.
-    fn reload_log_level(&self, level: &str) {
-        if let Some(f) = self.log_level_reload.read().unwrap().as_ref() {
-            if let Err(e) = f(level) {
-                tracing::warn!("Failed to reload log level to '{}': {}", level, e);
-            } else {
-                tracing::info!("Log level changed to '{}'", level);
+    /// Apply all effective configuration side effects at startup.
+    ///
+    /// Call once after [`load_with_db_overrides`]: initialises tracing from the merged
+    /// logging config, registers the runtime reload hook, and seeds email templates.
+    pub async fn apply(self: &Arc<Self>, pool: &Pool<Postgres>) -> AppResult<ApplyGuard> {
+        let logging = self.read_logging();
+        validate_logging_config(&logging)?;
+
+        let tracing_guard = logging::init(&logging)
+            .map_err(|e| AppError::Internal(format!("tracing init: {e}")))?;
+
+        self.register_logging_reload(tracing_guard.reload());
+
+        if !self.db_overrides.is_empty() {
+            tracing::info!(
+                "DB config overrides applied: [{}]",
+                self.db_overrides.join(", ")
+            );
+        }
+
+        let templates_dir = self.read_email().templates_dir.clone();
+        if let Err(e) = crate::email_templates::bootstrap_from_files(
+            pool,
+            Path::new(&templates_dir),
+        )
+        .await
+        {
+            tracing::warn!("Email templates bootstrap failed: {e}");
+        }
+
+        tracing::info!(
+            "Effective config ready (logging.level={}, logging.output={})",
+            logging.level,
+            logging.output
+        );
+
+        Ok(ApplyGuard {
+            _tracing: tracing_guard,
+        })
+    }
+
+    fn register_logging_reload(&self, reload: Arc<logging::LoggingReload>) {
+        *self.logging_reload.write().unwrap() = Some(reload);
+    }
+
+    fn reload_logging(&self) {
+        let Some(reload) = self.logging_reload.read().unwrap().clone() else {
+            return;
+        };
+        let cfg = self.read_logging();
+        match reload.reload(&cfg) {
+            Ok(()) => {
+                // Log after the layer swap; JSON omits span context so this is safe mid-request.
+                tracing::info!(
+                    "Logging reloaded (level={}, format={}, output={})",
+                    cfg.level,
+                    cfg.format,
+                    cfg.output
+                );
             }
+            Err(e) => eprintln!("Failed to reload logging config: {e}"),
         }
     }
 
@@ -91,64 +276,55 @@ impl DynamicConfig {
 
     /// Returns true if the given section is marked overridable in the file config.
     pub fn is_overridable(&self, section: &str) -> bool {
-        match section {
-            "email" => self.file_config.email.overridable,
-            "logging" => self.file_config.logging.overridable,
-            "reminders" => self.file_config.reminders.overridable,
-            "audit" => self.file_config.audit.overridable,
-            "holds" => self.file_config.holds.overridable,
-            _ => false,
-        }
+        Section::try_from_key(section)
+            .map(|s| s.overridable(&self.file_config))
+            .unwrap_or(false)
     }
 
     /// Validate and apply a new config section from a JSON value.
-    /// The section must be marked `overridable = true` in the file config.
     pub fn update_section(&self, section: &str, value: Value) -> AppResult<()> {
-        if !self.is_overridable(section) {
+        let section = Section::try_from_key(section).ok_or_else(|| {
+            AppError::NotFound(format!("Unknown config section '{section}'"))
+        })?;
+
+        if !section.overridable(&self.file_config) {
             return Err(AppError::Authorization(format!(
                 "Config section '{}' is not overridable",
-                section
+                section.key()
             )));
         }
 
         match section {
-            "email" => {
+            Section::Email => {
                 let cfg: EmailConfig = serde_json::from_value(value)
-                    .map_err(|e| AppError::BadRequest(format!("Invalid email config: {}", e)))?;
+                    .map_err(|e| AppError::BadRequest(format!("Invalid email config: {e}")))?;
                 validate_email_config(&cfg)?;
                 self.inner.write().unwrap().email = cfg;
             }
-            "logging" => {
+            Section::Logging => {
                 let cfg: LoggingConfig = serde_json::from_value(value)
-                    .map_err(|e| AppError::BadRequest(format!("Invalid logging config: {}", e)))?;
+                    .map_err(|e| AppError::BadRequest(format!("Invalid logging config: {e}")))?;
                 validate_logging_config(&cfg)?;
-                let new_level = cfg.level.clone();
                 self.inner.write().unwrap().logging = cfg;
-                self.reload_log_level(&new_level);
+                self.reload_logging();
             }
-            "reminders" => {
+            Section::Reminders => {
                 let cfg: RemindersConfig = serde_json::from_value(value)
-                    .map_err(|e| AppError::BadRequest(format!("Invalid reminders config: {}", e)))?;
+                    .map_err(|e| AppError::BadRequest(format!("Invalid reminders config: {e}")))?;
                 validate_reminders_config(&cfg)?;
                 self.inner.write().unwrap().reminders = cfg;
             }
-            "audit" => {
+            Section::Audit => {
                 let cfg: AuditConfig = serde_json::from_value(value)
-                    .map_err(|e| AppError::BadRequest(format!("Invalid audit config: {}", e)))?;
+                    .map_err(|e| AppError::BadRequest(format!("Invalid audit config: {e}")))?;
                 validate_audit_config(&cfg)?;
                 self.inner.write().unwrap().audit = cfg;
             }
-            "holds" => {
+            Section::Holds => {
                 let cfg: HoldsConfig = serde_json::from_value(value)
-                    .map_err(|e| AppError::BadRequest(format!("Invalid holds config: {}", e)))?;
+                    .map_err(|e| AppError::BadRequest(format!("Invalid holds config: {e}")))?;
                 validate_holds_config(&cfg)?;
                 self.inner.write().unwrap().holds = cfg;
-            }
-            _ => {
-                return Err(AppError::NotFound(format!(
-                    "Unknown config section '{}'",
-                    section
-                )));
             }
         }
         Ok(())
@@ -156,29 +332,33 @@ impl DynamicConfig {
 
     /// Reset a section to the value from the original file config.
     pub fn reset_section(&self, section: &str) -> AppResult<()> {
-        if !self.is_overridable(section) {
+        let section = Section::try_from_key(section).ok_or_else(|| {
+            AppError::NotFound(format!("Unknown config section '{section}'"))
+        })?;
+
+        if !section.overridable(&self.file_config) {
             return Err(AppError::Authorization(format!(
                 "Config section '{}' is not overridable",
-                section
+                section.key()
             )));
         }
+
         match section {
-            "email" => self.inner.write().unwrap().email = self.file_config.email.clone(),
-            "logging" => {
-                let reset_level = self.file_config.logging.level.clone();
+            Section::Email => {
+                self.inner.write().unwrap().email = self.file_config.email.clone();
+            }
+            Section::Logging => {
                 self.inner.write().unwrap().logging = self.file_config.logging.clone();
-                self.reload_log_level(&reset_level);
+                self.reload_logging();
             }
-            "reminders" => self.inner.write().unwrap().reminders = self.file_config.reminders.clone(),
-            "audit" => self.inner.write().unwrap().audit = self.file_config.audit.clone(),
-            "holds" => {
-                self.inner.write().unwrap().holds = self.file_config.holds.clone()
+            Section::Reminders => {
+                self.inner.write().unwrap().reminders = self.file_config.reminders.clone();
             }
-            _ => {
-                return Err(AppError::NotFound(format!(
-                    "Unknown config section '{}'",
-                    section
-                )));
+            Section::Audit => {
+                self.inner.write().unwrap().audit = self.file_config.audit.clone();
+            }
+            Section::Holds => {
+                self.inner.write().unwrap().holds = self.file_config.holds.clone();
             }
         }
         Ok(())
@@ -186,26 +366,29 @@ impl DynamicConfig {
 
     /// Serialize the current effective value of a section to JSON.
     pub fn get_section_value(&self, section: &str) -> AppResult<Value> {
-        let val = match section {
-            "email" => serde_json::to_value(self.read_email()),
-            "logging" => serde_json::to_value(self.read_logging()),
-            "reminders" => serde_json::to_value(self.read_reminders()),
-            "audit" => serde_json::to_value(self.read_audit()),
-            "holds" => serde_json::to_value(self.read_holds()),
-            _ => return Err(AppError::NotFound(format!("Unknown config section '{}'", section))),
+        let val = match Section::try_from_key(section) {
+            Some(Section::Email) => serde_json::to_value(self.read_email()),
+            Some(Section::Logging) => serde_json::to_value(self.read_logging()),
+            Some(Section::Reminders) => serde_json::to_value(self.read_reminders()),
+            Some(Section::Audit) => serde_json::to_value(self.read_audit()),
+            Some(Section::Holds) => serde_json::to_value(self.read_holds()),
+            None => {
+                return Err(AppError::NotFound(format!(
+                    "Unknown config section '{section}'"
+                )));
+            }
         };
-        val.map_err(|e| AppError::Internal(format!("Failed to serialize config: {}", e)))
+        val.map_err(|e| AppError::Internal(format!("Failed to serialize config: {e}")))
     }
 
     /// List of all overridable section keys.
     pub fn overridable_sections(&self) -> Vec<&'static str> {
-        let mut sections = Vec::new();
-        if self.file_config.email.overridable { sections.push("email"); }
-        if self.file_config.logging.overridable { sections.push("logging"); }
-        if self.file_config.reminders.overridable { sections.push("reminders"); }
-        if self.file_config.audit.overridable { sections.push("audit"); }
-        if self.file_config.holds.overridable { sections.push("holds"); }
-        sections
+        Section::ALL
+            .iter()
+            .copied()
+            .filter(|s| s.overridable(&self.file_config))
+            .map(Section::key)
+            .collect()
     }
 }
 
@@ -213,13 +396,19 @@ impl DynamicConfig {
 
 fn validate_email_config(cfg: &EmailConfig) -> AppResult<()> {
     if cfg.smtp_host.trim().is_empty() {
-        return Err(AppError::BadRequest("email.smtp_host must not be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "email.smtp_host must not be empty".to_string(),
+        ));
     }
     if cfg.smtp_port == 0 {
-        return Err(AppError::BadRequest("email.smtp_port must be between 1 and 65535".to_string()));
+        return Err(AppError::BadRequest(
+            "email.smtp_port must be between 1 and 65535".to_string(),
+        ));
     }
     if cfg.smtp_from.trim().is_empty() {
-        return Err(AppError::BadRequest("email.smtp_from must not be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "email.smtp_from must not be empty".to_string(),
+        ));
     }
     if !cfg.smtp_from.contains('@') {
         return Err(AppError::BadRequest(
@@ -256,6 +445,15 @@ fn validate_logging_config(cfg: &LoggingConfig) -> AppResult<()> {
         return Err(AppError::BadRequest(
             "logging.file_path is required when output = \"file\"".to_string(),
         ));
+    }
+    if let Some(rotation) = cfg.file_rotation.as_deref() {
+        const ROTATIONS: &[&str] = &["monthly", "weekly", "daily", "never"];
+        if !ROTATIONS.contains(&rotation) {
+            return Err(AppError::BadRequest(format!(
+                "logging.file_rotation must be one of: {}",
+                ROTATIONS.join(", ")
+            )));
+        }
     }
     Ok(())
 }

@@ -26,7 +26,7 @@ level = "debug"
 format = "pretty"       # "pretty" | "plain" | "json"
 output = "stdout"       # "stdout" | "stderr" | "file" | "syslog"
 # file_path = "logs/elidune.log"   # required when output = "file"
-# file_rotation = "daily"          # "daily" | "hourly" | "never" (default: daily)
+# file_rotation = "daily"          # "monthly" | "weekly" | "daily" | "never" (default: daily)
 overridable = true
 
 [email]

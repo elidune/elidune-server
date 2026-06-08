@@ -1,6 +1,6 @@
 //! Overdue loan reminder service.
 //!
-//! Groups overdue loans by user, sends a single email per user listing all their overdue items,
+//! Groups overdue loans by user, enqueues one reminder email per user listing all their overdue items,
 //! updates reminder tracking columns, and records audit events.
 
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ use crate::{
 pub struct ReminderReport {
     /// Whether this was a dry run (no emails actually sent)
     pub dry_run: bool,
-    /// Number of emails successfully sent (or that would be sent in dry-run)
+    /// Number of emails successfully queued (or that would be queued in dry-run)
     pub emails_sent: u32,
     /// Total number of overdue loans covered
     pub loans_reminded: u32,
@@ -131,8 +131,8 @@ impl RemindersService {
         Ok(OverdueLoansPage { loans, total, page, per_page })
     }
 
-    /// Send overdue reminder emails.
-    /// If `dry_run` is true, builds the report but does NOT send emails or update the DB.
+    /// Enqueue overdue reminder emails for delivery by the outbox worker.
+    /// If `dry_run` is true, builds the report but does NOT enqueue emails or update the DB.
     #[tracing::instrument(skip(self), err)]
     pub async fn send_overdue_reminders(
         &self,
@@ -262,10 +262,10 @@ impl RemindersService {
 
                         match self
                             .email
-                            .send_email_with_html(&email_addr, &subject, &body_plain, &body_html)
+                            .enqueue(&email_addr, &subject, &body_plain, &body_html)
                             .await
                         {
-                            Ok(()) => {
+                            Ok(outbox_id) => {
                                 let loan_ids: Vec<i64> =
                                     loans.iter().map(|l| l.loan_id).collect();
                                 all_reminded_ids.extend(&loan_ids);
@@ -280,6 +280,7 @@ impl RemindersService {
                                         "email": email_addr,
                                         "loan_ids": loan_ids,
                                         "loan_count": loans.len(),
+                                        "outbox_id": outbox_id,
                                     })),
                                     audit::AuditLogMeta::success(),
                                 );
@@ -311,14 +312,6 @@ impl RemindersService {
                                     error_message: e.to_string(),
                                 });
                             }
-                        }
-
-                        // SMTP throttle
-                        if reminders_cfg.smtp_throttle_ms > 0 {
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                reminders_cfg.smtp_throttle_ms,
-                            ))
-                            .await;
                         }
                     }
                 }

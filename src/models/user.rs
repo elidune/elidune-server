@@ -320,6 +320,7 @@ pub struct UserRow {
     recovery_codes_used: Option<String>,
     receive_reminders: Option<bool>,
     must_change_password: Option<bool>,
+    token_version: i64,
 }
 
 impl From<UserRow> for User {
@@ -360,6 +361,7 @@ impl From<UserRow> for User {
             recovery_codes_used: row.recovery_codes_used,
             receive_reminders: row.receive_reminders.unwrap_or(true),
             must_change_password: row.must_change_password.unwrap_or(false),
+            token_version: row.token_version,
         }
     }
 }
@@ -426,6 +428,9 @@ pub struct User {
     pub receive_reminders: bool,
     /// When true, the user must change their password on next login
     pub must_change_password: bool,
+    /// Incremented on password, role, or 2FA changes to revoke existing JWTs.
+    #[serde(skip_serializing)]
+    pub token_version: i64,
 }
 
 
@@ -683,6 +688,9 @@ pub struct UserClaims {
     pub rights: UserRights,
     pub exp: i64,
     pub iat: i64,
+    /// Must match `users.token_version` at request time; bumped on credential/role/2FA changes.
+    #[serde(default)]
+    pub token_version: i64,
     /// When set to `SCOPE_CHANGE_PASSWORD`, the token may only be used to
     /// call `POST /auth/change-password`. All other endpoints reject it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -695,25 +703,47 @@ impl UserClaims {
         self.scope.as_deref() == Some(SCOPE_CHANGE_PASSWORD)
     }
 
-    /// Create a new JWT token
+    fn hs256_header() -> jsonwebtoken::Header {
+        use jsonwebtoken::{Algorithm, Header};
+        let mut header = Header::default();
+        header.alg = Algorithm::HS256;
+        header
+    }
+
+    fn hs256_validation() -> jsonwebtoken::Validation {
+        use jsonwebtoken::{Algorithm, Validation};
+        let mut validation = Validation::default();
+        validation.algorithms = vec![Algorithm::HS256];
+        validation
+    }
+
+    /// Create a new JWT token (HS256 only).
     pub fn create_token(&self, secret: &str) -> Result<String, jsonwebtoken::errors::Error> {
-        use jsonwebtoken::{encode, EncodingKey, Header};
+        use jsonwebtoken::{encode, EncodingKey};
         encode(
-            &Header::default(),
+            &Self::hs256_header(),
             self,
             &EncodingKey::from_secret(secret.as_bytes()),
         )
     }
 
-    /// Parse JWT token
+    /// Parse JWT token (HS256 only).
     pub fn from_token(token: &str, secret: &str) -> Result<Self, jsonwebtoken::errors::Error> {
-        use jsonwebtoken::{decode, DecodingKey, Validation};
+        use jsonwebtoken::{decode, DecodingKey};
         let token_data = decode::<Self>(
             token,
             &DecodingKey::from_secret(secret.as_bytes()),
-            &Validation::default(),
+            &Self::hs256_validation(),
         )?;
         Ok(token_data.claims)
+    }
+
+    /// Reject tokens issued before the user's current `token_version` (session revocation).
+    pub fn check_token_version(&self, current: i64) -> Result<(), AppError> {
+        if self.token_version != current {
+            return Err(AppError::Authentication("Token has been revoked".to_string()));
+        }
+        Ok(())
     }
 
     // Authorization checks

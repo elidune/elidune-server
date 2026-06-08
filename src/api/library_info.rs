@@ -24,51 +24,7 @@ pub fn router_staff() -> axum::Router<crate::AppState> {
         .route("/library-info", put(update_library_info))
 }
 
-/// Library global information
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct LibraryInfo {
-    /// Library name
-    pub name: Option<String>,
-    /// Street address (number + street)
-    pub addr_line1: Option<String>,
-    /// Address complement (building, apt, etc.)
-    pub addr_line2: Option<String>,
-    /// Postal code
-    pub addr_postcode: Option<String>,
-    /// City
-    pub addr_city: Option<String>,
-    /// Country
-    pub addr_country: Option<String>,
-    /// Phone numbers
-    pub phones: Vec<String>,
-    /// Contact email
-    pub email: Option<String>,
-    /// Last update timestamp
-    pub updated_at: Option<DateTime<Utc>>,
-}
-
-/// Update library information request
-#[derive(Debug, Clone, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateLibraryInfoRequest {
-    /// Library name
-    pub name: Option<String>,
-    /// Street address (number + street)
-    pub addr_line1: Option<String>,
-    /// Address complement (building, apt, etc.)
-    pub addr_line2: Option<String>,
-    /// Postal code
-    pub addr_postcode: Option<String>,
-    /// City
-    pub addr_city: Option<String>,
-    /// Country
-    pub addr_country: Option<String>,
-    /// Phone numbers (replaces existing list)
-    pub phones: Option<Vec<String>>,
-    /// Contact email
-    pub email: Option<String>,
-}
+pub use crate::models::dto::library_info::{LibraryInfo, UpdateLibraryInfoRequest};
 
 /// Get library information (public)
 #[utoipa::path(

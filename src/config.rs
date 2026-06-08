@@ -52,7 +52,7 @@ pub struct LoggingConfig {
     pub output: String,
     /// Path to log file; required when output = "file"
     pub file_path: Option<String>,
-    /// "daily" | "hourly" | "never" (default: "daily")
+    /// "monthly" | "weekly" | "daily" | "never" (default: "daily"; only used when output = "file")
     pub file_rotation: Option<String>,
     /// Whether this section can be overridden via the DB settings table
     #[serde(default)]
@@ -235,6 +235,83 @@ impl AppConfig {
 
         
         config.try_deserialize()
+    }
+
+    /// Reject insecure defaults before serving traffic.
+    pub fn validate_security(&self) -> Result<(), String> {
+        const DEFAULT_SECRET: &str = "change-this-secret-in-production";
+        const MIN_SECRET_LEN: usize = 32;
+
+        if self.users.jwt_secret == DEFAULT_SECRET {
+            return Err(
+                "users.jwt_secret is the sample default — set a strong secret via config or ELIDUNE_USERS__JWT_SECRET"
+                    .into(),
+            );
+        }
+        if self.users.jwt_secret.len() < MIN_SECRET_LEN {
+            return Err(format!(
+                "users.jwt_secret must be at least {MIN_SECRET_LEN} characters"
+            ));
+        }
+
+        let prod_mode = std::env::var("ELIDUNE_PRODUCTION").ok().as_deref() == Some("true");
+        if prod_mode {
+            let origins = self.server.cors_origins.as_deref().unwrap_or(&[]);
+            if origins.is_empty() {
+                return Err(
+                    "server.cors_origins must be set when ELIDUNE_PRODUCTION=true".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Minimal configuration for integration tests (uses `DATABASE_URL` / `REDIS_URL` env vars).
+    pub fn for_test() -> Self {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://elidune:elidune@localhost:5432/elidune_test".into());
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+
+        Self {
+            server: ServerConfig::default(),
+            database: DatabaseConfig {
+                url: database_url,
+                max_connections: 5,
+                min_connections: 1,
+            },
+            users: UsersConfig {
+                jwt_secret: "integration-test-jwt-secret-min-32-chars".into(),
+                jwt_expiration_hours: 24,
+                password_reset_url_template: None,
+            },
+            logging: LoggingConfig::default(),
+            email: EmailConfig {
+                smtp_host: String::new(),
+                smtp_port: 587,
+                smtp_username: None,
+                smtp_password: None,
+                smtp_from: "test@elidune.local".into(),
+                smtp_from_name: Some("Elidune Test".into()),
+                smtp_use_tls: false,
+                templates_dir: "data/email_templates".into(),
+                overridable: true,
+            },
+            redis: RedisConfig {
+                url: redis_url,
+                z3950_cache_ttl_seconds: 3600,
+            },
+            reminders: RemindersConfig {
+                enabled: false,
+                ..RemindersConfig::default()
+            },
+            audit: AuditConfig::default(),
+            holds: HoldsConfig {
+                overridable: true,
+                ..HoldsConfig::default()
+            },
+            meilisearch: None,
+        }
     }
 }
 

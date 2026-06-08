@@ -53,7 +53,7 @@ use std::sync::Arc;
 
 use sqlx::{Pool, Postgres};
 
-use crate::{dynamic_config::DynamicConfig, email::EmailService};
+use crate::dynamic_config::DynamicConfig;
 
 /// Main repository struct holding database connection pool.
 /// Methods are split across domain modules (items, loans, users, etc.) via separate `impl Repository` blocks.
@@ -62,23 +62,15 @@ pub struct Repository {
     pub(crate) pool: Pool<Postgres>,
     /// When set, loan return uses live `holds.ready_expiry_days` from dynamic config.
     pub(crate) dynamic_config: Option<Arc<DynamicConfig>>,
-    /// When set, patrons receive email when their hold becomes `ready` after a return.
-    pub(crate) email_service: Option<Arc<EmailService>>,
 }
 
 impl Repository {
     /// Create a new repository with the given database pool.
-    /// Pass `dynamic_config` from the main server so hold pickup windows follow TOML / DB settings.
-    /// Pass `email_service` from the main server so hold-ready notifications can be sent.
-    pub fn new(
-        pool: Pool<Postgres>,
-        dynamic_config: Option<Arc<DynamicConfig>>,
-        email_service: Option<Arc<EmailService>>,
-    ) -> Self {
+    /// Pass `dynamic_config` so hold pickup windows follow TOML / DB settings.
+    pub fn new(pool: Pool<Postgres>, dynamic_config: Option<Arc<DynamicConfig>>) -> Self {
         Self {
             pool,
             dynamic_config,
-            email_service,
         }
     }
 

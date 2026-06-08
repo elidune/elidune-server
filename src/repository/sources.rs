@@ -38,6 +38,8 @@ pub trait SourcesRepository: Send + Sync {
     async fn sources_archive_many(&self, ids: &[i64]) -> AppResult<()>;
     async fn sources_find_or_create_by_name(&self, name: &str) -> AppResult<i64>;
     async fn sources_get_default(&self) -> AppResult<Option<Source>>;
+    /// Atomically create a merged source, reassign items, and archive old sources.
+    async fn merge_sources_tx(&self, name: &str, old_source_ids: &[i64]) -> AppResult<Source>;
     /// Expose the underlying pool so service-level transactions can be initiated.
     fn pool(&self) -> &Pool<Postgres>;
 }
@@ -79,6 +81,9 @@ impl SourcesRepository for Repository {
     }
     async fn sources_get_default(&self) -> AppResult<Option<Source>> {
         Repository::sources_get_default(self).await
+    }
+    async fn merge_sources_tx(&self, name: &str, old_source_ids: &[i64]) -> AppResult<Source> {
+        Repository::merge_sources_tx(self, name, old_source_ids).await
     }
     fn pool(&self) -> &sqlx::Pool<sqlx::Postgres> {
         &self.pool
@@ -301,6 +306,38 @@ impl Repository {
         .fetch_optional(&self.pool)
         .await?;
         Ok(source)
+    }
+
+    /// Atomically merge sources: create target, reassign items, archive sources.
+    pub async fn merge_sources_tx(
+        &self,
+        name: &str,
+        old_source_ids: &[i64],
+    ) -> AppResult<Source> {
+        let mut tx = self.pool.begin().await?;
+        let now = Utc::now();
+
+        let new_source = sqlx::query_as::<_, Source>(
+            r#"INSERT INTO sources (name, "default") VALUES ($1, false) RETURNING *"#,
+        )
+        .bind(name)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        sqlx::query("UPDATE items SET source_id = $1 WHERE source_id = ANY($2)")
+            .bind(new_source.id)
+            .bind(old_source_ids)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("UPDATE sources SET is_archive = 1, archived_at = $1 WHERE id = ANY($2)")
+            .bind(now)
+            .bind(old_source_ids)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+        Ok(new_source)
     }
 }
 

@@ -423,7 +423,8 @@ pub async fn import_marc_batch(
                 }
             }
         },
-    );
+    )
+    .await;
 
     Ok((StatusCode::ACCEPTED, Json(TaskAcceptedResponse { task_id })))
 }

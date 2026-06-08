@@ -36,6 +36,7 @@ pub trait UsersRepository: Send + Sync {
     async fn users_get_by_id(&self, id: i64) -> AppResult<User>;
     async fn users_get_by_login(&self, login: &str) -> AppResult<Option<User>>;
     async fn users_get_by_email(&self, email: &str) -> AppResult<Option<User>>;
+    async fn users_get_token_version(&self, id: i64) -> AppResult<i64>;
     async fn users_update_password(&self, id: i64, password_hash: &str) -> AppResult<()>;
     async fn users_email_exists(&self, email: &str, exclude_id: Option<i64>) -> AppResult<bool>;
     async fn users_login_exists(&self, login: &str, exclude_id: Option<i64>) -> AppResult<bool>;
@@ -81,6 +82,10 @@ pub trait UsersRepository: Send + Sync {
     ) -> AppResult<Vec<UserEmailTarget>>;
     async fn users_count(&self) -> AppResult<i64>;
     async fn users_set_must_change_password(&self, id: i64, value: bool) -> AppResult<()>;
+    async fn users_hold_ready_contact(
+        &self,
+        user_id: i64,
+    ) -> AppResult<Option<HoldReadyUserContact>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +102,9 @@ impl UsersRepository for Repository {
     }
     async fn users_get_by_email(&self, email: &str) -> crate::error::AppResult<Option<User>> {
         Repository::users_get_by_email(self, email).await
+    }
+    async fn users_get_token_version(&self, id: i64) -> crate::error::AppResult<i64> {
+        Repository::users_get_token_version(self, id).await
     }
     async fn users_update_password(&self, id: i64, password_hash: &str) -> crate::error::AppResult<()> {
         Repository::users_update_password(self, id, password_hash).await
@@ -156,6 +164,12 @@ impl UsersRepository for Repository {
     async fn users_set_must_change_password(&self, id: i64, value: bool) -> crate::error::AppResult<()> {
         Repository::users_set_must_change_password(self, id, value).await
     }
+    async fn users_hold_ready_contact(
+        &self,
+        user_id: i64,
+    ) -> crate::error::AppResult<Option<HoldReadyUserContact>> {
+        Repository::users_hold_ready_contact(self, user_id).await
+    }
 }
 
 
@@ -210,12 +224,25 @@ impl Repository {
         Ok(user_row.map(|r| r.into()))
     }
 
+    /// Current JWT revocation counter for a user.
+    #[tracing::instrument(skip(self), err)]
+    pub async fn users_get_token_version(&self, id: i64) -> AppResult<i64> {
+        let version: Option<i64> = sqlx::query_scalar(
+            "SELECT token_version FROM users WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        version.ok_or_else(|| AppError::NotFound(format!("User with id {} not found", id)))
+    }
+
     /// Update user password directly (used for password reset flow).
-    /// Also clears the must_change_password flag.
+    /// Also clears the must_change_password flag and bumps `token_version`.
     #[tracing::instrument(skip(self), err)]
     pub async fn users_update_password(&self, id: i64, password_hash: &str) -> AppResult<()> {
         let result = sqlx::query(
-            "UPDATE users SET password = $1, must_change_password = FALSE, update_at = NOW() WHERE id = $2"
+            "UPDATE users SET password = $1, must_change_password = FALSE, token_version = token_version + 1, update_at = NOW() WHERE id = $2"
         )
         .bind(password_hash)
         .bind(id)
@@ -511,8 +538,12 @@ impl Repository {
         add_field!(user.staff_start_date, "staff_start_date");
         add_field!(user.staff_end_date, "staff_end_date");
         
+        let bumps_token_version = password.is_some() || user.account_type.is_some();
         if password.is_some() {
             sets.push(format!("password = ${}", param_idx));
+        }
+        if bumps_token_version {
+            sets.push("token_version = token_version + 1".to_string());
         }
 
         let query = format!(
@@ -692,6 +723,7 @@ impl Repository {
             add_field!(password, "password");
             // Changing password clears the forced-change flag
             sets.push(format!("must_change_password = ${}", param_idx));
+            sets.push("token_version = token_version + 1".to_string());
         }
 
         let query = format!(
@@ -739,7 +771,9 @@ impl Repository {
     #[tracing::instrument(skip(self), err)]
     pub async fn users_update_account_type(&self, id: i64, account_type: &AccountTypeSlug) -> AppResult<User> {
 
-        sqlx::query("UPDATE users SET account_type = $1, update_at = NOW() WHERE id = $2")
+        sqlx::query(
+            "UPDATE users SET account_type = $1, token_version = token_version + 1, update_at = NOW() WHERE id = $2",
+        )
             .bind(account_type.as_str())
             .bind(id)
             .execute(&self.pool)
@@ -765,6 +799,7 @@ impl Repository {
                 two_factor_method = $2,
                 totp_secret = $3,
                 recovery_codes = $4,
+                token_version = token_version + 1,
                 update_at = NOW()
             WHERE id = $5
             "#,

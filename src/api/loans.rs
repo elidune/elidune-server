@@ -32,27 +32,7 @@ use crate::{
 
 use super::{biblios::PaginatedResponse, AuthenticatedUser, ClientIp};
 
-/// Loan rules (`loans_settings`): per-document-type overrides plus one global default row (`mediaType` JSON `null`).
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct LoanSettings {
-    /// `null` = global default row (`media_type` IS NULL in DB). On that row, `maxLoans` is the cap **across all media** for a patron.
-    pub media_type: Option<MediaType>,
-    /// Per-media cap when `mediaType` is set; **total** active loans cap when `mediaType` is null (default row).
-    pub max_loans: i16,
-    pub max_renewals: i16,
-    pub duration_days: i16,
-    /// How the new due date is computed on renew: from renewal time (`now`) or current due date (`at_due_date`).
-    #[serde(default)]
-    pub renew_at: LoanSettingsRenewAt,
-}
-
-/// Partial update of global loan rules.
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateLoanSettingsRequest {
-    pub loan_settings: Option<Vec<LoanSettings>>,
-}
+pub use crate::models::dto::loans::{LoanSettingsDto as LoanSettings, UpdateLoanSettingsRequest};
 
 
 /// Build the loans routes for this domain.

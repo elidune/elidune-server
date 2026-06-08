@@ -353,7 +353,8 @@ pub async fn batch_scan(
         );
         let result = serde_json::to_value(&scans).unwrap_or_default();
         handle.complete(result).await;
-    });
+    })
+    .await;
 
     Ok((StatusCode::ACCEPTED, Json(TaskAcceptedResponse { task_id })))
 }
@@ -588,7 +589,8 @@ pub async fn consolidate_session(
                 handle.fail(e.to_string()).await;
             }
         }
-    });
+    })
+    .await;
 
     Ok((StatusCode::ACCEPTED, Json(TaskAcceptedResponse { task_id })))
 }

@@ -98,8 +98,15 @@ impl MarcService {
         Self { catalog, redis }
     }
 
+    const BATCH_TTL_SECS: usize = 60 * 60 * 24;
+    const BATCHES_SET_KEY: &'static str = "marc:batches";
+
     fn redis_key(batch_id: i64, record_id: usize) -> String {
         format!("marc:record:{}:{}", batch_id, record_id)
+    }
+
+    fn batch_index_key(batch_id: i64) -> String {
+        format!("marc:batch:{}:index", batch_id)
     }
 
     fn item_key_from_record_key(record_key: &str) -> String {
@@ -143,14 +150,40 @@ impl MarcService {
                 let json_str: String = serde_json::to_string(&record)
                 .map_err(|e| AppError::Internal(format!("Failed to serialize MARC record: {}", e)))?;
 
+                let record_key = Self::redis_key(batch_id, index);
+
                 // Store record
                 redis::cmd("SETEX")
-                .arg(&Self::redis_key(batch_id, index))
-                .arg(60 * 60 * 24) // 24 hours
+                .arg(&record_key)
+                .arg(Self::BATCH_TTL_SECS)
                 .arg(&json_str)
                 .query_async::<_, ()>(&mut conn)
                 .await
                 .map_err(|e| AppError::Internal(format!("Failed to store MARC record in Redis: {}", e)))?;
+
+                let index_key = Self::batch_index_key(batch_id);
+                redis::cmd("SADD")
+                    .arg(&index_key)
+                    .arg(&record_key)
+                    .query_async::<_, ()>(&mut conn)
+                    .await
+                    .map_err(|e| AppError::Internal(format!("Failed to index MARC record in Redis: {}", e)))?;
+
+                if index == 0 {
+                    redis::cmd("SADD")
+                        .arg(Self::BATCHES_SET_KEY)
+                        .arg(batch_id.to_string())
+                        .query_async::<_, ()>(&mut conn)
+                        .await
+                        .map_err(|e| AppError::Internal(format!("Failed to register MARC batch in Redis: {}", e)))?;
+                }
+
+                redis::cmd("EXPIRE")
+                    .arg(&index_key)
+                    .arg(Self::BATCH_TTL_SECS)
+                    .query_async::<_, ()>(&mut conn)
+                    .await
+                    .map_err(|e| AppError::Internal(format!("Failed to set MARC batch index TTL in Redis: {}", e)))?;
 
                 let mut preview = MarcImportPreview::from(record);
                 preview.biblio.id = index as i64;
@@ -168,41 +201,44 @@ impl MarcService {
 
     /// List all MARC batches currently cached in Redis.
     ///
-    /// Scans keys matching `marc:record:*`, groups them by `batch_id`, and
-    /// fetches the TTL of one representative key per batch.
+    /// Reads batch IDs from `marc:batches` and record counts from each
+    /// `marc:batch:{id}:index` set.
     #[tracing::instrument(skip(self), err)]
     pub async fn list_marc_batches(&self) -> AppResult<Vec<MarcBatchInfo>> {
         let mut conn = self.redis.get_connection().await?;
 
-        let all_keys: Vec<String> = redis::cmd("KEYS")
-            .arg("marc:record:*")
-            .query_async::<_, Vec<String>>(&mut conn)
+        let batch_ids: Vec<String> = conn
+            .smembers(Self::BATCHES_SET_KEY)
             .await
-            .map_err(|e| AppError::Internal(format!("Failed to list MARC batch keys in Redis: {}", e)))?;
+            .map_err(|e| AppError::Internal(format!("Failed to list MARC batches in Redis: {}", e)))?;
 
-        // Group keys by batch_id. Key format: marc:record:<batch_id>:<idx>
-        let mut batch_map: std::collections::HashMap<i64, (usize, String)> = std::collections::HashMap::new();
-        for key in &all_keys {
-            let parts: Vec<&str> = key.splitn(4, ':').collect();
-            if parts.len() != 4 {
-                continue;
-            }
-            let Ok(batch_id) = parts[2].parse::<i64>() else {
+        let mut batches = Vec::with_capacity(batch_ids.len());
+        for batch_id_str in batch_ids {
+            let Ok(batch_id) = batch_id_str.parse::<i64>() else {
                 continue;
             };
-            let entry = batch_map.entry(batch_id).or_insert((0, key.clone()));
-            entry.0 += 1;
-        }
 
-        let mut batches = Vec::with_capacity(batch_map.len());
-        for (batch_id, (record_count, sample_key)) in batch_map {
+            let index_key = Self::batch_index_key(batch_id);
+            let record_keys: Vec<String> = conn
+                .smembers(&index_key)
+                .await
+                .map_err(|e| AppError::Internal(format!("Failed to list MARC batch index in Redis: {}", e)))?;
+
+            if record_keys.is_empty() {
+                continue;
+            }
+
             let ttl_seconds: i64 = redis::cmd("TTL")
-                .arg(&sample_key)
+                .arg(&index_key)
                 .query_async::<_, i64>(&mut conn)
                 .await
                 .unwrap_or(-2);
 
-            batches.push(MarcBatchInfo { batch_id, record_count, ttl_seconds });
+            batches.push(MarcBatchInfo {
+                batch_id,
+                record_count: record_keys.len(),
+                ttl_seconds,
+            });
         }
 
         // Sort newest first (higher Snowflake ID = newer).
@@ -219,10 +255,8 @@ impl MarcService {
     pub async fn load_marc_batch(&self, batch_id: i64) -> AppResult<EnqueueResult> {
         let mut conn = self.redis.get_connection().await?;
 
-        let pattern = format!("marc:record:{}:*", batch_id);
-        let mut keys: Vec<String> = redis::cmd("KEYS")
-            .arg(&pattern)
-            .query_async::<_, Vec<String>>(&mut conn)
+        let mut keys: Vec<String> = conn
+            .smembers(Self::batch_index_key(batch_id))
             .await
             .map_err(|e| AppError::Internal(format!("Failed to list MARC batch keys in Redis: {}", e)))?;
 
@@ -289,10 +323,7 @@ impl MarcService {
         let keys: Vec<String> = if let Some(rid) = record_id {
             vec![Self::redis_key(batch_id, rid)]
         } else {
-            let pattern = format!("marc:record:{}:*", batch_id);
-            redis::cmd("KEYS")
-                .arg(&pattern)
-                .query_async::<_, Vec<String>>(&mut conn)
+            conn.smembers(Self::batch_index_key(batch_id))
                 .await
                 .map_err(|e| {
                     AppError::Internal(format!("Failed to list MARC batch keys in Redis: {}", e))

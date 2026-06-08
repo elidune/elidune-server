@@ -11,13 +11,17 @@ use chrono::{Local, NaiveTime, Timelike};
 use tokio::sync::Notify;
 use tokio::time::Duration;
 
+use sqlx::{Pool, Postgres};
+
 use crate::{
     dynamic_config::DynamicConfig,
+    email::EmailService,
     services::{
         audit,
         audit::AuditService,
-        reminders::RemindersService,
+        email_outbox,
         holds::HoldsService,
+        reminders::RemindersService,
     },
 };
 
@@ -28,6 +32,8 @@ pub fn spawn(
     reminders_service: RemindersService,
     audit_service: AuditService,
     holds_service: HoldsService,
+    email_service: EmailService,
+    pool: Pool<Postgres>,
 ) -> Arc<Notify> {
     let notify = Arc::new(Notify::new());
 
@@ -193,6 +199,32 @@ pub fn spawn(
                         Some(serde_json::json!({ "retention_days": cfg.retention_days })),
                         audit::AuditLogMeta::from_app_error(&e),
                     );
+                }
+            }
+        }
+    });
+
+    // Email outbox drain (every 30 seconds)
+    let email_out = email_service;
+    let pool_out = pool;
+    tokio::spawn(async move {
+        tracing::info!("Email outbox scheduler started");
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+
+            match email_outbox::process_outbox_batch(&email_out, &pool_out, None).await {
+                Ok(report) if report.processed > 0 => {
+                    tracing::info!(
+                        "Email outbox batch: {} sent, {} failed, {} deferred (of {} processed)",
+                        report.sent,
+                        report.failed,
+                        report.deferred,
+                        report.processed
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!("Email outbox batch failed: {}", e);
                 }
             }
         }

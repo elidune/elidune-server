@@ -286,8 +286,12 @@ impl EventsService {
                 }
             };
 
-            match self.email.send_email_with_html(&email_addr, &subject, &body_plain, &body_html).await {
-                Ok(()) => {
+            match self
+                .email
+                .enqueue(&email_addr, &subject, &body_plain, &body_html)
+                .await
+            {
+                Ok(outbox_id) => {
                     emails_sent += 1;
                     self.audit.log(
                         audit::event::EVENT_ANNOUNCEMENT_SENT,
@@ -299,6 +303,7 @@ impl EventsService {
                             "user_id": user.id,
                             "email": email_addr,
                             "event_name": event.name,
+                            "outbox_id": outbox_id,
                         })),
                         audit::AuditLogMeta::success(),
                     );

@@ -1,7 +1,7 @@
 //! Library information service
 
 use crate::{
-    api::library_info::{LibraryInfo, UpdateLibraryInfoRequest},
+    models::dto::library_info::{LibraryInfo, UpdateLibraryInfoRequest},
     error::AppResult,
     repository::Repository,
 };

@@ -27,6 +27,56 @@ pub struct StatsFilter {
 }
 
 impl Repository {
+    /// Build a parameterized WHERE clause for loan stats queries.
+    fn stats_loan_where_clause(
+        date_col: &str,
+        user_col: &str,
+        media_type: Option<&MediaType>,
+        public_type: Option<&str>,
+        user_id: Option<i64>,
+        extra: &[&str],
+    ) -> String {
+        let mut clauses = vec![
+            format!("{date_col} >= $1"),
+            format!("{date_col} <= $2"),
+        ];
+        clauses.extend(extra.iter().map(|s| (*s).to_string()));
+        let mut idx = 3;
+        if media_type.is_some() {
+            clauses.push(format!("i.media_type = ${idx}"));
+            idx += 1;
+        }
+        if public_type.is_some() {
+            clauses.push(format!("i.audience_type = ${idx}"));
+            idx += 1;
+        }
+        if user_id.is_some() {
+            clauses.push(format!("{user_col} = ${idx}"));
+        }
+        clauses.join(" AND ")
+    }
+
+    fn bind_loan_stats_params<'q>(
+        query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        media_type: Option<&MediaType>,
+        public_type: Option<&'q str>,
+        user_id: Option<i64>,
+    ) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+        let mut q = query.bind(start).bind(end);
+        if let Some(mt) = media_type {
+            q = q.bind(mt.as_db_str());
+        }
+        if let Some(pt) = public_type {
+            q = q.bind(pt);
+        }
+        if let Some(uid) = user_id {
+            q = q.bind(uid);
+        }
+        q
+    }
+
     /// Build WHERE clause for item-based queries.
     /// Items (physical copies) are joined with biblios via `s` (items) and `i` (biblios) aliases.
     fn stats_item_where_clause(filter: &Option<StatsFilter>) -> (String, Vec<String>) {
@@ -420,25 +470,14 @@ impl Repository {
             Interval::Year => "YYYY",
         };
 
-        // Build WHERE clause
-        let mut where_clauses = vec![
-            format!("l.date >= '{}'", start.format("%Y-%m-%d %H:%M:%S")),
-            format!("l.date <= '{}'", end.format("%Y-%m-%d %H:%M:%S")),
-        ];
-
-        if let Some(mt) = media_type {
-            where_clauses.push(format!("i.media_type = '{}'", mt));
-        }
-
-        if let Some(pt) = public_type {
-            where_clauses.push(format!("i.audience_type = '{}'", pt));
-        }
-
-        if let Some(uid) = user_id {
-            where_clauses.push(format!("l.user_id = {}", uid));
-        }
-
-        let where_clause = where_clauses.join(" AND ");
+        let where_clause = Self::stats_loan_where_clause(
+            "l.date",
+            "l.user_id",
+            media_type,
+            public_type,
+            user_id,
+            &[],
+        );
 
         // Query for loans (from active loans table)
         let loans_query = format!(
@@ -456,7 +495,14 @@ impl Repository {
             date_trunc, date_format, where_clause, date_trunc
         );
 
-        let loans_data: Vec<(String, i64)> = sqlx::query(&loans_query)
+        let loans_data: Vec<(String, i64)> = Self::bind_loan_stats_params(
+            sqlx::query(&loans_query),
+            start,
+            end,
+            media_type,
+            public_type,
+            user_id,
+        )
             .fetch_all(pool)
             .await?
             .into_iter()
@@ -468,24 +514,14 @@ impl Repository {
             .collect();
 
         // Query for loans from archives table (historical loans)
-        let mut archived_loans_where = vec![
-            format!("la.date >= '{}'", start.format("%Y-%m-%d %H:%M:%S")),
-            format!("la.date <= '{}'", end.format("%Y-%m-%d %H:%M:%S")),
-        ];
-
-        if let Some(mt) = media_type {
-            archived_loans_where.push(format!("i.media_type = '{}'", mt));
-        }
-
-        if let Some(pt) = public_type {
-            archived_loans_where.push(format!("i.audience_type = '{}'", pt));
-        }
-
-        if let Some(uid) = user_id {
-            archived_loans_where.push(format!("la.user_id = {}", uid));
-        }
-
-        let archived_loans_where_clause = archived_loans_where.join(" AND ");
+        let archived_loans_where_clause = Self::stats_loan_where_clause(
+            "la.date",
+            "la.user_id",
+            media_type,
+            public_type,
+            user_id,
+            &[],
+        );
         let archived_loans_date_trunc = date_trunc.replace("date", "la.date");
 
         let archived_loans_query = format!(
@@ -503,7 +539,14 @@ impl Repository {
             archived_loans_date_trunc, date_format, archived_loans_where_clause, archived_loans_date_trunc
         );
 
-        let archived_loans_data: Vec<(String, i64)> = sqlx::query(&archived_loans_query)
+        let archived_loans_data: Vec<(String, i64)> = Self::bind_loan_stats_params(
+            sqlx::query(&archived_loans_query),
+            start,
+            end,
+            media_type,
+            public_type,
+            user_id,
+        )
             .fetch_all(pool)
             .await?
             .into_iter()
@@ -515,25 +558,14 @@ impl Repository {
             .collect();
 
         // Query for returns (from loans_archives table)
-        let mut returns_where = vec![
-            format!("la.returned_at >= '{}'", start.format("%Y-%m-%d %H:%M:%S")),
-            format!("la.returned_at <= '{}'", end.format("%Y-%m-%d %H:%M:%S")),
-            "la.returned_at IS NOT NULL".to_string(),
-        ];
-
-        if let Some(mt) = media_type {
-            returns_where.push(format!("i.media_type = '{}'", mt));
-        }
-
-        if let Some(pt) = public_type {
-            returns_where.push(format!("i.audience_type = '{}'", pt));
-        }
-
-        if let Some(uid) = user_id {
-            returns_where.push(format!("la.user_id = {}", uid));
-        }
-
-        let returns_where_clause = returns_where.join(" AND ");
+        let returns_where_clause = Self::stats_loan_where_clause(
+            "la.returned_at",
+            "la.user_id",
+            media_type,
+            public_type,
+            user_id,
+            &["la.returned_at IS NOT NULL"],
+        );
         let returns_date_trunc = date_trunc.replace("date", "la.returned_at");
 
         let returns_query = format!(
@@ -551,7 +583,14 @@ impl Repository {
             returns_date_trunc, date_format, returns_where_clause, returns_date_trunc
         );
 
-        let returns_data: Vec<(String, i64)> = sqlx::query(&returns_query)
+        let returns_data: Vec<(String, i64)> = Self::bind_loan_stats_params(
+            sqlx::query(&returns_query),
+            start,
+            end,
+            media_type,
+            public_type,
+            user_id,
+        )
             .fetch_all(pool)
             .await?
             .into_iter()
@@ -609,7 +648,14 @@ impl Repository {
             where_clause
         );
 
-        let by_media_type = sqlx::query(&by_media_type_query)
+        let by_media_type = Self::bind_loan_stats_params(
+            sqlx::query(&by_media_type_query),
+            start,
+            end,
+            media_type,
+            public_type,
+            user_id,
+        )
             .fetch_all(pool)
             .await?
             .into_iter()

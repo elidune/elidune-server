@@ -336,6 +336,40 @@ impl Repository {
         Ok(next)
     }
 
+    /// Same as [`holds_notify_next`] but within an open transaction (atomic with loan return).
+    #[tracing::instrument(skip(self, tx), err)]
+    pub async fn holds_notify_next_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, Postgres>,
+        item_id: i64,
+        expiry_days: i32,
+    ) -> AppResult<Option<Hold>> {
+        let next = sqlx::query_as::<_, Hold>(
+            "SELECT * FROM holds WHERE item_id = $1 AND status = 'pending'
+             ORDER BY position ASC LIMIT 1",
+        )
+        .bind(item_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+
+        if let Some(ref r) = next {
+            let expires_at = Utc::now() + chrono::Duration::days(expiry_days as i64);
+            let updated = sqlx::query_as::<_, Hold>(
+                r#"UPDATE holds
+                   SET status = 'ready', notified_at = NOW(), expires_at = $2
+                   WHERE id = $1 AND status = 'pending'
+                   RETURNING *"#,
+            )
+            .bind(r.id)
+            .bind(expires_at)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Pending hold {} not found", r.id)))?;
+            return Ok(Some(updated));
+        }
+        Ok(None)
+    }
+
     #[tracing::instrument(skip(self), err)]
     pub async fn holds_list_for_item(&self, item_id: i64) -> AppResult<Vec<HoldDetails>> {
         let rows = sqlx::query_as::<_, Hold>(

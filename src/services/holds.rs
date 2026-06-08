@@ -97,3 +97,122 @@ impl HoldsService {
         self.repository.holds_count_active_for_biblio(biblio_id).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use chrono::Utc;
+
+    struct FakeHoldsRepo {
+        duplicate: bool,
+        hold_user_id: i64,
+    }
+
+    #[async_trait]
+    impl HoldsRepository for FakeHoldsRepo {
+        async fn holds_list_all(
+            &self,
+            _: i64,
+            _: i64,
+            _: bool,
+        ) -> AppResult<(Vec<HoldDetails>, i64)> {
+            Ok((vec![], 0))
+        }
+        async fn holds_list_for_user_paginated(
+            &self,
+            _: i64,
+            _: i64,
+            _: i64,
+            _: bool,
+        ) -> AppResult<(Vec<HoldDetails>, i64)> {
+            Ok((vec![], 0))
+        }
+        async fn holds_has_active_for_user_item(&self, _: i64, _: i64) -> AppResult<bool> {
+            Ok(self.duplicate)
+        }
+        async fn holds_create(&self, data: &CreateHold) -> AppResult<Hold> {
+            Ok(Hold {
+                id: 1,
+                user_id: data.user_id,
+                item_id: data.item_id,
+                position: 1,
+                status: crate::models::hold::HoldStatus::Pending,
+                notes: data.notes.clone(),
+                created_at: Utc::now(),
+                notified_at: None,
+                expires_at: None,
+            })
+        }
+        async fn holds_list_for_item(&self, _: i64) -> AppResult<Vec<HoldDetails>> {
+            Ok(vec![])
+        }
+        async fn holds_list_for_user(&self, _: i64) -> AppResult<Vec<HoldDetails>> {
+            Ok(vec![])
+        }
+        async fn holds_get_by_id(&self, id: i64) -> AppResult<Hold> {
+            Ok(Hold {
+                id,
+                user_id: self.hold_user_id,
+                item_id: 99,
+                position: 1,
+                status: crate::models::hold::HoldStatus::Pending,
+                notes: None,
+                created_at: Utc::now(),
+                notified_at: None,
+                expires_at: None,
+            })
+        }
+        async fn holds_cancel(&self, id: i64) -> AppResult<Hold> {
+            self.holds_get_by_id(id).await
+        }
+        async fn holds_mark_ready(&self, id: i64, _: i32) -> AppResult<Hold> {
+            self.holds_get_by_id(id).await
+        }
+        async fn holds_get_next_pending(&self, _: i64) -> AppResult<Option<Hold>> {
+            Ok(None)
+        }
+        async fn holds_fulfill(&self, id: i64) -> AppResult<Hold> {
+            self.holds_get_by_id(id).await
+        }
+        async fn holds_notify_next(&self, _: i64, _: i32) -> AppResult<Option<Hold>> {
+            Ok(None)
+        }
+        async fn holds_expire_overdue(&self) -> AppResult<Vec<i64>> {
+            Ok(vec![])
+        }
+        async fn holds_count_for_item(&self, _: i64) -> AppResult<i64> {
+            Ok(0)
+        }
+        async fn holds_count_active_for_biblio(&self, _: i64) -> AppResult<i64> {
+            Ok(0)
+        }
+    }
+
+    #[tokio::test]
+    async fn place_hold_rejects_duplicate() {
+        let svc = HoldsService::new(Arc::new(FakeHoldsRepo {
+            duplicate: true,
+            hold_user_id: 1,
+        }));
+        let err = svc
+            .place_hold(CreateHold {
+                user_id: 1,
+                item_id: 42,
+                notes: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn cancel_hold_rejects_other_user() {
+        let svc = HoldsService::new(Arc::new(FakeHoldsRepo {
+            duplicate: false,
+            hold_user_id: 2,
+        }));
+        let err = svc.cancel(1, 1, false).await.unwrap_err();
+        assert!(matches!(err, AppError::Authorization(_)));
+    }
+}

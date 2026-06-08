@@ -26,7 +26,7 @@ const TASK_TTL_SECS: u64 = 24 * 60 * 60;
 /// Time to keep a completed task in memory before evicting it.
 const MEMORY_GRACE_SECS: u64 = 5 * 60;
 
-type TaskMap = Arc<std::sync::RwLock<HashMap<i64, Arc<RwLock<BackgroundTask>>>>>;
+type TaskMap = Arc<RwLock<HashMap<i64, Arc<RwLock<BackgroundTask>>>>>;
 
 // ── TaskHandle ────────────────────────────────────────────────────────────────
 
@@ -134,7 +134,7 @@ pub struct TaskManager {
 impl TaskManager {
     pub fn new(redis: RedisService) -> Self {
         Self {
-            active: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            active: Arc::new(RwLock::new(HashMap::new())),
             redis,
         }
     }
@@ -148,7 +148,7 @@ impl TaskManager {
     /// before calling the closure, and removes the task from memory
     /// [`MEMORY_GRACE_SECS`] after it finishes so that the last in-memory read
     /// can still succeed.
-    pub fn spawn_task<F, Fut>(&self, kind: TaskKind, user_id: i64, f: F) -> i64
+    pub async fn spawn_task<F, Fut>(&self, kind: TaskKind, user_id: i64, f: F) -> i64
     where
         F: FnOnce(TaskHandle) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
@@ -169,10 +169,7 @@ impl TaskManager {
         };
 
         let task_arc = Arc::new(RwLock::new(task));
-        self.active
-            .write()
-            .unwrap()
-            .insert(task_id, task_arc.clone());
+        self.active.write().await.insert(task_id, task_arc.clone());
 
         let handle = TaskHandle {
             id: task_id,
@@ -205,7 +202,7 @@ impl TaskManager {
             // Grace period: keep in memory so any in-flight GET /tasks/:id
             // can still read the completed state from memory before eviction.
             tokio::time::sleep(tokio::time::Duration::from_secs(MEMORY_GRACE_SECS)).await;
-            active_clone.write().unwrap().remove(&task_id);
+            active_clone.write().await.remove(&task_id);
         });
 
         task_id
@@ -216,12 +213,7 @@ impl TaskManager {
     /// Checks the in-memory map first (active / recently completed), then falls
     /// back to Redis for tasks that finished more than [`MEMORY_GRACE_SECS`] ago.
     pub async fn get_task(&self, task_id: i64) -> Option<BackgroundTask> {
-        // Acquire and release the sync guard before any await point.
-        let arc_opt = {
-            let guard = self.active.read().unwrap();
-            guard.get(&task_id).cloned()
-        };
-        if let Some(arc) = arc_opt {
+        if let Some(arc) = self.active.read().await.get(&task_id).cloned() {
             return Some(arc.read().await.clone());
         }
         self.load_from_redis(task_id).await
@@ -233,11 +225,8 @@ impl TaskManager {
     /// - Admins see **all** in-memory active tasks plus their own completed tasks
     ///   from Redis.
     pub async fn list_tasks(&self, user_id: i64, is_admin: bool) -> Vec<BackgroundTask> {
-        // Collect Arc handles without holding the sync lock across awaits.
-        let arcs: Vec<Arc<RwLock<BackgroundTask>>> = {
-            let guard = self.active.read().unwrap();
-            guard.values().cloned().collect()
-        };
+        let arcs: Vec<Arc<RwLock<BackgroundTask>>> =
+            self.active.read().await.values().cloned().collect();
 
         let mut result: Vec<BackgroundTask> = Vec::new();
         for arc in arcs {

@@ -210,6 +210,7 @@ impl UsersService {
             rights,
             exp,
             iat: now,
+            token_version: user.token_version,
             scope: scope.map(str::to_owned),
         };
 
@@ -543,6 +544,11 @@ impl UsersService {
         let user = self.repository.users_get_by_id(user_id).await?;
         // Issue a full JWT now that the password has been changed
         self.create_token_for_user(&user).await
+    }
+
+    /// Load the current JWT revocation counter for token validation.
+    pub async fn get_token_version(&self, user_id: i64) -> AppResult<i64> {
+        self.repository.users_get_token_version(user_id).await
     }
 
     /// Force a password change for the given user on next login.

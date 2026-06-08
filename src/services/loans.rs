@@ -5,17 +5,24 @@ use chrono::{DateTime, Utc};
 use std::sync::Arc;
 
 use crate::{
-    api::loans::{LoanSettings as LoanSettingsApi, UpdateLoanSettingsRequest},
     error::{AppError, AppResult},
     marc::{MarcRecord, marc_record_for_loan_export},
     models::{
-        Loan, loan::{
-            CreateLoan, LOANS_MARC_EXPORT_MAX, LoanCreateOutcome, LoanDetails, LoanMarcExportEncoding,
-            LoanMarcExportFormat, LoanReturnOutcome, LoanSettingsRenewAt,
-        }, user::UserStatus
+        dto::loans::{LoanSettingsDto, UpdateLoanSettingsRequest},
+        Loan,
+        loan::{
+            CreateLoan, HoldReadyEmailOutcome, LOANS_MARC_EXPORT_MAX, LoanCreateOutcome,
+            LoanDetails, LoanMarcExportEncoding, LoanMarcExportFormat, LoanReturnOutcome,
+            LoanSettingsRenewAt,
+        },
+        user::UserStatus,
     },
     repository::LoansServiceRepository,
-    services::audit::{self, AuditLogMeta, AuditService},
+    services::{
+        audit::{self, AuditLogMeta, AuditService},
+        email::EmailService,
+        event_bus::EventBus,
+    },
 };
 use z3950_rs::marc_rs::{BinaryWriter, Encoding as MarcEncoding, MarcFormat, XmlWriter};
 
@@ -23,11 +30,23 @@ use z3950_rs::marc_rs::{BinaryWriter, Encoding as MarcEncoding, MarcFormat, XmlW
 pub struct LoansService {
     repository: Arc<dyn LoansServiceRepository>,
     audit: AuditService,
+    email: EmailService,
+    events: EventBus,
 }
 
 impl LoansService {
-    pub fn new(repository: Arc<dyn LoansServiceRepository>, audit: AuditService) -> Self {
-        Self { repository, audit }
+    pub fn new(
+        repository: Arc<dyn LoansServiceRepository>,
+        audit: AuditService,
+        email: EmailService,
+        events: EventBus,
+    ) -> Self {
+        Self {
+            repository,
+            audit,
+            email,
+            events,
+        }
     }
 
     /// Get active loans for a user (paginated). `page` and `per_page` must be valid (≥1, capped by caller).
@@ -91,6 +110,10 @@ impl LoansService {
         }
 
         let outcome = self.repository.loans_create(&loan).await?;
+        if let Some(item_id) = loan.item_id {
+            self.events
+                .loan_created(outcome.loan_id, loan.user_id, item_id);
+        }
         if let Some(hold_id) = outcome.fulfilled_hold_id {
             self.audit.log(
                 audit::event::HOLD_FULFILLED,
@@ -117,7 +140,9 @@ impl LoansService {
         audit_actor: Option<i64>,
         client_ip: Option<String>,
     ) -> AppResult<LoanDetails> {
-        let outcome = self.repository.loans_return(loan_id).await?;
+        let mut outcome = self.repository.loans_return(loan_id).await?;
+        outcome.hold_ready_email = self.send_hold_ready_email(&outcome).await;
+        self.publish_return_events(&outcome);
         self.audit_return_side_effects(audit_actor, client_ip, &outcome);
         Ok(outcome.details)
     }
@@ -130,9 +155,67 @@ impl LoansService {
         client_ip: Option<String>,
     ) -> AppResult<LoanDetails> {
         let loan = self.repository.loans_get_by_item_identification(item_identification).await?;
-        let outcome = self.repository.loans_return(loan.id).await?;
+        let mut outcome = self.repository.loans_return(loan.id).await?;
+        outcome.hold_ready_email = self.send_hold_ready_email(&outcome).await;
+        self.publish_return_events(&outcome);
         self.audit_return_side_effects(audit_actor, client_ip, &outcome);
         Ok(outcome.details)
+    }
+
+    async fn send_hold_ready_email(
+        &self,
+        outcome: &LoanReturnOutcome,
+    ) -> Option<HoldReadyEmailOutcome> {
+        let hold = outcome.readied_hold.as_ref()?;
+        let contact = self
+            .repository
+            .users_hold_ready_contact(hold.user_id)
+            .await
+            .ok()
+            .flatten();
+        let to = contact
+            .as_ref()
+            .and_then(|c| c.email.as_deref().map(str::trim))
+            .filter(|s| !s.is_empty())?;
+        match crate::hold_email::send_hold_ready(
+            &self.email,
+            contact.clone(),
+            hold,
+            &outcome.details,
+        )
+        .await
+        {
+            Ok(()) => Some(HoldReadyEmailOutcome {
+                email: Some(to.to_string()),
+                send_error: None,
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    target: "loans",
+                    error = %e,
+                    hold_id = hold.id,
+                    "Failed to queue hold ready email"
+                );
+                Some(HoldReadyEmailOutcome {
+                    email: Some(to.to_string()),
+                    send_error: Some(e.to_string()),
+                })
+            }
+        }
+    }
+
+    fn publish_return_events(&self, outcome: &LoanReturnOutcome) {
+        let user_id = outcome
+            .details
+            .user
+            .as_ref()
+            .map(|u| u.id)
+            .unwrap_or(0);
+        self.events
+            .loan_returned(outcome.details.id, user_id, outcome.details.item_id);
+        if let Some(ref hold) = outcome.readied_hold {
+            self.events.hold_ready(hold.id, hold.user_id, hold.item_id);
+        }
     }
 
     fn audit_return_side_effects(
@@ -254,11 +337,11 @@ impl LoansService {
     }
 
     /// Global loan rules per media type (`loans_settings` table).
-    pub async fn get_global_loan_settings(&self) -> AppResult<Vec<LoanSettingsApi>> {
+    pub async fn get_global_loan_settings(&self) -> AppResult<Vec<LoanSettingsDto>> {
         let rows = self.repository.loans_get_settings().await?;
         Ok(rows
             .into_iter()
-            .map(|row| LoanSettingsApi {
+            .map(|row| LoanSettingsDto {
                 media_type: row.media_type,
                 max_loans: row.nb_max.unwrap_or(5),
                 max_renewals: row.nb_renews.unwrap_or(2),
@@ -272,7 +355,7 @@ impl LoansService {
     pub async fn update_global_loan_settings(
         &self,
         request: UpdateLoanSettingsRequest,
-    ) -> AppResult<Vec<LoanSettingsApi>> {
+    ) -> AppResult<Vec<LoanSettingsDto>> {
 
         // remove all existing loan settings
         self.repository.loans_settings_delete_rows().await?;
@@ -474,6 +557,7 @@ mod tests {
             recovery_codes_used: None,
             receive_reminders: true,
             must_change_password: false,
+            token_version: 0,
         }
     }
 
@@ -547,6 +631,7 @@ mod tests {
         async fn users_get_by_id(&self, _: i64) -> AppResult<User> {
             self.user.clone().ok_or_else(|| AppError::NotFound("user not found".into()))
         }
+        async fn users_get_token_version(&self, _: i64) -> AppResult<i64> { Ok(0) }
         async fn users_get_by_login(&self, _: &str) -> AppResult<Option<User>> { Ok(None) }
         async fn users_get_by_email(&self, _: &str) -> AppResult<Option<User>> { Ok(None) }
         async fn users_update_password(&self, _: i64, _: &str) -> AppResult<()> { Ok(()) }
@@ -564,18 +649,20 @@ mod tests {
         async fn users_update_2fa_settings(&self, _: i64, _: bool, _: Option<&str>, _: Option<&str>, _: Option<&str>) -> AppResult<()> { Ok(()) }
         async fn users_mark_recovery_code_used(&self, _: i64, _: &str) -> AppResult<()> { Ok(()) }
         async fn users_get_emails_by_public_type(&self, _: Option<i64>) -> AppResult<Vec<crate::repository::users::UserEmailTarget>> { Ok(vec![]) }
+        async fn users_hold_ready_contact(&self, _: i64) -> AppResult<Option<crate::repository::users::HoldReadyUserContact>> { Ok(None) }
     }
 
     // LoansServiceRepository has a blanket impl for T: LoansRepository + UsersRepository + Send + Sync,
     // so FakeRepo already implements it — no explicit impl needed.
 
     fn make_service(user: Option<User>, loan_id: i64) -> LoansService {
-        let audit = AuditService::new(crate::repository::Repository::new(
-            sqlx::Pool::connect_lazy("postgres://localhost/unused").unwrap(),
-            None,
-            None,
-        ));
-        LoansService::new(Arc::new(FakeRepo { user, loan_id }), audit)
+        let pool = sqlx::Pool::connect_lazy("postgres://localhost/unused").unwrap();
+        let audit = AuditService::new(crate::repository::Repository::new(pool.clone(), None));
+        let dynamic_config = crate::DynamicConfig::new(crate::AppConfig::for_test());
+        let email = crate::EmailService::new(dynamic_config, pool);
+        let (tx, _) = tokio::sync::broadcast::channel(1);
+        let events = crate::services::event_bus::EventBus::new(tx);
+        LoansService::new(Arc::new(FakeRepo { user, loan_id }), audit, email, events)
     }
 
     fn make_loan(user_id: i64, force: bool) -> CreateLoan {

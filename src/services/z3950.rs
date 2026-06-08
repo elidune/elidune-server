@@ -8,7 +8,7 @@ use redis::AsyncCommands;
 use z3950_rs::marc_rs::{ MarcFormat, Record as MarcRecord};
 use z3950_rs::{Client, QueryLanguage};
 use crate::{
-    api::z3950::{ImportItem, Z3950SearchQuery, Z3950ServerConfig},
+    models::dto::z3950::{ImportItem, Z3950SearchQuery, Z3950ServerConfig},
     error::{AppError, AppResult},
     models::{
         biblio::{Biblio, Isbn},

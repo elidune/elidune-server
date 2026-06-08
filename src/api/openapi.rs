@@ -477,3 +477,15 @@ pub fn create_openapi_router() -> Router {
     Router::new()
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ApiDoc;
+    use utoipa::OpenApi;
+
+    #[test]
+    fn openapi_schema_compiles() {
+        let doc = ApiDoc::openapi();
+        assert!(!doc.paths.paths.is_empty());
+    }
+}

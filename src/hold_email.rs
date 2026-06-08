@@ -8,7 +8,7 @@ use crate::{
     repository::users::HoldReadyUserContact,
 };
 
-/// Send "hold ready" email to the patron. No-op if user has no email.
+/// Queue a "hold ready" email for the patron via the outbox. No-op if user has no email.
 #[tracing::instrument(skip_all, fields(hold_id = hold.id, user_id = hold.user_id))]
 pub async fn send_hold_ready(
     email_svc: &EmailService,
@@ -68,6 +68,7 @@ pub async fn send_hold_ready(
     let (subject, body_plain, body_html) = email_templates::substitute(&template, &vars);
 
     email_svc
-        .send_email_with_html(to, &subject, &body_plain, &body_html)
+        .enqueue(to, &subject, &body_plain, &body_html)
         .await
+        .map(|_| ())
 }

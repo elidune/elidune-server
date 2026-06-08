@@ -112,16 +112,6 @@ impl SourcesService {
         let name = data.name.trim();
         let old_ids = &data.source_ids;
 
-        
-        let new_source =self.repository.sources_create(name, Some(false)).await?;
-
-        // Reassign all items from the old sources.
-        self.repository.sources_reassign_items(old_ids, new_source.id).await?;
-
-        // Archive the old sources.
-        self.repository.sources_archive_many(old_ids).await?;
-
-        
-        self.repository.sources_get_by_id(new_source.id).await
+        self.repository.merge_sources_tx(name, old_ids).await
     }
 }

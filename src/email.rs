@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
 use lettre::{
     message::{header::ContentType, Mailbox, Message, MultiPart, SinglePart},
     transport::smtp::authentication::Credentials,
@@ -103,6 +104,39 @@ impl EmailService {
             <p>Ceci est un email de test envoyé par Elidune pour vérifier votre configuration SMTP.</p>\
             </body></html>";
         self.send_email_with_html(to, subject, body_plain, body_html).await
+    }
+
+    /// Queue an email for asynchronous delivery via the `email_outbox` worker.
+    pub async fn enqueue(
+        &self,
+        to: &str,
+        subject: &str,
+        body_plain: &str,
+        body_html: &str,
+    ) -> AppResult<i64> {
+        let id: i64 = snowflaked::Generator::new(4).generate();
+        let body = serde_json::json!({
+            "plain": body_plain,
+            "html": body_html,
+        })
+        .to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO email_outbox (id, to_addr, subject, body, status, attempts, created_at)
+            VALUES ($1, $2, $3, $4, 'pending', 0, $5)
+            "#,
+        )
+        .bind(id)
+        .bind(to)
+        .bind(subject)
+        .bind(body)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::from)?;
+
+        Ok(id)
     }
 
     /// Low-level send: builds the SMTP transport from the current live config on each call.

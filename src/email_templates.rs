@@ -113,7 +113,7 @@ async fn load_from_db(
     template_id: &str,
     language: &str,
 ) -> AppResult<Option<EmailTemplate>> {
-    let repo = Repository::new(pool.clone(), None, None);
+    let repo = Repository::new(pool.clone(), None);
     let row = repo.email_templates_get(template_id, language).await?;
     Ok(row.map(|r| EmailTemplate {
         subject: r.subject,
@@ -177,7 +177,7 @@ pub async fn bootstrap_from_files(
     pool: &Pool<Postgres>,
     templates_dir: &Path,
 ) -> AppResult<usize> {
-    let repo = Repository::new(pool.clone(), None, None);
+    let repo = Repository::new(pool.clone(), None);
 
 
     let mut inserted = 0usize;

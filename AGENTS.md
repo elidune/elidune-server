@@ -101,6 +101,23 @@ Special variants for UI confirmation flows:
 - Never modify an existing migration; always add a new numbered file.
 - always update the `scripts/migrate_data.py` script when changes are made or on  migrations/ changes
 - keep the `scripts/init_database.py` up to date when changes are made or on  migrations/ changes
+
+### Transaction ownership
+
+| Layer | Owns transactions when |
+|---|---|
+| **Repository** | Single-domain atomic writes (one aggregate root); expose `*_tx` helpers for cross-table ops in the same domain |
+| **Service** | Business orchestration across repositories; side effects (email, SSE, audit) **after** commit |
+| **API** | Never opens transactions; no subprocess orchestration except documented admin escape hatches |
+
+Cross-domain atomicity (e.g. loan return + hold queue): use `holds_notify_next_tx` inside the loan return transaction. Email and SSE publish from `LoansService` after persistence succeeds.
+
+---
+
+## DTO layer
+
+Shared request/response types live in `src/models/dto/` (not `api/`). Handlers re-export via `pub use` for OpenAPI. Services import `models::dto::*` only — never `api::*`.
+
 ---
 
 ## Configuration
@@ -143,6 +160,11 @@ rtk cargo check
 
 # Run tests
 rtk cargo test
+
+# Integration tests (requires DATABASE_URL + REDIS_URL)
+DATABASE_URL=postgres://elidune:elidune@localhost:5432/elidune_test \
+REDIS_URL=redis://127.0.0.1:6379 \
+CI=1 rtk cargo test --test lms_flows --test repository_loans_holds --test security_rbac
 
 # Clippy
 rtk cargo clippy

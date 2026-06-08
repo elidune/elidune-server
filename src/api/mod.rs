@@ -141,8 +141,8 @@ impl FromRequestParts<AppState> for StaffUser {
 // AuthenticatedUser extractor
 // ============================================================================
 
-/// Parse and validate a Bearer JWT from the request headers.
-fn extract_claims(parts: &Parts, secret: &str) -> Result<UserClaims, AppError> {
+/// Parse a Bearer JWT from the request headers (HS256, signature only).
+fn parse_bearer_token(parts: &Parts, secret: &str) -> Result<UserClaims, AppError> {
     let auth_header = parts
         .headers
         .get(AUTHORIZATION)
@@ -157,6 +157,14 @@ fn extract_claims(parts: &Parts, secret: &str) -> Result<UserClaims, AppError> {
         .map_err(|e| AppError::Authentication(e.to_string()))
 }
 
+/// Parse JWT and ensure `token_version` matches the database (revoked sessions rejected).
+async fn extract_claims(parts: &Parts, state: &AppState) -> Result<UserClaims, AppError> {
+    let claims = parse_bearer_token(parts, &state.config.users.jwt_secret)?;
+    let stored_version = state.services.users.get_token_version(claims.user_id).await?;
+    claims.check_token_version(stored_version)?;
+    Ok(claims)
+}
+
 /// Extractor for authenticated user from JWT token.
 ///
 /// Rejects tokens with scope `change_password_only` — those are only accepted
@@ -168,7 +176,7 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let claims = extract_claims(parts, &state.config.users.jwt_secret)?;
+        let claims = extract_claims(parts, state).await?;
 
         if claims.is_password_change_scope() {
             return Err(AppError::Authorization(
@@ -190,7 +198,7 @@ impl FromRequestParts<AppState> for PasswordChangeUser {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let claims = extract_claims(parts, &state.config.users.jwt_secret)?;
+        let claims = extract_claims(parts, state).await?;
 
         if claims.scope.as_deref() != Some(SCOPE_CHANGE_PASSWORD) {
             return Err(AppError::Authorization(

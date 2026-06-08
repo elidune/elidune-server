@@ -36,48 +36,13 @@ pub fn router() -> axum::Router<crate::AppState> {
 }
 
 
-fn default_z3950_encoding() -> String {
-    "utf-8".to_string()
-}
-
-/// Z39.50 server configuration (staff-editable).
-#[serde_as]
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Z3950ServerConfig {
-    /// Server ID (`0` to create a new server)
-    #[serde_as(as = "DisplayFromStr")]
-    #[schema(value_type = String)]
-    pub id: i64,
-    pub name: String,
-    pub address: String,
-    pub port: i32,
-    pub database: Option<String>,
-    pub format: Option<String>,
-    pub login: Option<String>,
-    pub password: Option<String>,
-    #[serde(default = "default_z3950_encoding")]
-    pub encoding: String,
-    pub is_active: bool,
-}
+pub use crate::models::dto::z3950::{ImportItem, Z3950SearchQuery, Z3950ServerConfig};
 
 /// Partial update of Z39.50 server list.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateZ3950ServersRequest {
     pub z3950_servers: Option<Vec<Z3950ServerConfig>>,
-}
-
-/// Z39.50 search query parameters
-#[serde_as]
-#[derive(Deserialize, IntoParams, ToSchema, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct Z3950SearchQuery {
-    pub query: String,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub server_id: Option<i64>,
-    pub max_results: Option<i32>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -106,28 +71,6 @@ pub struct Z3950ImportRequest {
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
     pub confirm_replace_existing_id: Option<i64>,
-}
-
-#[serde_as]
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ImportItem {
-    /// Item barcode (must be unique when provided)
-    pub barcode: Option<String>,
-    /// Shelf location / call number
-    pub call_number: Option<String>,
-    /// Status code
-    pub status: Option<String>,
-    /// Place (shelf/room number)
-    pub place: Option<i16>,
-    /// Notes
-    pub notes: Option<String>,
-    /// Price
-    pub price: Option<String>,
-    /// Source ID
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    #[schema(value_type = Option<String>)]
-    pub source_id: Option<i64>,
 }
 
 impl From<ImportItem> for Item {

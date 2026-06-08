@@ -8,6 +8,8 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Notify};
 
 pub mod api;
+pub mod app;
+pub mod bootstrap;
 pub mod config;
 pub mod dynamic_config;
 pub mod email;
@@ -20,6 +22,7 @@ pub mod hold_email;
 pub mod inventory_email;
 pub mod services;
 
+pub use app::{build_app, build_app_with_options, build_cors, AppBuildOptions};
 pub use config::AppConfig;
 pub use email::EmailService;
 pub use dynamic_config::DynamicConfig;
@@ -34,5 +37,5 @@ pub struct AppState {
     /// Wake handle for the reminder scheduler task (re-evaluates schedule on config change)
     pub scheduler_notify: Arc<Notify>,
     /// Broadcast channel for real-time SSE events (loan.created, loan.returned, etc.)
-    pub event_bus: broadcast::Sender<crate::api::sse::SsePayload>,
+    pub event_bus: broadcast::Sender<crate::models::dto::sse::SsePayload>,
 }

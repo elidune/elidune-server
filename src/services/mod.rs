@@ -3,12 +3,15 @@
 pub mod account_types_catalog;
 pub mod audit;
 pub mod catalog;
+pub mod email_outbox;
 pub mod equipment;
+pub mod event_bus;
 pub mod events;
 pub mod fines;
 pub mod inventory;
 pub mod library_info;
 pub mod loans;
+pub mod maintenance_service;
 pub mod marc;
 pub mod public_types;
 pub mod redis;
@@ -59,6 +62,7 @@ pub struct Services {
     pub inventory: inventory::InventoryService,
     pub library_info: library_info::LibraryInfoService,
     pub loans: loans::LoansService,
+    pub maintenance: maintenance_service::MaintenanceService,
     pub marc: marc::MarcService,
     pub public_types: public_types::PublicTypesService,
     pub redis: redis::RedisService,
@@ -82,10 +86,10 @@ impl Services {
         &self.pool
     }
 
-    /// [`Repository`] with only the DB pool (no dynamic config / email hooks).
-    /// Use for the `settings` table and other calls that do not need hold-email or dynamic state.
+    /// [`Repository`] with only the DB pool (no dynamic config).
+    /// Use for the `settings` table and other calls that do not need dynamic hold settings.
     pub fn minimal_repository(&self) -> Repository {
-        Repository::new(self.pool.clone(), None, None)
+        Repository::new(self.pool.clone(), None)
     }
 
     /// Create all services with the given repository and dynamic config
@@ -97,6 +101,7 @@ impl Services {
         redis_service: redis::RedisService,
         meilisearch_config: Option<MeilisearchConfig>,
         email_service: Arc<crate::email::EmailService>,
+        event_bus: event_bus::EventBus,
     ) -> AppResult<Self> {
         let pool = repository.pool.clone();
 
@@ -128,6 +133,13 @@ impl Services {
         };
 
         let marc_service = marc::MarcService::new(catalog.clone(), redis_service.clone());
+
+        let z3950_service = z3950::Z3950Service::new(
+            repository.clone(),
+            catalog.clone(),
+            redis_service.clone(),
+            redis_config.z3950_cache_ttl_seconds,
+        );
 
         let loans_repo: Arc<dyn LoansServiceRepository> = repo.clone();
         let loans_repo_only: Arc<dyn LoansRepository> = repo.clone();
@@ -162,7 +174,17 @@ impl Services {
                 audit_service.clone(),
             ),
             library_info: library_info::LibraryInfoService::new(repository.clone()),
-            loans: loans::LoansService::new(loans_repo, audit_service.clone()),
+            loans: loans::LoansService::new(
+                loans_repo,
+                audit_service.clone(),
+                email.clone(),
+                event_bus,
+            ),
+            maintenance: maintenance_service::MaintenanceService::new(
+                catalog.clone(),
+                z3950_service.clone(),
+                audit_service.clone(),
+            ),
             marc: marc_service,
             public_types: public_types::PublicTypesService::new(repo.clone() as Arc<dyn PublicTypesRepository>),
             redis: redis_service.clone(),
@@ -177,12 +199,7 @@ impl Services {
             visitor_counts: visitor_counts::VisitorCountsService::new(
                 repo.clone() as Arc<dyn VisitorCountsRepository>,
             ),
-            z3950: z3950::Z3950Service::new(
-                repository,
-                catalog,
-                redis_service.clone(),
-                redis_config.z3950_cache_ttl_seconds,
-            ),
+            z3950: z3950_service,
         })
     }
 }

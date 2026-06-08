@@ -472,7 +472,8 @@ def migrate_users(src, dst, hash_passwords=True):
         profession (dropped), birthdate -> DATE (normalized), archived_date (int) -> timestamptz,
         public_type (int 97/106/117) -> FK to public_types
 
-    Target adds: status, language, 2FA fields (defaults), must_change_password
+    Target adds: status, language, 2FA fields (defaults), must_change_password,
+                 token_version (default 0, migration 018)
     """
     print("Migrating users...")
 
