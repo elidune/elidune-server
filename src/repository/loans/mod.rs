@@ -23,6 +23,10 @@ pub use reminders::OverdueLoanRow;
 #[async_trait]
 pub trait LoansRepository: Send + Sync {
     async fn loans_get_by_id(&self, id: i64) -> AppResult<Loan>;
+    async fn loans_get_borrower_for_loan(
+        &self,
+        loan_id: i64,
+    ) -> AppResult<crate::models::user::UserShort>;
     async fn loans_get_by_item_identification(&self, item_identification: &str) -> AppResult<Loan>;
     async fn loans_get_for_user(
         &self,
@@ -93,6 +97,12 @@ impl<T: LoansRepository + crate::repository::UsersRepository + Send + Sync> Loan
 impl LoansRepository for Repository {
     async fn loans_get_by_id(&self, id: i64) -> crate::error::AppResult<Loan> {
         Repository::loans_get_by_id(self, id).await
+    }
+    async fn loans_get_borrower_for_loan(
+        &self,
+        loan_id: i64,
+    ) -> crate::error::AppResult<crate::models::user::UserShort> {
+        Repository::loans_get_borrower_for_loan(self, loan_id).await
     }
     async fn loans_get_by_item_identification(
         &self,

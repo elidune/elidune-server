@@ -160,6 +160,7 @@ pub fn build_app_with_options(state: AppState, options: AppBuildOptions) -> Rout
 
     let mut app = Router::new()
         .route("/version", get(api::health::version))
+        .merge(api::metrics::router().with_state(state.clone()))
         .nest("/api/v1", api_v1);
 
     if options.include_openapi {

@@ -19,6 +19,7 @@ pub mod items;
 pub mod library_info;
 pub mod loans;
 pub mod maintenance;
+pub mod metrics;
 pub mod openapi;
 pub mod opac;
 pub mod public_types;

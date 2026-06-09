@@ -98,6 +98,7 @@ impl From<ImportItem> for Item {
             archived_at: None,
             source_name: None,
             borrowed: false,
+            loan_id: None,
         }
     }
 }

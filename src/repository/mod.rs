@@ -10,6 +10,7 @@ pub mod account_types;
 pub mod audit_log;
 pub mod biblios;
 pub mod catalog_entities;
+pub mod email_outbox;
 pub mod email_templates;
 pub mod equipment;
 pub mod events;

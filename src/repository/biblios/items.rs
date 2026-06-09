@@ -35,7 +35,8 @@ impl Repository {
                    i.place, i.borrowable, i.circulation_status, i.notes, i.price,
                    i.created_at, i.updated_at, i.archived_at,
                    so.name as source_name,
-                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed
+                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed,
+                   (SELECT l.id FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL ORDER BY l.id DESC LIMIT 1) as loan_id
             FROM items i
             LEFT JOIN sources so ON i.source_id = so.id
             WHERE i.biblio_id = $1 AND i.archived_at IS NULL
@@ -58,7 +59,8 @@ impl Repository {
                    i.place, i.borrowable, i.circulation_status, i.notes, i.price,
                    i.created_at, i.updated_at, i.archived_at,
                    so.name as source_name,
-                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed
+                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed,
+                   (SELECT l.id FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL ORDER BY l.id DESC LIMIT 1) as loan_id
             FROM items i
             LEFT JOIN sources so ON i.source_id = so.id
             WHERE i.id = $1 AND i.archived_at IS NULL
@@ -79,7 +81,8 @@ impl Repository {
                    i.place, i.borrowable, i.circulation_status, i.notes, i.price,
                    i.created_at, i.updated_at, i.archived_at,
                    so.name as source_name,
-                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed
+                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed,
+                   (SELECT l.id FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL ORDER BY l.id DESC LIMIT 1) as loan_id
             FROM items i
             LEFT JOIN sources so ON i.source_id = so.id
             WHERE i.barcode = $1 AND i.archived_at IS NULL
@@ -431,7 +434,8 @@ impl Repository {
                    i.place, i.borrowable, i.circulation_status, i.notes, i.price,
                    i.created_at, i.updated_at, i.archived_at,
                    so.name as source_name,
-                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed
+                   EXISTS(SELECT 1 FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL) as borrowed,
+                   (SELECT l.id FROM loans l WHERE l.item_id = i.id AND l.returned_at IS NULL ORDER BY l.id DESC LIMIT 1) as loan_id
             FROM items i
             LEFT JOIN sources so ON i.source_id = so.id
             WHERE i.id = $1

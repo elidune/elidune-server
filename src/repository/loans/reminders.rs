@@ -66,6 +66,13 @@ impl Repository {
               AND u.email IS NOT NULL
               AND u.email != ''
               AND u.receive_reminders = TRUE
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM email_outbox_reminder_loans rl
+                  JOIN email_outbox o ON o.id = rl.outbox_id
+                  WHERE rl.loan_id = l.id
+                    AND o.status = 'pending'
+              )
             ORDER BY u.id, l.expiry_at
             "#,
         )

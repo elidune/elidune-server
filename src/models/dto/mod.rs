@@ -2,5 +2,6 @@
 
 pub mod library_info;
 pub mod loans;
+pub mod stats;
 pub mod sse;
 pub mod z3950;

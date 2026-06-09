@@ -5,7 +5,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
-use crate::api::{account_types, admin_config, audit, auth, biblios, collections, email_templates, equipment, events, first_setup, health, holds, inventory, items, library_info, loans, maintenance, opac, public_types, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
+use crate::api::{account_types, admin_config, audit, auth, biblios, collections, email_templates, equipment, events, first_setup, health, holds, inventory, items, library_info, loans, maintenance, metrics, opac, public_types, schedules, series, sources, stats, tasks, users, visitor_counts, z3950};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -24,6 +24,7 @@ use crate::api::{account_types, admin_config, audit, auth, biblios, collections,
         health::health_check,
         health::readiness_check,
         health::version,
+        metrics::metrics,
         first_setup::post_first_setup,
         // Auth
         auth::login,
@@ -62,6 +63,7 @@ use crate::api::{account_types, admin_config, audit, auth, biblios, collections,
         loans::get_user_loans,
         loans::export_user_loans_marc,
         loans::create_loan,
+        loans::get_loan_borrower,
         loans::return_loan,
         loans::renew_loan,
         loans::return_loan_by_item,
@@ -207,6 +209,7 @@ use crate::api::{account_types, admin_config, audit, auth, biblios, collections,
             auth::ResetPasswordResponse,
             auth::Setup2FARequest,
             auth::Setup2FAResponse,
+            auth::Disable2FARequest,
             // Biblios (bibliographic records)
             crate::models::biblio::Biblio,
             crate::models::biblio::BiblioShort,

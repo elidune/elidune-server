@@ -10,7 +10,7 @@ use crate::{
     services::audit::{self, AuditLogMeta, AuditService},
 };
 
-/// Send one email per reader listing all loans closed during consolidation.
+/// Queue one email per reader listing all loans closed during consolidation.
 pub async fn send_loan_closure_notifications(
     email_svc: &EmailService,
     audit: &AuditService,
@@ -68,10 +68,10 @@ pub async fn send_loan_closure_notifications(
                 ];
                 let (subject, body_plain, body_html) = email_templates::substitute(&template, &vars);
                 match email_svc
-                    .send_email_with_html(to, &subject, &body_plain, &body_html)
+                    .enqueue(to, &subject, &body_plain, &body_html)
                     .await
                 {
-                    Ok(()) => {
+                    Ok(outbox_id) => {
                         sent += 1;
                         let loan_ids: Vec<i64> = user_rows.iter().map(|r| r.loan_id).collect();
                         let item_ids: Vec<i64> = user_rows.iter().map(|r| r.item_id).collect();
@@ -88,6 +88,8 @@ pub async fn send_loan_closure_notifications(
                                 "loan_count": user_rows.len(),
                                 "loan_ids": loan_ids,
                                 "item_ids": item_ids,
+                                "outbox_id": outbox_id,
+                                "delivery": "queued",
                                 "trigger": "inventory_consolidation",
                             })),
                             AuditLogMeta::success(),
@@ -106,9 +108,10 @@ pub async fn send_loan_closure_notifications(
                                 "session_name": session_name,
                                 "email": to,
                                 "loan_count": user_rows.len(),
+                                "delivery": "queue_failed",
                                 "trigger": "inventory_consolidation",
                             })),
-                            AuditLogMeta::failure_background("email_delivery_failed", e.to_string()),
+                            AuditLogMeta::failure_background("email_queue_failed", e.to_string()),
                         );
                     }
                 }

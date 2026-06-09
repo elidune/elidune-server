@@ -5,6 +5,7 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use utoipa::ToSchema;
+use validator::Validate;
 
 use crate::{
     config::EmailConfig,
@@ -20,7 +21,7 @@ use crate::{
 use super::{
     auth::UserInfo,
     library_info::{LibraryInfo, UpdateLibraryInfoRequest},
-    ClientIp,
+    ClientIp, ValidatedJson,
 };
 
 /// SMTP and related options for first setup (camelCase JSON). Mirrors file `EmailConfig`.
@@ -58,12 +59,16 @@ impl FirstSetupEmailBody {
 
 /// Admin account fields for bootstrap (required patron fields are enforced).
 #[serde_as]
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FirstSetupAdminBody {
+    #[validate(length(min = 1, message = "login is required"))]
     pub login: String,
+    #[validate(length(min = 12, message = "Password must be at least 12 characters"))]
     pub password: String,
+    #[validate(length(min = 1, message = "firstname is required"))]
     pub firstname: String,
+    #[validate(length(min = 1, message = "lastname is required"))]
     pub lastname: String,
     #[serde_as(as = "Option<DisplayFromStr>")]
     #[schema(value_type = Option<String>)]
@@ -91,9 +96,10 @@ fn profile_language_only(lang: Language) -> UpdateProfile {
 }
 
 /// Full first-setup payload: admin user, library details, optional runtime email override.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FirstSetupRequest {
+    #[validate(nested)]
     pub admin: FirstSetupAdminBody,
     pub library: UpdateLibraryInfoRequest,
     /// When set, persisted to `settings` and applied only if `email.overridable` is true in the server file config.
@@ -126,7 +132,7 @@ pub struct FirstSetupResponse {
 pub async fn post_first_setup(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
-    Json(body): Json<FirstSetupRequest>,
+    ValidatedJson(body): ValidatedJson<FirstSetupRequest>,
 ) -> AppResult<(StatusCode, Json<FirstSetupResponse>)> {
     let repo = state.services.minimal_repository();
     if repo.users_count().await? != 0 || repo.settings_count().await? != 0 {

@@ -12,7 +12,7 @@ use crate::{
     dynamic_config::DynamicConfig,
     email::EmailService,
     repository::Repository,
-    services::{audit, scheduler, Services},
+    services::{audit, operational_metrics, scheduler, Services},
     AppState,
 };
 
@@ -58,6 +58,7 @@ impl AppBuildResult {
             )
             .await?,
         );
+        operational_metrics::init_prometheus_recorder()?;
 
         services.audit.log(
             audit::event::SYSTEM_STARTUP,
@@ -75,7 +76,7 @@ impl AppBuildResult {
             services.audit.clone(),
             services.holds.clone(),
             services.email.clone(),
-            pool.clone(),
+            services.repository.clone(),
         );
 
         let state = AppState {

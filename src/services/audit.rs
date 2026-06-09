@@ -151,6 +151,7 @@ pub mod event {
     pub const LIBRARY_INFO_UPDATED: &str = "library_info.updated";
 
     // Email
+    pub const EMAIL_OVERDUE_REMINDER_QUEUED: &str = "email.overdue_reminder_queued";
     pub const EMAIL_OVERDUE_REMINDER_SENT: &str = "email.overdue_reminder_sent";
     pub const EMAIL_2FA_CODE_SENT: &str = "email.2fa_code_sent";
     pub const EMAIL_RECOVERY_CODE_SENT: &str = "email.recovery_code_sent";

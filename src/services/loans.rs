@@ -295,6 +295,14 @@ impl LoansService {
         self.repository.loans_get_by_id(loan_id).await
     }
 
+    /// Patron linked to an active loan (for circulation desk lookups).
+    pub async fn get_loan_borrower(
+        &self,
+        loan_id: i64,
+    ) -> AppResult<crate::models::user::UserShort> {
+        self.repository.loans_get_borrower_for_loan(loan_id).await
+    }
+
     /// Renew a loan
     pub async fn renew_loan(&self, loan_id: i64) -> AppResult<(DateTime<Utc>, i16)> {
         let loan = self.repository.loans_get_by_id(loan_id).await?;
@@ -565,6 +573,12 @@ mod tests {
     impl LoansRepository for FakeRepo {
         async fn loans_settings_delete_rows(&self) -> AppResult<()> { Ok(()) }
         async fn loans_get_by_id(&self, _: i64) -> AppResult<crate::models::loan::Loan> { unimplemented!() }
+        async fn loans_get_borrower_for_loan(
+            &self,
+            _: i64,
+        ) -> AppResult<crate::models::user::UserShort> {
+            unimplemented!()
+        }
         async fn loans_get_by_item_identification(&self, _: &str) -> AppResult<crate::models::loan::Loan> { unimplemented!() }
         async fn loans_get_for_user(
             &self,

@@ -139,6 +139,104 @@ impl EmailService {
         Ok(id)
     }
 
+    /// Queue an overdue-reminder email and reserve the covered loans until SMTP delivery succeeds.
+    pub async fn enqueue_overdue_reminder(
+        &self,
+        to: &str,
+        subject: &str,
+        body_plain: &str,
+        body_html: &str,
+        loan_ids: &[i64],
+    ) -> AppResult<i64> {
+        let mut tx = self.pool.begin().await.map_err(AppError::from)?;
+        let id: i64 = snowflaked::Generator::new(4).generate();
+        let body = serde_json::json!({
+            "plain": body_plain,
+            "html": body_html,
+        })
+        .to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO email_outbox (id, to_addr, subject, body, status, attempts, created_at)
+            VALUES ($1, $2, $3, $4, 'pending', 0, $5)
+            "#,
+        )
+        .bind(id)
+        .bind(to)
+        .bind(subject)
+        .bind(body)
+        .bind(Utc::now())
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::from)?;
+
+        for loan_id in loan_ids {
+            sqlx::query(
+                r#"
+                INSERT INTO email_outbox_reminder_loans (outbox_id, loan_id)
+                VALUES ($1, $2)
+                "#,
+            )
+            .bind(id)
+            .bind(loan_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(AppError::from)?;
+        }
+
+        tx.commit().await.map_err(AppError::from)?;
+        Ok(id)
+    }
+
+    /// Queue an event-announcement email and reserve the event linkage until delivery is settled.
+    pub async fn enqueue_event_announcement(
+        &self,
+        to: &str,
+        subject: &str,
+        body_plain: &str,
+        body_html: &str,
+        event_id: i64,
+    ) -> AppResult<i64> {
+        let mut tx = self.pool.begin().await.map_err(AppError::from)?;
+        let id: i64 = snowflaked::Generator::new(4).generate();
+        let body = serde_json::json!({
+            "plain": body_plain,
+            "html": body_html,
+        })
+        .to_string();
+
+        sqlx::query(
+            r#"
+            INSERT INTO email_outbox (id, to_addr, subject, body, status, attempts, created_at)
+            VALUES ($1, $2, $3, $4, 'pending', 0, $5)
+            "#,
+        )
+        .bind(id)
+        .bind(to)
+        .bind(subject)
+        .bind(body)
+        .bind(Utc::now())
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::from)?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO email_outbox_event_announcements (outbox_id, event_id)
+            VALUES ($1, $2)
+            "#,
+        )
+        .bind(id)
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(AppError::from)?;
+
+        tx.commit().await.map_err(AppError::from)?;
+        Ok(id)
+    }
+
     /// Low-level send: builds the SMTP transport from the current live config on each call.
     pub async fn send_email_with_html(
         &self,

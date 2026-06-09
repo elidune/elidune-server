@@ -48,6 +48,12 @@ pub struct Item {
     pub source_name: Option<String>,
     #[serde(default)]
     pub borrowed: bool,
+    /// Active loan id when `borrowed` is true (staff circulation lookup).
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    #[schema(value_type = Option<String>)]
+    #[sqlx(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loan_id: Option<i64>,
 }
 
 impl Item {

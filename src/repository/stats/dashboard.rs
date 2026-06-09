@@ -4,7 +4,7 @@ use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use sqlx::Row;
 
 use crate::{
-    api::stats::{
+    models::dto::stats::{
         Interval, ItemStats, LoanStats, LoanStatsResponse,
         StatEntry, StatsResponse, TimeSeriesEntry, UserLoanStats, UserStats,
         UserStatsSortBy,
@@ -679,7 +679,7 @@ impl Repository {
         &self,
         start_date: Option<DateTime<Utc>>,
         end_date: Option<DateTime<Utc>>,
-    ) -> AppResult<crate::api::stats::UserStatsAggregate> {
+    ) -> AppResult<crate::models::dto::stats::UserStatsAggregate> {
         let pool = &self.pool;
 
         // Default to the last 365 days if no explicit range is provided
@@ -853,7 +853,7 @@ impl Repository {
         .fetch_one(pool)
         .await?;
 
-        Ok(crate::api::stats::UserStatsAggregate {
+        Ok(crate::models::dto::stats::UserStatsAggregate {
             users_total,
             users_by_public_type,
             users_by_sex,
@@ -876,7 +876,7 @@ impl Repository {
         by_source: bool,
         by_media_type: bool,
         by_public_type: bool,
-    ) -> AppResult<crate::api::stats::CatalogStatsResponse> {
+    ) -> AppResult<crate::models::dto::stats::CatalogStatsResponse> {
         let pool = &self.pool;
 
         let start = start_date.unwrap_or(chrono::DateTime::from_timestamp(0, 0).unwrap());
@@ -926,7 +926,7 @@ impl Repository {
             .fetch_one(pool)
             .await?;
 
-        let totals = crate::api::stats::CatalogStatsTotals {
+        let totals = crate::models::dto::stats::CatalogStatsTotals {
             active_items,
             entered_items,
             archived_items,
@@ -981,18 +981,18 @@ impl Repository {
                     pt_entry.2 += ar;
                 }
 
-                let mut result: Vec<crate::api::stats::CatalogSourceStats> = source_map.into_iter().map(|(source_id, (source_name, media_map))| {
-                    let mut by_mt: Vec<crate::api::stats::CatalogBreakdownStats> = media_map.into_iter().map(|(label, pt_map)| {
-                        let mut by_pt: Vec<crate::api::stats::CatalogBreakdownStats> = pt_map.into_iter().map(|(pt_label, (a, e, ar))| {
-                            crate::api::stats::CatalogBreakdownStats { label: pt_label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
+                let mut result: Vec<crate::models::dto::stats::CatalogSourceStats> = source_map.into_iter().map(|(source_id, (source_name, media_map))| {
+                    let mut by_mt: Vec<crate::models::dto::stats::CatalogBreakdownStats> = media_map.into_iter().map(|(label, pt_map)| {
+                        let mut by_pt: Vec<crate::models::dto::stats::CatalogBreakdownStats> = pt_map.into_iter().map(|(pt_label, (a, e, ar))| {
+                            crate::models::dto::stats::CatalogBreakdownStats { label: pt_label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
                         }).collect();
                         by_pt.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                         let (active, entered, archived) = by_pt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_items, acc.1 + x.entered_items, acc.2 + x.archived_items));
-                        crate::api::stats::CatalogBreakdownStats { label, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_public_type: Some(by_pt) }
+                        crate::models::dto::stats::CatalogBreakdownStats { label, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_public_type: Some(by_pt) }
                     }).collect();
                     by_mt.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                     let (active, entered, archived) = by_mt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_items, acc.1 + x.entered_items, acc.2 + x.archived_items));
-                    crate::api::stats::CatalogSourceStats { source_id, source_name, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_media_type: Some(by_mt), by_public_type: None }
+                    crate::models::dto::stats::CatalogSourceStats { source_id, source_name, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_media_type: Some(by_mt), by_public_type: None }
                 }).collect();
                 result.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                 Some(result)
@@ -1035,13 +1035,13 @@ impl Repository {
                     mt_entry.2 += ar;
                 }
 
-                let mut result: Vec<crate::api::stats::CatalogSourceStats> = source_map.into_iter().map(|(source_id, (source_name, media_map))| {
-                    let mut by_mt: Vec<crate::api::stats::CatalogBreakdownStats> = media_map.into_iter().map(|(label, (a, e, ar))| {
-                        crate::api::stats::CatalogBreakdownStats { label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
+                let mut result: Vec<crate::models::dto::stats::CatalogSourceStats> = source_map.into_iter().map(|(source_id, (source_name, media_map))| {
+                    let mut by_mt: Vec<crate::models::dto::stats::CatalogBreakdownStats> = media_map.into_iter().map(|(label, (a, e, ar))| {
+                        crate::models::dto::stats::CatalogBreakdownStats { label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
                     }).collect();
                     by_mt.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                     let (active, entered, archived) = by_mt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_items, acc.1 + x.entered_items, acc.2 + x.archived_items));
-                    crate::api::stats::CatalogSourceStats { source_id, source_name, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_media_type: Some(by_mt), by_public_type: None }
+                    crate::models::dto::stats::CatalogSourceStats { source_id, source_name, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_media_type: Some(by_mt), by_public_type: None }
                 }).collect();
                 result.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                 Some(result)
@@ -1085,13 +1085,13 @@ impl Repository {
                     pt_entry.2 += ar;
                 }
 
-                let mut result: Vec<crate::api::stats::CatalogSourceStats> = source_map.into_iter().map(|(source_id, (source_name, pt_map))| {
-                    let mut by_pt: Vec<crate::api::stats::CatalogBreakdownStats> = pt_map.into_iter().map(|(label, (a, e, ar))| {
-                        crate::api::stats::CatalogBreakdownStats { label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
+                let mut result: Vec<crate::models::dto::stats::CatalogSourceStats> = source_map.into_iter().map(|(source_id, (source_name, pt_map))| {
+                    let mut by_pt: Vec<crate::models::dto::stats::CatalogBreakdownStats> = pt_map.into_iter().map(|(label, (a, e, ar))| {
+                        crate::models::dto::stats::CatalogBreakdownStats { label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
                     }).collect();
                     by_pt.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                     let (active, entered, archived) = by_pt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_items, acc.1 + x.entered_items, acc.2 + x.archived_items));
-                    crate::api::stats::CatalogSourceStats { source_id, source_name, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_media_type: None, by_public_type: Some(by_pt) }
+                    crate::models::dto::stats::CatalogSourceStats { source_id, source_name, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_media_type: None, by_public_type: Some(by_pt) }
                 }).collect();
                 result.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                 Some(result)
@@ -1118,7 +1118,7 @@ impl Repository {
                     .fetch_all(pool)
                     .await?;
                 
-                Some(rows.into_iter().map(|row| crate::api::stats::CatalogSourceStats {
+                Some(rows.into_iter().map(|row| crate::models::dto::stats::CatalogSourceStats {
                     source_id: row.get("source_id"),
                     source_name: row.get("source_name"),
                     active_items: row.get("active_items"),
@@ -1172,13 +1172,13 @@ impl Repository {
                     pt_entry.2 += ar;
                 }
 
-                let mut result: Vec<crate::api::stats::CatalogBreakdownStats> = media_map.into_iter().map(|(label, pt_map)| {
-                    let mut by_pt: Vec<crate::api::stats::CatalogBreakdownStats> = pt_map.into_iter().map(|(pt_label, (a, e, ar))| {
-                        crate::api::stats::CatalogBreakdownStats { label: pt_label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
+                let mut result: Vec<crate::models::dto::stats::CatalogBreakdownStats> = media_map.into_iter().map(|(label, pt_map)| {
+                    let mut by_pt: Vec<crate::models::dto::stats::CatalogBreakdownStats> = pt_map.into_iter().map(|(pt_label, (a, e, ar))| {
+                        crate::models::dto::stats::CatalogBreakdownStats { label: pt_label, active_items: a, entered_items: e, archived_items: ar, loans: 0, by_public_type: None }
                     }).collect();
                     by_pt.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                     let (active, entered, archived) = by_pt.iter().fold((0i64, 0i64, 0i64), |acc, x| (acc.0 + x.active_items, acc.1 + x.entered_items, acc.2 + x.archived_items));
-                    crate::api::stats::CatalogBreakdownStats { label, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_public_type: Some(by_pt) }
+                    crate::models::dto::stats::CatalogBreakdownStats { label, active_items: active, entered_items: entered, archived_items: archived, loans: 0, by_public_type: Some(by_pt) }
                 }).collect();
                 result.sort_by(|a, b| b.active_items.cmp(&a.active_items));
                 Some(result)
@@ -1203,7 +1203,7 @@ impl Repository {
                     .fetch_all(pool)
                     .await?;
                
-                Some(rows.into_iter().map(|row| crate::api::stats::CatalogBreakdownStats {
+                Some(rows.into_iter().map(|row| crate::models::dto::stats::CatalogBreakdownStats {
                     label: row.get("label"),
                     active_items: row.get("active_items"),
                     entered_items: row.get("entered_items"),
@@ -1238,7 +1238,7 @@ impl Repository {
                 .fetch_all(pool)
                 .await?;
                
-            Some(rows.into_iter().map(|row| crate::api::stats::CatalogBreakdownStats {
+            Some(rows.into_iter().map(|row| crate::models::dto::stats::CatalogBreakdownStats {
                 label: row.get("label"),
                 active_items: row.get("active_items"),
                 entered_items: row.get("entered_items"),
@@ -1353,7 +1353,7 @@ impl Repository {
             }
         
 
-        Ok(crate::api::stats::CatalogStatsResponse {
+        Ok(crate::models::dto::stats::CatalogStatsResponse {
             totals,
             by_source: by_source_data,
             by_media_type: by_media_type_data,

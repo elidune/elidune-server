@@ -501,6 +501,7 @@ impl From<&MarcItem> for Item {
             archived_at: None,
             source_name: s.library.clone(),
             borrowed: false,
+            loan_id: None,
         }
     }
 }

@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use totp_lite::totp_custom;
 
 use crate::{
+    auth_policy::validate_password_strength,
     config::UsersConfig,
     error::{AppError, AppResult},
     models::{
@@ -305,7 +306,11 @@ impl UsersService {
 
     /// Disable 2FA for a user
     #[tracing::instrument(skip(self), err)]
-    pub async fn disable_2fa(&self, user_id: i64) -> AppResult<()> {
+    pub async fn disable_2fa(&self, user_id: i64, password: &str) -> AppResult<()> {
+        let user = self.repository.users_get_by_id(user_id).await?;
+        if !self.verify_password(&user, password)? {
+            return Err(AppError::Authentication("Invalid login or password".to_string()));
+        }
         self.repository.users_update_2fa_settings(user_id, false, None, None, None).await?;
 
         Ok(())
@@ -371,6 +376,7 @@ impl UsersService {
 
         // Hash password if provided
         let password = if let Some(ref password) = user.password {
+            validate_password_strength(password)?;
             Some(self.hash_password(password)?)
         } else {
             None
@@ -399,6 +405,7 @@ impl UsersService {
 
         // Hash password if provided
         let password = if let Some(ref password) = user.password {
+            validate_password_strength(password)?;
             Some(self.hash_password(password)?)
         } else {
             None
@@ -439,6 +446,7 @@ impl UsersService {
 
         // Hash new password if provided
         let password = if let Some(ref new_password) = profile.new_password {
+            validate_password_strength(new_password)?;
             Some(self.hash_password(new_password)?)
         } else {
             None
@@ -521,6 +529,7 @@ impl UsersService {
             return Err(AppError::Authentication("Invalid reset token purpose".to_string()));
         }
 
+        validate_password_strength(new_password)?;
         let hash = self.hash_password(new_password)?;
         self.repository.users_update_password(claims.user_id, &hash).await
     }
@@ -533,10 +542,7 @@ impl UsersService {
     /// is returned.
     #[tracing::instrument(skip(self), err)]
     pub async fn change_password_first_login(&self, user_id: i64, new_password: &str) -> AppResult<String> {
-        if new_password.len() < 4 {
-            return Err(AppError::Validation("Password must be at least 4 characters".to_string()));
-        }
-
+        validate_password_strength(new_password)?;
         let hash = self.hash_password(new_password)?;
         // users_update_password also resets must_change_password = false
         self.repository.users_update_password(user_id, &hash).await?;

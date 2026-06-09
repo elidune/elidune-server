@@ -7,21 +7,21 @@
 
 use std::sync::Arc;
 
-use chrono::{Local, NaiveTime, Timelike};
+use chrono::{Local, NaiveTime, Timelike, Utc};
 use tokio::sync::Notify;
 use tokio::time::Duration;
-
-use sqlx::{Pool, Postgres};
 
 use crate::{
     dynamic_config::DynamicConfig,
     email::EmailService,
+    repository::Repository,
     services::{
         audit,
         audit::AuditService,
         email_outbox,
         holds::HoldsService,
         reminders::RemindersService,
+        operational_metrics,
     },
 };
 
@@ -33,7 +33,7 @@ pub fn spawn(
     audit_service: AuditService,
     holds_service: HoldsService,
     email_service: EmailService,
-    pool: Pool<Postgres>,
+    repository: Arc<Repository>,
 ) -> Arc<Notify> {
     let notify = Arc::new(Notify::new());
 
@@ -78,7 +78,7 @@ pub fn spawn(
             match rem_svc.send_overdue_reminders(false, None, None).await {
                 Ok(report) => {
                     tracing::info!(
-                        "Reminder batch completed: {} emails sent, {} loans reminded, {} errors",
+                        "Reminder batch completed: {} emails queued, {} loans queued, {} errors",
                         report.emails_sent,
                         report.loans_reminded,
                         report.errors.len()
@@ -110,6 +110,7 @@ pub fn spawn(
                     );
                 }
             }
+            operational_metrics::record_scheduler_run("reminders", Utc::now().timestamp());
         }
     });
 
@@ -156,6 +157,7 @@ pub fn spawn(
                     );
                 }
             }
+            operational_metrics::record_scheduler_run("holds_expiry", Utc::now().timestamp());
         }
     });
 
@@ -201,24 +203,34 @@ pub fn spawn(
                     );
                 }
             }
+            operational_metrics::record_scheduler_run("audit_cleanup", Utc::now().timestamp());
         }
     });
 
     // Email outbox drain (every 30 seconds)
     let email_out = email_service;
-    let pool_out = pool;
+    let repository_out = repository.clone();
+    let audit_out = audit_service.clone();
     tokio::spawn(async move {
         tracing::info!("Email outbox scheduler started");
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
 
-            match email_outbox::process_outbox_batch(&email_out, &pool_out, None).await {
+            match email_outbox::process_outbox_batch(
+                &email_out,
+                repository_out.as_ref(),
+                &audit_out,
+                None,
+            )
+            .await
+            {
                 Ok(report) if report.processed > 0 => {
                     tracing::info!(
-                        "Email outbox batch: {} sent, {} failed, {} deferred (of {} processed)",
+                        "Email outbox batch: {} sent, {} failed, {} deferred, {} reminders confirmed (of {} processed)",
                         report.sent,
                         report.failed,
                         report.deferred,
+                        report.reminders_confirmed,
                         report.processed
                     );
                 }
@@ -227,6 +239,7 @@ pub fn spawn(
                     tracing::error!("Email outbox batch failed: {}", e);
                 }
             }
+            operational_metrics::record_scheduler_run("email_outbox", Utc::now().timestamp());
         }
     });
 

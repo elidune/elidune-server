@@ -162,7 +162,7 @@ pub async fn run_maintenance(
         ));
     }
 
-    let pool = state.services.repository_pool().clone();
+    let repository = state.services.repository.as_ref().clone();
     let maintenance = state.services.maintenance.clone();
     let user_id = claims.user_id;
     let actions = req.actions;
@@ -172,7 +172,7 @@ pub async fn run_maintenance(
         .tasks
         .spawn_task(TaskKind::Maintenance, user_id, move |handle| async move {
             maintenance
-                .run_maintenance_task(pool, actions, user_id, ip, handle)
+                .run_maintenance_task(repository, actions, user_id, ip, handle)
                 .await;
         })
         .await;

@@ -13,6 +13,7 @@ use crate::{
         biblio::{Biblio, BiblioShort, Collection, Edition, Isbn, Serie},
         item::{Item, ItemShort},
         loan::{Loan, LoanDetails, LoanMarcExportRow},
+        user::{UserShort, UserShortRow},
     },
 };
 
@@ -24,6 +25,27 @@ impl Repository {
             .fetch_optional(&self.pool)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Loan with id {} not found", id)))
+    }
+
+    /// Borrower snapshot for an active loan (`UserShort` with live loan counts).
+    pub async fn loans_get_borrower_for_loan(&self, loan_id: i64) -> AppResult<UserShort> {
+        let row = sqlx::query_as::<_, UserShortRow>(
+            r#"
+            SELECT u.id, u.firstname, u.lastname, u.account_type, u.public_type,
+                   (SELECT COUNT(*)::bigint FROM loans l WHERE l.user_id = u.id AND l.returned_at IS NULL) AS nb_loans,
+                   (SELECT COUNT(*)::bigint FROM loans l WHERE l.user_id = u.id AND l.returned_at IS NULL AND l.expiry_at < NOW()) AS nb_late_loans,
+                   u.status, u.created_at, u.expiry_at
+            FROM loans lo
+            JOIN users u ON u.id = lo.user_id
+            WHERE lo.id = $1
+            "#,
+        )
+        .bind(loan_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Loan with id {loan_id} not found")))?;
+
+        Ok(row.into())
     }
 
     /// Get active loan by item identification (barcode)
@@ -386,6 +408,7 @@ impl Repository {
             archived_at: row.try_get("item_archived_at").ok().flatten(),
             source_name: row.try_get("item_source_name").ok().flatten(),
             borrowed: row.try_get("item_borrowed").unwrap_or(false),
+            loan_id: None,
         };
 
         let series_ids: Vec<i64> = series.iter().filter_map(|s| s.id).collect();

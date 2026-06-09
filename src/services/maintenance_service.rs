@@ -1,7 +1,6 @@
 //! Maintenance orchestration — data-quality batch operations run as background tasks.
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Pool, Postgres};
 use utoipa::ToSchema;
 
 use crate::{
@@ -136,13 +135,12 @@ impl MaintenanceService {
     /// Run the ordered maintenance actions, reporting progress via `handle`.
     pub async fn run_maintenance_task(
         &self,
-        pool: Pool<Postgres>,
+        repository: Repository,
         actions: Vec<MaintenanceAction>,
         user_id: i64,
         ip: Option<String>,
         handle: TaskHandle,
     ) {
-        let repo = Repository::new(pool, None);
         let total = actions.len();
         let mut reports = Vec::with_capacity(total);
 
@@ -160,7 +158,7 @@ impl MaintenanceService {
             }
 
             let result = dispatch_maintenance_action(
-                &repo,
+                &repository,
                 &self.catalog,
                 &self.z3950,
                 action,

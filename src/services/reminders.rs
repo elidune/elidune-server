@@ -1,7 +1,7 @@
 //! Overdue loan reminder service.
 //!
 //! Groups overdue loans by user, enqueues one reminder email per user listing all their overdue items,
-//! updates reminder tracking columns, and records audit events.
+//! and records audit events. Loan reminder tracking updates after SMTP delivery (outbox `sent`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ pub struct ReminderReport {
     pub dry_run: bool,
     /// Number of emails successfully queued (or that would be queued in dry-run)
     pub emails_sent: u32,
-    /// Total number of overdue loans covered
+    /// Overdue loans covered by queued emails; DB tracking updates after SMTP delivery
     pub loans_reminded: u32,
     /// Per-user details
     pub details: Vec<ReminderDetail>,
@@ -165,7 +165,7 @@ impl RemindersService {
 
         let mut details = Vec::new();
         let mut errors = Vec::new();
-        let mut all_reminded_ids: Vec<i64> = Vec::new();
+        let mut queued_loan_ids: Vec<i64> = Vec::new();
 
         for (user_id, loans) in &by_user {
             let first = &loans[0];
@@ -262,16 +262,22 @@ impl RemindersService {
 
                         match self
                             .email
-                            .enqueue(&email_addr, &subject, &body_plain, &body_html)
+                            .enqueue_overdue_reminder(
+                                &email_addr,
+                                &subject,
+                                &body_plain,
+                                &body_html,
+                                &loans.iter().map(|l| l.loan_id).collect::<Vec<_>>(),
+                            )
                             .await
                         {
                             Ok(outbox_id) => {
                                 let loan_ids: Vec<i64> =
                                     loans.iter().map(|l| l.loan_id).collect();
-                                all_reminded_ids.extend(&loan_ids);
+                                queued_loan_ids.extend(&loan_ids);
 
                                 self.audit.log(
-                                    audit::event::EMAIL_OVERDUE_REMINDER_SENT,
+                                    audit::event::EMAIL_OVERDUE_REMINDER_QUEUED,
                                     triggered_by,
                                     Some("user"),
                                     Some(*user_id),
@@ -295,7 +301,7 @@ impl RemindersService {
                             }
                             Err(e) => {
                                 self.audit.log(
-                                    audit::event::EMAIL_OVERDUE_REMINDER_SENT,
+                                    audit::event::EMAIL_OVERDUE_REMINDER_QUEUED,
                                     triggered_by,
                                     Some("user"),
                                     Some(*user_id),
@@ -327,15 +333,8 @@ impl RemindersService {
             }
         }
 
-        // Update reminder tracking in DB (not in dry-run mode)
-        if !dry_run && !all_reminded_ids.is_empty() {
-            self.repository
-                .loans_update_reminder_sent(&all_reminded_ids)
-                .await?;
-        }
-
         let emails_sent = details.len() as u32;
-        let loans_reminded = all_reminded_ids.len() as u32;
+        let loans_reminded = queued_loan_ids.len() as u32;
 
         Ok(ReminderReport {
             dry_run,

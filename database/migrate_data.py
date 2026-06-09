@@ -4,7 +4,8 @@ Data migration script for Elidune
 Migrates data from the legacy C/XML-RPC PostgreSQL schema to the new Rust schema.
 
 Source schema: legacy database (see elidune-pgdump.sql)
-Target schema: new database (see migrations/001_initial_schema.sql, symlinked as database/init_database.sql)
+Target schema: new database (see migrations/001_initial_schema.sql + follow-up migrations,
+including email outbox tables up to migration 021)
 
 Usage:
     python migrate_data.py --source-db <old_db_url> --target-db <new_db_url>
@@ -195,6 +196,9 @@ TABLES_DROP_ORDER = [
     'equipment', 'events',
     # Seeded at server startup from data/email_templates/*.json (includes localized `name` column).
     'email_templates',
+    'email_outbox_event_announcements',
+    'email_outbox_reminder_loans',
+    'email_outbox',
     'settings', 'library_info',
 ]
 

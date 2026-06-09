@@ -5,7 +5,9 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use utoipa::ToSchema;
+use validator::Validate;
 
+use crate::auth_policy::validate_password_strength;
 use crate::error::AppResult;
 #[allow(unused_imports)] // Used in utoipa macros
 use crate::error::ErrorResponse;
@@ -14,7 +16,10 @@ use crate::services::audit;
 
 use super::ClientIp;
 
-use super::{AuthenticatedUser, PasswordChangeUser};
+use super::{AuthenticatedUser, PasswordChangeUser, ValidatedJson};
+
+static AUTH_2FA_METHOD_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new("^(totp|email)$").expect("valid 2FA regex"));
 
 
 /// Build the auth routes for this domain.
@@ -55,12 +60,14 @@ struct UserIdAudit {
 }
 
 /// Login request body
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginRequest {
     /// Username or login
+    #[validate(length(min = 1, message = "username is required"))]
     pub username: String,
     /// Password
+    #[validate(length(min = 1, message = "password is required"))]
     pub password: String,
     /// Device ID (optional, for bypassing 2FA if device is already trusted)
     pub device_id: Option<String>,
@@ -137,7 +144,7 @@ pub struct UserInfo {
 pub async fn login(
     State(state): State<crate::AppState>,
     ClientIp(ip): ClientIp,
-    Json(request): Json<LoginRequest>,
+    ValidatedJson(request): ValidatedJson<LoginRequest>,
 ) -> AppResult<Json<LoginResponse>> {
     let login_result = state
         .services
@@ -306,7 +313,7 @@ pub async fn me(
 
 /// Verify 2FA code request
 #[serde_as]
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Verify2FARequest {
     /// User ID (from login response)
@@ -314,6 +321,7 @@ pub struct Verify2FARequest {
     #[schema(value_type = String)]
     pub user_id: i64,
     /// 2FA code (TOTP or email code)
+    #[validate(length(min = 1, message = "code is required"))]
     pub code: String,
     /// Device ID for trusted device feature (optional)
     pub device_id: Option<String>,
@@ -347,7 +355,7 @@ pub struct Verify2FAResponse {
 pub async fn verify_2fa(
     State(state): State<crate::AppState>,
     ClientIp(ip): ClientIp,
-    Json(request): Json<Verify2FARequest>,
+    ValidatedJson(request): ValidatedJson<Verify2FARequest>,
 ) -> AppResult<Json<Verify2FAResponse>> {
     let trust_device = request.trust_device.unwrap_or(false);
     let verify_ctx = TwoFaVerifyAttemptAudit {
@@ -393,7 +401,7 @@ pub async fn verify_2fa(
 
 /// Verify recovery code request
 #[serde_as]
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyRecoveryRequest {
     /// User ID (from login response)
@@ -401,14 +409,16 @@ pub struct VerifyRecoveryRequest {
     #[schema(value_type = String)]
     pub user_id: i64,
     /// Recovery code
+    #[validate(length(min = 1, message = "code is required"))]
     pub code: String,
 }
 
 /// Password reset request
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestPasswordResetRequest {
     /// Login or email address for the account.
+    #[validate(length(min = 1, message = "identifier is required"))]
     pub identifier: String,
     /// Full URL template for the reset link; must contain the literal `<token>` placeholder.
     /// If omitted, the server uses `[users].password_reset_url_template` from the app config.
@@ -428,12 +438,17 @@ pub struct RequestPasswordResetResponse {
 pub struct ResetPasswordResponse {
     pub message: String,
 }
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetPasswordRequest {
     /// Reset token received by email
+    #[validate(length(min = 1, message = "token is required"))]
     pub token: String,
     /// New password
+    #[validate(length(
+        min = 12,
+        message = "Password must be at least 12 characters"
+    ))]
     pub new_password: String,
 }
 
@@ -450,7 +465,7 @@ pub struct ResetPasswordRequest {
 )]
 pub async fn verify_recovery(
     State(state): State<crate::AppState>,
-    Json(request): Json<VerifyRecoveryRequest>,
+    ValidatedJson(request): ValidatedJson<VerifyRecoveryRequest>,
 ) -> AppResult<Json<Verify2FAResponse>> {
     let token = state
         .services
@@ -480,7 +495,7 @@ pub async fn verify_recovery(
 pub async fn request_password_reset(
     State(state): State<crate::AppState>,
     ClientIp(ip): ClientIp,
-    Json(request): Json<RequestPasswordResetRequest>,
+    ValidatedJson(request): ValidatedJson<RequestPasswordResetRequest>,
 ) -> AppResult<Json<RequestPasswordResetResponse>> {
     let url_template = request
         .reset_url
@@ -568,14 +583,9 @@ pub async fn request_password_reset(
 pub async fn reset_password(
     State(state): State<crate::AppState>,
     ClientIp(ip): ClientIp,
-    Json(request): Json<ResetPasswordRequest>,
+    ValidatedJson(request): ValidatedJson<ResetPasswordRequest>,
 ) -> AppResult<Json<ResetPasswordResponse>> {
-
-    if request.new_password.len() < 4 {
-        return Err(crate::error::AppError::Validation(
-            "Password must be at least 4 characters".to_string(),
-        ));
-    }
+    validate_password_strength(&request.new_password)?;
 
     state
         .services
@@ -600,9 +610,13 @@ pub async fn reset_password(
 }
 
 /// Setup 2FA request
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, Validate, ToSchema)]
 pub struct Setup2FARequest {
     /// 2FA method: "totp" or "email"
+    #[validate(regex(
+        path = "*AUTH_2FA_METHOD_RE",
+        message = "method must be totp or email"
+    ))]
     pub method: String,
 }
 
@@ -632,7 +646,7 @@ pub async fn setup_2fa(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
-    Json(request): Json<Setup2FARequest>,
+    ValidatedJson(request): ValidatedJson<Setup2FARequest>,
 ) -> AppResult<Json<Setup2FAResponse>> {
     let user = state.services.users.get_by_id(claims.user_id).await?;
 
@@ -661,12 +675,20 @@ pub async fn setup_2fa(
     Ok(Json(Setup2FAResponse { provisioning_uri, recovery_codes }))
 }
 
+#[derive(Deserialize, Validate, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Disable2FARequest {
+    #[validate(length(min = 1, message = "password is required"))]
+    pub password: String,
+}
+
 /// Disable 2FA endpoint
 #[utoipa::path(
     post,
     path = "/auth/disable-2fa",
     tag = "auth",
     security(("bearer_auth" = [])),
+    request_body = Disable2FARequest,
     responses(
         (status = 200, description = "2FA disabled successfully"),
         (status = 401, description = "Not authenticated", body = ErrorResponse)
@@ -676,8 +698,13 @@ pub async fn disable_2fa(
     State(state): State<crate::AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
+    ValidatedJson(request): ValidatedJson<Disable2FARequest>,
 ) -> AppResult<Json<serde_json::Value>> {
-    state.services.users.disable_2fa(claims.user_id).await?;
+    state
+        .services
+        .users
+        .disable_2fa(claims.user_id, &request.password)
+        .await?;
 
     state.services.audit.log(
         audit::event::AUTH_2FA_DISABLED,
@@ -694,10 +721,14 @@ pub async fn disable_2fa(
 }
 
 /// First-login password change request
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangePasswordRequest {
-    /// New password (min 4 chars)
+    /// New password (min 12 chars)
+    #[validate(length(
+        min = 12,
+        message = "Password must be at least 12 characters"
+    ))]
     pub new_password: String,
 }
 
@@ -722,8 +753,9 @@ pub async fn change_password(
     State(state): State<crate::AppState>,
     PasswordChangeUser(claims): PasswordChangeUser,
     ClientIp(ip): ClientIp,
-    Json(request): Json<ChangePasswordRequest>,
+    ValidatedJson(request): ValidatedJson<ChangePasswordRequest>,
 ) -> AppResult<Json<Verify2FAResponse>> {
+    validate_password_strength(&request.new_password)?;
     let token = state
         .services
         .users

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Notify};
 
 pub mod api;
+pub mod auth_policy;
 pub mod app;
 pub mod bootstrap;
 pub mod config;

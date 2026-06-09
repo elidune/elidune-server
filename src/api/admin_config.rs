@@ -11,6 +11,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
+use validator::Validate;
 
 use crate::{
     error::{AppError, AppResult},
@@ -18,7 +19,7 @@ use crate::{
     AppState,
 };
 
-use super::{AuthenticatedUser, ClientIp};
+use super::{AuthenticatedUser, ClientIp, ValidatedJson};
 
 /// A single config section with its current value and override status
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -48,9 +49,10 @@ pub struct UpdateConfigSectionRequest {
 }
 
 /// Request body for POST /admin/config/email/test
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, Validate, ToSchema)]
 pub struct TestEmailRequest {
     /// Recipient email address for the test
+    #[validate(email(message = "Invalid email format"))]
     pub to: String,
 }
 
@@ -249,7 +251,7 @@ pub async fn test_email(
     State(state): State<AppState>,
     AuthenticatedUser(claims): AuthenticatedUser,
     ClientIp(ip): ClientIp,
-    Json(body): Json<TestEmailRequest>,
+    ValidatedJson(body): ValidatedJson<TestEmailRequest>,
 ) -> AppResult<StatusCode> {
     claims.require_admin()?;
 
@@ -330,7 +332,7 @@ pub struct ReindexSearchResponse {
 
 /// Build the admin-config routes for this domain.
 pub fn router() -> axum::Router<crate::AppState> {
-    use axum::routing::{delete, get, post, put};
+    use axum::routing::{get, post, put};
     axum::Router::new()
         .route("/admin/config", get(get_config))
         .route("/admin/config/:section", put(update_config_section).delete(reset_config_section))

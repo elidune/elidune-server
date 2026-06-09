@@ -266,6 +266,8 @@ impl AppConfig {
         Ok(())
     }
 
+
+ 
     /// Minimal configuration for integration tests (uses `DATABASE_URL` / `REDIS_URL` env vars).
     pub fn for_test() -> Self {
         let database_url = std::env::var("DATABASE_URL")

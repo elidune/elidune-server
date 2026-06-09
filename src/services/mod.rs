@@ -13,6 +13,7 @@ pub mod library_info;
 pub mod loans;
 pub mod maintenance_service;
 pub mod marc;
+pub mod operational_metrics;
 pub mod public_types;
 pub mod redis;
 pub mod reminders;
@@ -32,8 +33,6 @@ pub use crate::email as email;
 pub use crate::email_templates as email_templates;
 
 use std::sync::Arc;
-
-use sqlx::{Pool, Postgres};
 
 use crate::{
     config::{MeilisearchConfig, RedisConfig, UsersConfig},
@@ -77,19 +76,15 @@ pub struct Services {
     pub users: users::UsersService,
     pub visitor_counts: visitor_counts::VisitorCountsService,
     pub z3950: z3950::Z3950Service,
-    /// Exposed for admin endpoints that need direct DB access (config, settings)
-    pool: Pool<Postgres>,
+    /// Shared DB repository (pool + dynamic config for hold expiry windows).
+    pub repository: Arc<Repository>,
 }
 
 impl Services {
-    pub fn repository_pool(&self) -> &Pool<Postgres> {
-        &self.pool
-    }
-
     /// [`Repository`] with only the DB pool (no dynamic config).
     /// Use for the `settings` table and other calls that do not need dynamic hold settings.
     pub fn minimal_repository(&self) -> Repository {
-        Repository::new(self.pool.clone(), None)
+        Repository::new(self.repository.pool().clone(), None)
     }
 
     /// Create all services with the given repository and dynamic config
@@ -103,8 +98,6 @@ impl Services {
         email_service: Arc<crate::email::EmailService>,
         event_bus: event_bus::EventBus,
     ) -> AppResult<Self> {
-        let pool = repository.pool.clone();
-
         // Wrap the concrete repository in an Arc so it can be coerced to trait objects.
         let repo = Arc::new(repository.clone());
 
@@ -152,7 +145,7 @@ impl Services {
         );
 
         Ok(Self {
-            pool,
+            repository: repo.clone(),
             audit: audit_service.clone(),
             account_types_catalog: account_types_catalog::AccountTypesCatalogService::new(
                 repo.clone() as Arc<dyn AccountTypesCatalogRepository>,
@@ -193,7 +186,7 @@ impl Services {
             schedules: schedules::SchedulesService::new(repo.clone() as Arc<dyn SchedulesRepository>),
             search: search_service,
             sources: sources::SourcesService::new(repo.clone() as Arc<dyn SourcesRepository>),
-            stats: stats::StatsService::new(repository.clone()),
+            stats: stats::StatsService::new(repository.clone(), redis_service.clone()),
             tasks: task_manager::TaskManager::new(redis_service.clone()),
             users: users::UsersService::new(repository.clone(), auth_config, redis_service.clone()),
             visitor_counts: visitor_counts::VisitorCountsService::new(

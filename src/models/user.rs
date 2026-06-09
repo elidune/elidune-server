@@ -515,7 +515,7 @@ pub struct UserPayload {
     pub barcode: Option<String>,
     /// Login (username); required on create and on admin update
     pub login: Option<String>,
-    #[validate(length(min = 4, message = "Password must be at least 4 characters"))]
+    #[validate(length(min = 12, message = "Password must be at least 12 characters"))]
     pub password: Option<String>,
     pub firstname: Option<String>,
     pub lastname: Option<String>,
@@ -634,7 +634,7 @@ pub struct UpdateProfile {
     /// Current password (required to change password)
     pub current_password: Option<String>,
     /// New password
-    #[validate(length(min = 4, message = "Password must be at least 4 characters"))]
+    #[validate(length(min = 12, message = "Password must be at least 12 characters"))]
     pub new_password: Option<String>,
     /// Preferred language
     pub language: Option<Language>,

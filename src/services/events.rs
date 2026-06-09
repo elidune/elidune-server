@@ -288,7 +288,7 @@ impl EventsService {
 
             match self
                 .email
-                .enqueue(&email_addr, &subject, &body_plain, &body_html)
+                .enqueue_event_announcement(&email_addr, &subject, &body_plain, &body_html, event_id)
                 .await
             {
                 Ok(outbox_id) => {
@@ -329,10 +329,6 @@ impl EventsService {
                     });
                 }
             }
-        }
-
-        if emails_sent > 0 {
-            let _ = self.repository.events_set_announcement_sent_at(event_id).await;
         }
 
         Ok(AnnouncementReport { event_id, emails_sent, skipped, errors })

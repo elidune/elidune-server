@@ -11,7 +11,7 @@ use elidune_server::{
     build_app,
     config::AppConfig,
     dynamic_config::DynamicConfig,
-    services::{audit, event_bus::EventBus, scheduler, Services},
+    services::{audit, event_bus::EventBus, operational_metrics, scheduler, Services},
     AppState,
 };
 
@@ -88,6 +88,8 @@ async fn main() -> anyhow::Result<()> {
     .await
     .expect("Failed to create services");
     let services = Arc::new(services);
+    operational_metrics::init_prometheus_recorder()
+        .expect("Failed to initialize Prometheus metrics recorder");
 
     services.audit.log(
         audit::event::SYSTEM_STARTUP,
@@ -105,7 +107,7 @@ async fn main() -> anyhow::Result<()> {
         services.audit.clone(),
         services.holds.clone(),
         services.email.clone(),
-        services.repository_pool().clone(),
+        services.repository.clone(),
     );
 
     let state = AppState {

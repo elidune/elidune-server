@@ -80,7 +80,7 @@ fn build_health_response(
     )
 )]
 pub async fn health_check(State(state): State<crate::AppState>) -> Json<HealthResponse> {
-    let pool = state.services.repository_pool();
+    let pool = state.services.repository.pool();
     let connected = database_connected(pool).await;
     if !connected {
         return Json(build_health_response(
@@ -120,7 +120,7 @@ pub async fn health_check(State(state): State<crate::AppState>) -> Json<HealthRe
     )
 )]
 pub async fn readiness_check(State(state): State<crate::AppState>) -> impl IntoResponse {
-    let pool = state.services.repository_pool();
+    let pool = state.services.repository.pool();
     let connected = database_connected(pool).await;
     if !connected {
         return (

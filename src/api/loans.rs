@@ -22,7 +22,8 @@ use crate::{
         loan::{
             CreateLoan, LoanDetails, LoanMarcExportEncoding, LoanMarcExportFormat,
             LoanSettingsRenewAt,
-        }, user::Rights,
+        },
+        user::{Rights, UserShort},
     },
     services::{
         audit::{self},
@@ -43,6 +44,7 @@ pub fn router() -> axum::Router<crate::AppState> {
         .route("/loans/settings", get(get_loan_settings).put(update_loan_settings))
         .route("/loans/overdue", get(get_overdue_loans))
         .route("/loans/send-overdue-reminders", post(send_overdue_reminders))
+        .route("/loans/:id/user", get(get_loan_borrower))
         .route("/loans/:id/return", post(return_loan))
         .route("/loans/:id/renew", post(renew_loan))
         .route("/loans/items/:item_id/return", post(return_loan_by_item))
@@ -50,6 +52,29 @@ pub fn router() -> axum::Router<crate::AppState> {
 }
 
 
+
+/// Get the patron linked to an active loan (circulation desk).
+#[utoipa::path(
+    get,
+    path = "/loans/{id}/user",
+    tag = "loans",
+    security(("bearer_auth" = [])),
+    params(("id" = i64, Path, description = "Active loan ID")),
+    responses(
+        (status = 200, description = "Borrower profile", body = UserShort),
+        (status = 403, description = "Insufficient loans write rights"),
+        (status = 404, description = "Loan not found")
+    )
+)]
+pub async fn get_loan_borrower(
+    State(state): State<crate::AppState>,
+    AuthenticatedUser(claims): AuthenticatedUser,
+    Path(loan_id): Path<i64>,
+) -> AppResult<Json<UserShort>> {
+    claims.require_write_loans()?;
+    let user = state.services.loans.get_loan_borrower(loan_id).await?;
+    Ok(Json(user))
+}
 
 /// Create loan request
 #[serde_as]
