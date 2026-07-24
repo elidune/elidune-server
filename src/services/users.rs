@@ -15,6 +15,7 @@ use crate::{
     config::UsersConfig,
     error::{AppError, AppResult},
     models::{
+        secret::{ExposeSecret, PlaintextPassword},
         user::{
             AccountTypeSlug, UpdateProfile, User, UserClaims, UserPayload, UserQuery, UserShort,
             UserStatus, SCOPE_CHANGE_PASSWORD,
@@ -48,7 +49,7 @@ impl UsersService {
     /// Authenticate user by login and return JWT token
     /// Returns (token, user) if 2FA is not enabled, or (None, user) if 2FA is required
     #[tracing::instrument(skip(self), err)]
-    pub async fn authenticate(&self, login: &str, password: &str, device_id: Option<&str>) -> AppResult<(Option<String>, User)> {
+    pub async fn authenticate(&self, login: &str, password: &PlaintextPassword, device_id: Option<&str>) -> AppResult<(Option<String>, User)> {
         // Authenticate by login (primary method)
         let user = self.repository.users_get_by_login(login)
             .await?
@@ -305,8 +306,8 @@ impl UsersService {
     }
 
     /// Disable 2FA for a user
-    #[tracing::instrument(skip(self), err)]
-    pub async fn disable_2fa(&self, user_id: i64, password: &str) -> AppResult<()> {
+    #[tracing::instrument(skip(self, password), err)]
+    pub async fn disable_2fa(&self, user_id: i64, password: &PlaintextPassword) -> AppResult<()> {
         let user = self.repository.users_get_by_id(user_id).await?;
         if !self.verify_password(&user, password)? {
             return Err(AppError::Authentication("Invalid login or password".to_string()));
@@ -317,7 +318,8 @@ impl UsersService {
     }
 
     /// Verify user password
-    fn verify_password(&self, user: &User, password: &str) -> AppResult<bool> {
+    fn verify_password(&self, user: &User, password: &PlaintextPassword) -> AppResult<bool> {
+        let password = password.expose_secret().as_str();
         // First try the new hashed password
         if let Some(ref hash) = user.password {
             let parsed_hash = PasswordHash::new(hash)
@@ -331,11 +333,11 @@ impl UsersService {
     }
 
     /// Hash a password using Argon2
-    pub fn hash_password(&self, password: &str) -> AppResult<String> {
+    pub fn hash_password(&self, password: &PlaintextPassword) -> AppResult<String> {
         let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
         let hash = argon2
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password(password.expose_secret().as_str().as_bytes(), &salt)
             .map_err(|e| AppError::Internal(format!("Failed to hash password: {}", e)))?;
         Ok(hash.to_string())
     }
@@ -376,7 +378,7 @@ impl UsersService {
 
         // Hash password if provided
         let password = if let Some(ref password) = user.password {
-            validate_password_strength(password)?;
+            validate_password_strength(password.expose_secret().as_str())?;
             Some(self.hash_password(password)?)
         } else {
             None
@@ -405,7 +407,7 @@ impl UsersService {
 
         // Hash password if provided
         let password = if let Some(ref password) = user.password {
-            validate_password_strength(password)?;
+            validate_password_strength(password.expose_secret().as_str())?;
             Some(self.hash_password(password)?)
         } else {
             None
@@ -446,7 +448,7 @@ impl UsersService {
 
         // Hash new password if provided
         let password = if let Some(ref new_password) = profile.new_password {
-            validate_password_strength(new_password)?;
+            validate_password_strength(new_password.expose_secret().as_str())?;
             Some(self.hash_password(new_password)?)
         } else {
             None
@@ -516,7 +518,7 @@ impl UsersService {
 
     /// Reset password using a reset token and a new password.
     #[tracing::instrument(skip(self), err)]
-    pub async fn reset_password(&self, token: &str, new_password: &str) -> AppResult<()> {
+    pub async fn reset_password(&self, token: &str, new_password: &PlaintextPassword) -> AppResult<()> {
         let token_data = decode::<PasswordResetClaims>(
             token,
             &DecodingKey::from_secret(self.config.jwt_secret.as_bytes()),
@@ -529,7 +531,7 @@ impl UsersService {
             return Err(AppError::Authentication("Invalid reset token purpose".to_string()));
         }
 
-        validate_password_strength(new_password)?;
+        validate_password_strength(new_password.expose_secret().as_str())?;
         let hash = self.hash_password(new_password)?;
         self.repository.users_update_password(claims.user_id, &hash).await
     }
@@ -541,8 +543,8 @@ impl UsersService {
     /// must_change_password flag is cleared by the repository layer and a full JWT
     /// is returned.
     #[tracing::instrument(skip(self), err)]
-    pub async fn change_password_first_login(&self, user_id: i64, new_password: &str) -> AppResult<String> {
-        validate_password_strength(new_password)?;
+    pub async fn change_password_first_login(&self, user_id: i64, new_password: &PlaintextPassword) -> AppResult<String> {
+        validate_password_strength(new_password.expose_secret().as_str())?;
         let hash = self.hash_password(new_password)?;
         // users_update_password also resets must_change_password = false
         self.repository.users_update_password(user_id, &hash).await?;

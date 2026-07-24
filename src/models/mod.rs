@@ -17,6 +17,7 @@ pub mod loan;
 pub mod public_type;
 pub mod hold;
 pub mod schedule;
+pub mod secret;
 pub mod stats_builder;
 pub mod source;
 pub mod task;
@@ -37,6 +38,7 @@ pub use schedule::{SchedulePeriod, ScheduleSlot, ScheduleClosure};
 use serde::{Deserialize, Serialize};
 pub use source::Source;
 pub use user::{User, UserShort};
+pub use secret::PlaintextPassword;
 use utoipa::ToSchema;
 pub use visitor_count::VisitorCount;
 

@@ -9,6 +9,7 @@ use validator::Validate;
 
 use crate::error::AppError;
 use super::{Language, Sex};
+use super::secret::PlaintextPassword;
 
 /// User rights levels (DB single-letter codes; holds domain also uses `o` = own).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -515,8 +516,8 @@ pub struct UserPayload {
     pub barcode: Option<String>,
     /// Login (username); required on create and on admin update
     pub login: Option<String>,
-    #[validate(length(min = 12, message = "Password must be at least 12 characters"))]
-    pub password: Option<String>,
+    #[schema(value_type = Option<String>)]
+    pub password: Option<PlaintextPassword>,
     pub firstname: Option<String>,
     pub lastname: Option<String>,
     #[validate(email(message = "Invalid email format"))]
@@ -632,10 +633,11 @@ pub struct UpdateProfile {
     /// Birth date (ISO `YYYY-MM-DD`)
     pub birthdate: Option<NaiveDate>,
     /// Current password (required to change password)
-    pub current_password: Option<String>,
+    #[schema(value_type = Option<String>)]
+    pub current_password: Option<PlaintextPassword>,
     /// New password
-    #[validate(length(min = 12, message = "Password must be at least 12 characters"))]
-    pub new_password: Option<String>,
+    #[schema(value_type = Option<String>)]
+    pub new_password: Option<PlaintextPassword>,
     /// Preferred language
     pub language: Option<Language>,
 }

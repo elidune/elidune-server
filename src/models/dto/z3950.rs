@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use utoipa::{IntoParams, ToSchema};
 
+use crate::models::PlaintextPassword;
+
 fn default_z3950_encoding() -> String {
     "utf-8".to_string()
 }
@@ -21,7 +23,8 @@ pub struct Z3950ServerConfig {
     pub database: Option<String>,
     pub format: Option<String>,
     pub login: Option<String>,
-    pub password: Option<String>,
+    #[schema(value_type = Option<String>)]
+    pub password: Option<PlaintextPassword>,
     #[serde(default = "default_z3950_encoding")]
     pub encoding: String,
     pub is_active: bool,

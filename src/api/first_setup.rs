@@ -11,8 +11,9 @@ use crate::{
     config::EmailConfig,
     error::{AppError, AppResult},
     models::{
+        secret::optional_exposed_string,
         user::{AccountTypeSlug, UpdateProfile},
-        Language, Sex,
+        Language, PlaintextPassword, Sex,
     },
     services::audit,
     AppState,
@@ -31,7 +32,8 @@ pub struct FirstSetupEmailBody {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub smtp_username: Option<String>,
-    pub smtp_password: Option<String>,
+    #[schema(value_type = Option<String>)]
+    pub smtp_password: Option<PlaintextPassword>,
     pub smtp_from: String,
     pub smtp_from_name: Option<String>,
     pub smtp_use_tls: bool,
@@ -45,7 +47,7 @@ impl FirstSetupEmailBody {
             smtp_host: self.smtp_host,
             smtp_port: self.smtp_port,
             smtp_username: self.smtp_username,
-            smtp_password: self.smtp_password,
+            smtp_password: optional_exposed_string(&self.smtp_password),
             smtp_from: self.smtp_from,
             smtp_from_name: self.smtp_from_name,
             smtp_use_tls: self.smtp_use_tls,
@@ -64,8 +66,9 @@ impl FirstSetupEmailBody {
 pub struct FirstSetupAdminBody {
     #[validate(length(min = 1, message = "login is required"))]
     pub login: String,
-    #[validate(length(min = 12, message = "Password must be at least 12 characters"))]
-    pub password: String,
+    #[validate(custom(function = "crate::models::secret::validate_password_strength_secret"))]
+    #[schema(value_type = String)]
+    pub password: PlaintextPassword,
     #[validate(length(min = 1, message = "firstname is required"))]
     pub firstname: String,
     #[validate(length(min = 1, message = "lastname is required"))]

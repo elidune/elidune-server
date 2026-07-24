@@ -7,8 +7,8 @@ use serde_with::{serde_as, DisplayFromStr};
 use utoipa::ToSchema;
 use validator::Validate;
 
-use crate::auth_policy::validate_password_strength;
 use crate::error::AppResult;
+use crate::models::PlaintextPassword;
 #[allow(unused_imports)] // Used in utoipa macros
 use crate::error::ErrorResponse;
 use crate::models::Language;
@@ -67,8 +67,9 @@ pub struct LoginRequest {
     #[validate(length(min = 1, message = "username is required"))]
     pub username: String,
     /// Password
-    #[validate(length(min = 1, message = "password is required"))]
-    pub password: String,
+    #[validate(custom(function = "crate::models::secret::validate_nonempty_secret"))]
+    #[schema(value_type = String)]
+    pub password: PlaintextPassword,
     /// Device ID (optional, for bypassing 2FA if device is already trusted)
     pub device_id: Option<String>,
 }
@@ -445,11 +446,9 @@ pub struct ResetPasswordRequest {
     #[validate(length(min = 1, message = "token is required"))]
     pub token: String,
     /// New password
-    #[validate(length(
-        min = 12,
-        message = "Password must be at least 12 characters"
-    ))]
-    pub new_password: String,
+    #[validate(custom(function = "crate::models::secret::validate_password_strength_secret"))]
+    #[schema(value_type = String)]
+    pub new_password: PlaintextPassword,
 }
 
 /// Verify recovery code endpoint
@@ -585,8 +584,6 @@ pub async fn reset_password(
     ClientIp(ip): ClientIp,
     ValidatedJson(request): ValidatedJson<ResetPasswordRequest>,
 ) -> AppResult<Json<ResetPasswordResponse>> {
-    validate_password_strength(&request.new_password)?;
-
     state
         .services
         .users
@@ -678,8 +675,9 @@ pub async fn setup_2fa(
 #[derive(Deserialize, Validate, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Disable2FARequest {
-    #[validate(length(min = 1, message = "password is required"))]
-    pub password: String,
+    #[validate(custom(function = "crate::models::secret::validate_nonempty_secret"))]
+    #[schema(value_type = String)]
+    pub password: PlaintextPassword,
 }
 
 /// Disable 2FA endpoint
@@ -725,11 +723,9 @@ pub async fn disable_2fa(
 #[serde(rename_all = "camelCase")]
 pub struct ChangePasswordRequest {
     /// New password (min 12 chars)
-    #[validate(length(
-        min = 12,
-        message = "Password must be at least 12 characters"
-    ))]
-    pub new_password: String,
+    #[validate(custom(function = "crate::models::secret::validate_password_strength_secret"))]
+    #[schema(value_type = String)]
+    pub new_password: PlaintextPassword,
 }
 
 /// Change password using a scoped `change_password_only` token.
@@ -755,7 +751,6 @@ pub async fn change_password(
     ClientIp(ip): ClientIp,
     ValidatedJson(request): ValidatedJson<ChangePasswordRequest>,
 ) -> AppResult<Json<Verify2FAResponse>> {
-    validate_password_strength(&request.new_password)?;
     let token = state
         .services
         .users

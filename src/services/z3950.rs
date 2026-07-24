@@ -7,8 +7,12 @@ use redis::AsyncCommands;
 
 use z3950_rs::marc_rs::{ MarcFormat, Record as MarcRecord};
 use z3950_rs::{Client, QueryLanguage};
+use crate::models::secret::ExposeSecret;
 use crate::{
     models::dto::z3950::{ImportItem, Z3950SearchQuery, Z3950ServerConfig},
+    models::secret::optional_exposed_string,
+    models::PlaintextPassword,
+    models::secret::plaintext_password,
     error::{AppError, AppResult},
     models::{
         biblio::{Biblio, Isbn},
@@ -29,7 +33,7 @@ pub struct Z3950Server {
     pub port: i32,
     pub database: String,
     pub login: Option<String>,
-    pub password: Option<String>,
+    pub password: Option<PlaintextPassword>,
     #[allow(dead_code)]
     pub format: Option<MarcFormat>,
 }
@@ -178,7 +182,7 @@ impl Z3950Service {
         tracing::debug!("Z39.50 connect: {} (database: {})", addr, server.database);
 
         let credentials = if let (Some(ref login), Some(ref password)) = (&server.login, &server.password) {
-            Some((login.as_str(), password.as_str()))
+            Some((login.as_str(), password.expose_secret().as_str()))
         } else {
             None
         };
@@ -378,6 +382,7 @@ impl Z3950Service {
         servers: Vec<Z3950ServerConfig>,
     ) -> AppResult<Vec<Z3950ServerConfig>> {
         for server in servers {
+            let password = optional_exposed_string(&server.password);
             if server.id > 0 {
                 self.repository
                     .z3950_server_update(
@@ -388,7 +393,7 @@ impl Z3950Service {
                         &server.database,
                         &server.format,
                         &server.login,
-                        &server.password,
+                        &password,
                         &server.encoding,
                         server.is_active,
                     )
@@ -402,7 +407,7 @@ impl Z3950Service {
                         &server.database,
                         &server.format,
                         &server.login,
-                        &server.password,
+                        &password,
                         &server.encoding,
                         server.is_active,
                     )

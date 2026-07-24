@@ -4,9 +4,26 @@ use async_trait::async_trait;
 
 use super::Repository;
 use crate::error::AppResult;
+use crate::models::secret::plaintext_password;
+use crate::models::PlaintextPassword;
 
 /// Row as stored for API and search (selected columns).
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Clone, sqlx::FromRow)]
+struct Z3950ServerRecordRow {
+    id: i64,
+    name: Option<String>,
+    address: Option<String>,
+    port: Option<i32>,
+    database: Option<String>,
+    format: Option<String>,
+    login: Option<String>,
+    password: Option<String>,
+    encoding: Option<String>,
+    activated: Option<bool>,
+}
+
+/// Row as stored for API and search (selected columns).
+#[derive(Debug, Clone)]
 pub struct Z3950ServerRecord {
     pub id: i64,
     pub name: Option<String>,
@@ -15,9 +32,26 @@ pub struct Z3950ServerRecord {
     pub database: Option<String>,
     pub format: Option<String>,
     pub login: Option<String>,
-    pub password: Option<String>,
+    pub password: Option<PlaintextPassword>,
     pub encoding: Option<String>,
     pub activated: Option<bool>,
+}
+
+impl From<Z3950ServerRecordRow> for Z3950ServerRecord {
+    fn from(row: Z3950ServerRecordRow) -> Self {
+        Self {
+            id: row.id,
+            name: row.name,
+            address: row.address,
+            port: row.port,
+            database: row.database,
+            format: row.format,
+            login: row.login,
+            password: row.password.map(plaintext_password),
+            encoding: row.encoding,
+            activated: row.activated,
+        }
+    }
 }
 
 /// DB access for `z3950servers`. Implemented by [`Repository`].
@@ -109,13 +143,13 @@ impl Z3950Repository for Repository {
 impl Repository {
     /// All servers for staff settings UI (ordered by name).
     pub async fn z3950_servers_list_all(&self) -> AppResult<Vec<Z3950ServerRecord>> {
-        sqlx::query_as::<_, Z3950ServerRecord>(
+        let rows = sqlx::query_as::<_, Z3950ServerRecordRow>(
             r#"SELECT id, name, address, port, database, format, login, password, encoding, activated
                FROM z3950servers ORDER BY name"#,
         )
         .fetch_all(&self.pool)
-        .await
-        .map_err(Into::into)
+        .await?;
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     /// Active servers for catalog search (optional filter by server id).
@@ -124,7 +158,7 @@ impl Repository {
         server_id: Option<i64>,
     ) -> AppResult<Vec<Z3950ServerRecord>> {
         let rows = if let Some(id) = server_id {
-            sqlx::query_as::<_, Z3950ServerRecord>(
+            sqlx::query_as::<_, Z3950ServerRecordRow>(
                 r#"SELECT id, name, address, port, database, format, login, password, encoding, activated
                    FROM z3950servers WHERE id = $1 AND activated = TRUE"#,
             )
@@ -132,14 +166,14 @@ impl Repository {
             .fetch_all(&self.pool)
             .await?
         } else {
-            sqlx::query_as::<_, Z3950ServerRecord>(
+            sqlx::query_as::<_, Z3950ServerRecordRow>(
                 r#"SELECT id, name, address, port, database, format, login, password, encoding, activated
                    FROM z3950servers WHERE activated = TRUE"#,
             )
             .fetch_all(&self.pool)
             .await?
         };
-        Ok(rows)
+        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     pub async fn z3950_server_update(
